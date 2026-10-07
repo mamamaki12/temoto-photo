@@ -1,0 +1,12 @@
+{
+  "name": "てもとフォト — 端末の中だけで写真編集",
+  "short_name": "てもとフォト",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#17181a",
+  "theme_color": "#17181a",
+  "lang": "ja",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }],
+  "file_handlers": [{ "action": "./", "accept": { "image/*": [".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif"] } }]
+}

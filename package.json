@@ -1,0 +1,18 @@
+{
+  "name": "temoto-photo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "てもとフォト: 写真を端末の外に出さずに編集できる写真編集Webアプリ",
+  "type": "module",
+  "scripts": {
+    "serve": "python3 -m http.server 4173",
+    "unit": "node --test 'tests/unit/*.test.js'",
+    "security": "node scripts/security-check.mjs",
+    "test": "npm run security && npm run unit && playwright test",
+    "site": "sh scripts/make-site.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "axe-core": "4.10.3"
+  }
+}
