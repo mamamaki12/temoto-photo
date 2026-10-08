@@ -18,7 +18,7 @@ import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.2.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.3.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
@@ -792,27 +792,40 @@ function skinOverlaySource() {
   const d = ctx.getImageData(0, 0, E.W, E.H); tintSkin(d, E.baseData, E.state.portrait); ctx.putImageData(d, 0, 0);
   return c;
 }
+/** 顔をタップする前に強さを選んだとき: 背景まで変わらないよう、タップを待ってからかける */
+function askSkinTap(levelValues) {
+  E.skinPending = levelValues;
+  toast('顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、肌だけを整えます', 4500);
+  buildPanel();
+}
 function skinPanel() {
   const p = E.state.portrait;
   const level = SKIN_LEVELS.find(([, , v]) => v.smooth === p.smooth && v.even === p.even && v.bright === p.bright)?.[0] ?? null;
-  const n = p.seeds.length;
+  const n = p.seeds.length; const autoOn = !n && portraitActive(p);
+  const pick = (k) => {
+    const v = SKIN_LEVELS.find((x) => x[0] === k)[2];
+    if (n || k === 'off') applySkin(v, buildPanel); else askSkinTap(v);
+  };
   return [
     hint(n ? 'タップした肌の色に近く、そこからつながっている場所だけを整えます。首・手など離れた肌は、そこもタップすると追加できます。'
-      : '① まず顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、肌に似た色の背景（壁・木・布）は変えないようにします。② 強さを選びます。'),
+      : '① 顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、髪・服・背景は変えずに肌だけを整えます。② 強さを選びます。'),
     h('div', { class: 'btn-row' },
-      h('span', { class: n ? 'ok-note small' : 'muted small' }, n ? `✓ 肌として選んだ場所: ${n}か所` : '肌の場所: 未選択（自動で判定。背景も変わることがあります）'),
+      h('span', { class: n ? 'ok-note small' : 'muted small' }, n ? `✓ 肌として選んだ場所: ${n}か所`
+        : autoOn ? '肌の場所: 未選択（自動で判定中。髪や背景も変わることがあります。顔をタップすると正確になります）'
+          : E.skinPending ? '👆 写真の、顔の肌をタップしてください' : '肌の場所: 未選択'),
       n ? btn('選び直す', () => applySkin({ seeds: [] }, buildPanel), 'ghost small') : null),
-    toggle('肌と判定した範囲を赤で表示', !!E.showSkin, (v) => setShowSkin(v)).el,
-    chips(SKIN_LEVELS.map(([k, label]) => [k, label]), level, (k) => applySkin(SKIN_LEVELS.find((x) => x[0] === k)[2], buildPanel), { label: '美肌の強さ' }).el,
-    ...PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ [k]: v }, buildPanel) }).el),
+    n || autoOn ? toggle('肌と判定した範囲を赤で表示', !!E.showSkin, (v) => setShowSkin(v)).el : null,
+    chips(SKIN_LEVELS.map(([k, label]) => [k, label]), level ?? (E.skinPending ? SKIN_LEVELS.find(([, , v]) => v === E.skinPending)?.[0] : null), pick, { label: '美肌の強さ' }).el,
+    ...(n || autoOn ? PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ [k]: v }, buildPanel) }).el) : []),
     n ? slider({ label: '肌とみなす色の幅', min: 0, max: 100, value: p.tol, def: 50, onChange: (v) => applySkin({ tol: v }, buildPanel) }).el : null,
     n ? hint('背景や服まで赤くなるときは「色の幅」を下げ、肌の一部が赤くならないときは上げるか、その場所もタップしてください。') : null,
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
-      // 明るさ・色の自動補正 → 美肌（ナチュラル）→ フィルター「透明感」を少し
+      // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
       const c = smallSource(); const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
       Object.assign(E.state.adj, autoAdjust(histogram(d)));
       E.state.look = { id: 'studio-clear', amount: 60 };
-      applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast(E.state.portrait.seeds.length ? '仕上げました（各スライダー・フィルターで調整できます）' : '仕上げました。肌以外の色も変わっていたら、顔の肌をタップしてください', 4500); });
+      if (n) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
+      else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }
     }, 'primary')),
     hint('おすすめの流れ: ①顔をタップ → ②おまかせ仕上げ → ③「修復」でニキビ・後れ毛・背景のゴミを消す → ④「フィルター」の「透明感」「振袖あでやか」などで雰囲気を選ぶ → ⑤「切り抜き」の「L判」「2L判」でプリントの比率に。決まった仕上げは「フィルター」のマイプリセットに保存すると、他の写真にも一度で使えます（肌の場所は写真ごとにタップしてください）。'),
   ].filter(Boolean);
@@ -831,8 +844,9 @@ function skinAction(e, o, p) {
       if (!(s >= 0 && s <= 1 && t >= 0 && t <= 1)) return;
       const pt = E.state.portrait;
       if (pt.seeds.length >= S.MAX_SKIN_SEEDS) { toast(`肌の場所は${S.MAX_SKIN_SEEDS}か所までです`); return; }
-      // 強さがまだ「なし」なら、ナチュラルで始める
-      const strength = portraitActive(pt) ? {} : SKIN_LEVELS[2][2];
+      // 強さがまだ「なし」なら、先に選んだ強さ（なければナチュラル）で始める
+      const strength = portraitActive(pt) ? {} : (E.skinPending || SKIN_LEVELS[2][2]);
+      E.skinPending = null;
       applySkin({ ...strength, seeds: [...pt.seeds, [s, t]] }, buildPanel);
     },
   };

@@ -239,8 +239,12 @@ test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ね
   const FACE = [0.28, 0.57, 0.32, 0.63]; // テスト画像の肌色の円
   const f0 = lum(await viewMean(page, FACE)); const s0 = await viewMean(page, SKY);
   await tab(page, '美肌');
+  // 顔をタップする前に強さを選ぶと、タップを待つ
   await page.getByRole('button', { name: 'しっかり' }).click();
-  await page.waitForFunction(() => window.__temoto.state.portrait.smooth === 75);
+  await expect(page.getByText('顔の肌をタップしてください')).toBeVisible();
+  expect(await page.evaluate(() => window.__temoto.state.portrait.smooth)).toBe(0);
+  await tapAt(page, 0.3, 0.6);
+  await page.waitForFunction(() => window.__temoto.state.portrait.smooth === 75 && window.__temoto.state.portrait.seeds.length === 1);
   await page.waitForTimeout(300);
   expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2.5);
   const s1 = await viewMean(page, SKY);
