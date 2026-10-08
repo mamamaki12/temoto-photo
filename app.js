@@ -19,6 +19,7 @@ const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
 const PREVIEW_MAX = 2048;
+const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
 const TOOLS = [
   ['auto', '✦', '自動'], ['looks', '◐', 'フィルター'], ['light', '☀', 'ライト'], ['color', '◒', 'カラー'], ['hsl', '◍', 'HSL'], ['curves', '∿', 'カーブ'],
@@ -418,6 +419,8 @@ function previewState() {
   if (E.tool === 'crop') return { ...st, geo: { ...st.geo, crop: { x: 0, y: 0, w: 1, h: 1 } }, frame: S.defaultState().frame, overlays: [] };
   return st;
 }
+/** 拡大・移動の見た目だけを変える（写真の描き直しはしない） */
+function applyZoom() { E.wrap.style.transform = `translate(${E.pan[0]}px, ${E.pan[1]}px) scale(${E.zoom})`; }
 function requestRender() { if (!E || E.raf) return; E.raf = requestAnimationFrame(() => { E.raf = 0; renderNow(); }); }
 /** 指で操作している間は、プレビューを小さく描いて軽くする（離したら元の細かさで描き直す） */
 let interactTimer = 0;
@@ -433,21 +436,24 @@ function renderNow() {
   const st = orig ? { ...S.defaultState(), geo: S.defaultState().geo } : previewState();
   const out = outputSize(st.geo, E.W, E.H);
   const stage = E.stageEl.getBoundingClientRect();
-  const dpr = Math.min(2, devicePixelRatio || 1);
+  const dpr = Math.min(3, devicePixelRatio || 1);
   // 枠・余白を含めた大きさで画面に収める
   const f = st.frame; const m = Math.min(out.w, out.h); const b = (f.width / 100) * m * 2;
   let cw = out.w + b; let ch = out.h + b;
   if (f.pad !== 'none') { const [a, c] = f.pad.split(':').map(Number); if (cw / ch > a / c) ch = cw / (a / c); else cw = ch * (a / c); }
-  const fit = Math.min((stage.width - 24) * dpr / cw, (stage.height - 24) * dpr / ch, PREVIEW_MAX / Math.max(cw, ch), 1) * (E.fast ? 0.5 : 1);
+  const fit0 = Math.min((stage.width - 24) * dpr / cw, (stage.height - 24) * dpr / ch, PREVIEW_MAX / Math.max(cw, ch), 1);
+  // 拡大中は、拡大したぶん細かく描く（引き伸ばすとぼやけるので）。元写真の画素数と GPU の上限まで
+  const zk = Math.max(1, Math.min(E.zoom, 1 / fit0, Math.min(ZOOM_MAX, E.engine.maxSize) / (Math.max(cw, ch) * fit0)));
+  const k = zk * (E.fast ? 0.5 : 1); // 画面上の大きさは変えず、描く細かさだけを変える
+  const fit = fit0 * k;
   const pw = Math.max(1, Math.round(out.w * fit)); const ph = Math.max(1, Math.round(out.h * fit));
   const eff = effective(st);
   const showMask = E.tool === 'local' && E.showMask && E.sel ? st.locals.findIndex((l) => l.id === E.sel) : -1;
   if (E.maskDirty) { E.mask = buildMask(E.state, E.W, E.H, E.maskCache); E.engine.setMask(E.mask); E.maskDirty = false; }
   E.engine.render(eff, pw, ph, { bypass: orig, showMask });
   E.L = compose(E.view, E.glCanvas, st, {});
-  const k = E.fast ? 0.5 : 1; // 軽量描画中も、画面上の大きさは変えない
   E.view.style.width = `${E.view.width / dpr / k}px`; E.view.style.height = `${E.view.height / dpr / k}px`;
-  E.wrap.style.transform = `translate(${E.pan[0]}px, ${E.pan[1]}px) scale(${E.zoom})`;
+  applyZoom();
   E.origBadge.hidden = !orig;
   drawHandles();
   scheduleHistogram();
@@ -956,7 +962,7 @@ function setupPointer(stage) {
     const z = Math.min(8, Math.max(1, E.zoom * f));
     const r = stage.getBoundingClientRect(); const cx = e.clientX - r.left - r.width / 2; const cy = e.clientY - r.top - r.height / 2;
     E.pan = z === 1 ? [0, 0] : [cx - (cx - E.pan[0]) * (z / E.zoom), cy - (cy - E.pan[1]) * (z / E.zoom)];
-    E.zoom = z; requestRender();
+    E.zoom = z; interacting(); requestRender();
   }, { passive: false });
   stage.addEventListener('dblclick', () => { if (!E || ['crop', 'local', 'heal', 'hide', 'draw'].includes(E.tool)) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
 }
@@ -987,7 +993,7 @@ function startAction(e) {
   if (tool === 'hide') return hideAction(c, o, p);
   if (tool === 'draw') return drawAction(o);
   if (tool === 'text' || tool === 'sticker') return overlayAction(c, o, tool);
-  if (E.zoom > 1) { const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; return { move: (ev) => { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; requestRender(); } }; }
+  if (E.zoom > 1) { const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; return { move: (ev) => { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); } }; }
   return null;
 }
 
