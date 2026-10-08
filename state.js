@@ -37,6 +37,7 @@ export const MAX_LOCALS = 8;
 export const MAX_BRUSH_LOCALS = 4;
 export const MAX_STROKES = 400;
 export const MAX_RETOUCH = 300;
+export const MAX_SKIN_SEEDS = 12;
 export const MAX_OVERLAYS = 60;
 export const ASPECTS = { free: '自由', original: '元の比率', '1:1': '1:1', '4:5': '4:5', '3:4': '3:4', '2:3': '2:3', '9:16': '9:16', '16:9': '16:9', '3:2': '3:2', '4:3': '4:3', 'print-L': 'L判', 'print-2L': '2L判', 'print-6': '六つ切り', 'print-A4': 'A4' };
 /** プリントの大きさ（短い辺:長い辺）。写真の向き（縦・横）に合わせて使う */
@@ -67,7 +68,7 @@ export function defaultState() {
     geo: { rot: 0, flipH: false, flipV: false, angle: 0, persV: 0, persH: 0, crop: { x: 0, y: 0, w: 1, h: 1 }, aspect: 'free' },
     locals: [],
     retouch: [],
-    portrait: { smooth: 0, even: 0, bright: 0 },
+    portrait: { smooth: 0, even: 0, bright: 0, tol: 50, seeds: [] }, // seeds: 肌として選んだ場所（元写真の 0〜1）
     overlays: [],
     frame: { width: 0, color: '#ffffff', radius: 0, pad: 'none', padFill: 'blur', padColor: '#ffffff' },
   };
@@ -160,6 +161,8 @@ export function validateState(s) {
   d.locals = arr(s.locals, MAX_LOCALS).map(validLocal).filter((l) => l && (l.type !== 'brush' || ++brushes <= MAX_BRUSH_LOCALS));
   d.retouch = arr(s.retouch, MAX_RETOUCH).map(validRetouch).filter(Boolean);
   for (const k of ['smooth', 'even', 'bright']) d.portrait[k] = int(s.portrait?.[k], 0, 100);
+  d.portrait.tol = int(s.portrait?.tol, 0, 100, 50);
+  d.portrait.seeds = arr(s.portrait?.seeds, MAX_SKIN_SEEDS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, 0, 1), num(y, 0, 1)]);
   d.overlays = arr(s.overlays, MAX_OVERLAYS).map(validOverlay).filter(Boolean);
   const f = s.frame || {};
   d.frame = { width: int(f.width, 0, 30), color: color(f.color, '#ffffff'), radius: int(f.radius, 0, 50), pad: oneOf(f.pad, PADS, 'none'), padFill: f.padFill === 'color' ? 'color' : 'blur', padColor: color(f.padColor, '#ffffff') };
@@ -175,14 +178,16 @@ export function sameState(a, b) {
   return ka.length === kb.length && ka.every((k) => Object.hasOwn(b, k) && sameState(a[k], b[k]));
 }
 
-/** 「プリセット」として保存・共有する部分（写真ごとに違う切り抜き・修復・文字・部分補正は含めない。美肌は写真によらないので含める） */
+/** 「プリセット」として保存・共有する部分（写真ごとに違う切り抜き・修復・文字・部分補正は含めない。美肌の強さは含め、肌として選んだ場所は含めない） */
 export function presetPart(s) {
-  return { adj: clone(s.adj), hsl: clone(s.hsl), grade: clone(s.grade), curves: clone(s.curves), look: clone(s.look), portrait: clone(s.portrait) };
+  const { seeds, ...portrait } = s.portrait;
+  return { adj: clone(s.adj), hsl: clone(s.hsl), grade: clone(s.grade), curves: clone(s.curves), look: clone(s.look), portrait: clone(portrait) };
 }
 export function applyPreset(s, p) {
   const v = validateState({ ...p });
   // 美肌を含まない古いプリセットでは、今の美肌をそのまま残す
-  return { ...clone(s), adj: v.adj, hsl: v.hsl, grade: v.grade, curves: v.curves, look: v.look, portrait: p && typeof p.portrait === 'object' ? v.portrait : validateState(s).portrait };
+  const cur = validateState(s).portrait;
+  return { ...clone(s), adj: v.adj, hsl: v.hsl, grade: v.grade, curves: v.curves, look: v.look, portrait: p && typeof p.portrait === 'object' ? { ...v.portrait, seeds: cur.seeds } : cur };
 }
 
 /** 何か編集されているか（ボタンの状態や保存の判断に使う） */

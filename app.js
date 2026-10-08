@@ -9,7 +9,7 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { applyPortrait, portraitActive, PORTRAIT } from './portrait.js';
+import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
 import { compose, hitOverlay, overlayBox, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -18,6 +18,7 @@ import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
+const VERSION = '1.2.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
@@ -47,12 +48,25 @@ async function decode(blob) {
 /** 大きすぎる写真は、端末が扱える大きさに縮める */
 function workSize(w, hgt, maxTex = MAX_SIDE) {
   const s = Math.min(1, Math.sqrt(MAX_PIXELS / (w * hgt)), Math.min(MAX_SIDE, maxTex) / Math.max(w, hgt));
-  return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(hgt * s)), scaled: s < 1 };
+  return { w: Math.max(1, Math.floor(w * s)), h: Math.max(1, Math.floor(hgt * s)), scaled: s < 1 }; // 切り捨てて、上限を超えないように
 }
 function toCanvas(src, w, hgt) {
   const c = document.createElement('canvas'); c.width = w; c.height = hgt;
   c.getContext('2d').drawImage(src, 0, 0, w, hgt);
   return c;
+}
+/** 高画質で縮める（一度に半分より小さくすると細部がつぶれるので、半分ずつ段階的に） */
+function shrink(src, w, hgt) {
+  let cur = src; let cw = src.width; let ch = src.height;
+  do {
+    const nw = Math.max(w, Math.round(cw / 2)); const nh = Math.max(hgt, Math.round(ch / 2));
+    const c = document.createElement('canvas'); c.width = nw; c.height = nh;
+    const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(cur, 0, 0, nw, nh);
+    if (cur !== src) { cur.width = 0; cur.height = 0; } // 途中の Canvas のメモリをすぐ返す
+    cur = c; cw = nw; ch = nh;
+  } while (cw !== w || ch !== hgt);
+  return cur;
 }
 async function thumbBlob(src, side = 360) {
   const s = Math.min(1, side / Math.max(src.width, src.height));
@@ -143,9 +157,8 @@ async function prepare(proj, blob, maxTex) {
   const ws = workSize(bmp.width, bmp.height, maxTex);
   let base = bmp;
   if (ws.w !== bmp.width || ws.h !== bmp.height) {
-    // 縮小に対応していないブラウザ（大きさが変わらない）では Canvas で縮める
-    try { base = await createImageBitmap(bmp, { resizeWidth: ws.w, resizeHeight: ws.h, resizeQuality: 'high' }); } catch { base = bmp; }
-    if (base.width !== ws.w || base.height !== ws.h) { if (base !== bmp) base.close?.(); base = toCanvas(bmp, ws.w, ws.h); }
+    // createImageBitmap の縮小は、ブラウザによっては画質の指定が効かず粗くなるので、Canvas で高画質に縮める
+    base = shrink(bmp, ws.w, ws.h);
     bmp.close?.();
   }
   return { base, W: ws.w, H: ws.h, scaled: ws.scaled, origW: proj.w, origH: proj.h };
@@ -331,7 +344,7 @@ async function openEditor(id) {
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
   requestRender();
-  if (p.scaled) toast(`大きな写真なので ${p.W}×${p.H} に縮めて編集します`);
+  if (p.scaled) toast(`写真が大きいので、この端末で扱える ${p.W}×${p.H}（約${Math.round(p.W * p.H / 10000)}万画素）で編集します。2L判・A4 のプリントにも十分な大きさです`, 5000);
 }
 
 const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait]);
@@ -340,6 +353,7 @@ function rebuildSource() {
   if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
   else { const r = retouchCanvas(E.base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
   E.retouchKey = sourceKey(E.state);
+  if (E.showSkin && E.tool === 'skin') E.engine.setSource(skinOverlaySource(), E.W, E.H);
   E.small = null; E.thumbsKey = null;
 }
 /** 修復を1つ足す（全部やり直さず、その場所だけ書き換える） */
@@ -534,6 +548,7 @@ function tabKeys(e) {
 function syncHistoryButtons() { if (!E) return; E.undoBtn.disabled = !E.undo.length && S.sameState(E.state, E.committed); E.redoBtn.disabled = !E.redo.length; }
 function setTool(k) {
   if (E.tool === 'crop' && k !== 'crop') commit();
+  if (E.tool === 'skin' && k !== 'skin' && E.showSkin) { E.showSkin = false; rebuildSource(); }
   E.tool = k; prefs.set('tool', k);
   for (const b of E.tabs.children) { const on = b.id === `tab-${k}`; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
   E.wbPick = false; E.colorPick = false;
@@ -757,7 +772,7 @@ function curveEditor() {
 const SKIN_LEVELS = [['off', 'なし', { smooth: 0, even: 0, bright: 0 }], ['light', 'ひかえめ', { smooth: 30, even: 25, bright: 10 }], ['natural', 'ナチュラル', { smooth: 50, even: 40, bright: 18 }], ['strong', 'しっかり', { smooth: 75, even: 55, bright: 28 }]];
 /** 美肌は画素を全部計算し直すので、指を離したときだけ、画面に「仕上げ中」を出してから計算する */
 function applySkin(next, after) {
-  E.state.portrait = { ...next };
+  E.state.portrait = { ...E.state.portrait, ...next };
   E.stageEl.classList.add('busy');
   requestAnimationFrame(() => setTimeout(() => {
     if (!E) return;
@@ -765,22 +780,62 @@ function applySkin(next, after) {
     commit(); requestRender(); after?.();
   }, 0));
 }
+/** 肌の範囲の表示を切り替える（表示中は、肌と判定した場所を赤く重ねた画像を GPU に送る。保存はしない） */
+function setShowSkin(on) {
+  if (!!E.showSkin === on) return;
+  E.showSkin = on; E.stageEl.classList.add('busy');
+  requestAnimationFrame(() => setTimeout(() => { if (!E) return; try { rebuildSource(); } finally { E.stageEl.classList.remove('busy'); } requestRender(); }, 0));
+}
+function skinOverlaySource() {
+  if (!E.baseData) E.baseData = toCanvas(E.base, E.W, E.H).getContext('2d', { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
+  const c = toCanvas(E.src || E.base, E.W, E.H); const ctx = c.getContext('2d', { willReadFrequently: true });
+  const d = ctx.getImageData(0, 0, E.W, E.H); tintSkin(d, E.baseData, E.state.portrait); ctx.putImageData(d, 0, 0);
+  return c;
+}
 function skinPanel() {
   const p = E.state.portrait;
-  const level = SKIN_LEVELS.find(([, , v]) => S.sameState(v, p))?.[0] ?? null;
+  const level = SKIN_LEVELS.find(([, , v]) => v.smooth === p.smooth && v.even === p.even && v.bright === p.bright)?.[0] ?? null;
+  const n = p.seeds.length;
   return [
-    hint('肌の色の場所を自動で見つけて、ムラ・赤み・くすみを整えます。肌のきめは残すので、のっぺりしません。ニキビやほくろは「修復」で消せます。'),
+    hint(n ? 'タップした肌の色に近く、そこからつながっている場所だけを整えます。首・手など離れた肌は、そこもタップすると追加できます。'
+      : '① まず顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、肌に似た色の背景（壁・木・布）は変えないようにします。② 強さを選びます。'),
+    h('div', { class: 'btn-row' },
+      h('span', { class: n ? 'ok-note small' : 'muted small' }, n ? `✓ 肌として選んだ場所: ${n}か所` : '肌の場所: 未選択（自動で判定。背景も変わることがあります）'),
+      n ? btn('選び直す', () => applySkin({ seeds: [] }, buildPanel), 'ghost small') : null),
+    toggle('肌と判定した範囲を赤で表示', !!E.showSkin, (v) => setShowSkin(v)).el,
     chips(SKIN_LEVELS.map(([k, label]) => [k, label]), level, (k) => applySkin(SKIN_LEVELS.find((x) => x[0] === k)[2], buildPanel), { label: '美肌の強さ' }).el,
-    ...PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ ...E.state.portrait, [k]: v }, buildPanel) }).el),
+    ...PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ [k]: v }, buildPanel) }).el),
+    n ? slider({ label: '肌とみなす色の幅', min: 0, max: 100, value: p.tol, def: 50, onChange: (v) => applySkin({ tol: v }, buildPanel) }).el : null,
+    n ? hint('背景や服まで赤くなるときは「色の幅」を下げ、肌の一部が赤くならないときは上げるか、その場所もタップしてください。') : null,
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → 美肌（ナチュラル）→ フィルター「透明感」を少し
       const c = smallSource(); const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
       Object.assign(E.state.adj, autoAdjust(histogram(d)));
       E.state.look = { id: 'studio-clear', amount: 60 };
-      applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
+      applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast(E.state.portrait.seeds.length ? '仕上げました（各スライダー・フィルターで調整できます）' : '仕上げました。肌以外の色も変わっていたら、顔の肌をタップしてください', 4500); });
     }, 'primary')),
-    hint('おすすめの流れ: ①おまかせ仕上げ → ②「修復」でニキビ・後れ毛・背景のゴミを消す → ③「フィルター」の「透明感」「振袖あでやか」などで雰囲気を選ぶ → ④「切り抜き」の「L判」「2L判」でプリントの比率に。決まった仕上げは「フィルター」のマイプリセットに保存すると、他の写真にも一度で使えます。'),
-  ];
+    hint('おすすめの流れ: ①顔をタップ → ②おまかせ仕上げ → ③「修復」でニキビ・後れ毛・背景のゴミを消す → ④「フィルター」の「透明感」「振袖あでやか」などで雰囲気を選ぶ → ⑤「切り抜き」の「L判」「2L判」でプリントの比率に。決まった仕上げは「フィルター」のマイプリセットに保存すると、他の写真にも一度で使えます（肌の場所は写真ごとにタップしてください）。'),
+  ].filter(Boolean);
+}
+/** 美肌タブ: タップで肌の場所を追加（拡大中のドラッグは移動） */
+function skinAction(e, o, p) {
+  const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; let moved = false;
+  return {
+    move: (ev) => {
+      if (Math.hypot(ev.clientX - start[0], ev.clientY - start[1]) > 8) moved = true;
+      if (moved && E.zoom > 1) { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); }
+    },
+    end: () => {
+      if (moved) return;
+      const [s, t] = outToSrc(...o, p);
+      if (!(s >= 0 && s <= 1 && t >= 0 && t <= 1)) return;
+      const pt = E.state.portrait;
+      if (pt.seeds.length >= S.MAX_SKIN_SEEDS) { toast(`肌の場所は${S.MAX_SKIN_SEEDS}か所までです`); return; }
+      // 強さがまだ「なし」なら、ナチュラルで始める
+      const strength = portraitActive(pt) ? {} : SKIN_LEVELS[2][2];
+      applySkin({ ...strength, seeds: [...pt.seeds, [s, t]] }, buildPanel);
+    },
+  };
 }
 
 // ── 切り抜き ──
@@ -896,7 +951,7 @@ function infoPanel() {
   const p = E.proj; const x = p.exif;
   const name = h('input', { id: 'proj-name', maxlength: 80, value: p.name });
   name.addEventListener('change', () => { E.proj.name = name.value.trim().slice(0, 80) || '写真'; db.putProject(E.proj); $('.ed-title').textContent = E.proj.name; });
-  const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
+  const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['アプリの版', VERSION], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
     ...(p.raw ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
     ['書き出す大きさ（元の大きさのとき）', (() => {
       const o = outputSize(E.state.geo, E.W, E.H); const L0 = layout(o.w, o.h, E.state.frame);
@@ -990,6 +1045,7 @@ function startAction(e) {
   if (tool === 'crop') return cropAction(c);
   if (tool === 'local') return localAction(e, c, o, p);
   if (tool === 'heal') return healAction(c, o, p);
+  if (tool === 'skin') return skinAction(e, o, p);
   if (tool === 'hide') return hideAction(c, o, p);
   if (tool === 'draw') return drawAction(o);
   if (tool === 'text' || tool === 'sticker') return overlayAction(c, o, tool);
@@ -1167,6 +1223,11 @@ function drawHandles() {
       el('ellipse', { cx: c[0], cy: c[1], rx: Math.hypot(rx[0] - c[0], rx[1] - c[1]), ry: Math.hypot(ry[0] - c[0], ry[1] - c[1]), transform: `rotate(${a} ${c[0]} ${c[1]})`, class: 'guide', 'stroke-width': 2 * k });
       dot(...c); dot(...rx, 7); dot(...ry, 7);
     }
+  }
+  if (E.tool === 'skin') {
+    // 肌として選んだ場所
+    const p = gp();
+    for (const [sx, sy] of E.state.portrait.seeds) { const [x, y] = outToCanvas(srcToOut(sx, sy, p)); el('circle', { cx: x, cy: y, r: 7 * k, class: 'skin-seed' }); }
   }
   if (E.healPath) el('polyline', { points: E.healPath.map((q) => q.join(',')).join(' '), class: 'heal-path', 'stroke-width': prefs.get('healSize', 3) / 100 * 0.6 * Math.min(L.iw, L.ih) * 2 });
   if (E.rect) { const [a, b] = E.rect; el('rect', { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), width: Math.abs(a[0] - b[0]), height: Math.abs(a[1] - b[1]), class: 'sel-rect', 'stroke-width': 2 * k }); }
