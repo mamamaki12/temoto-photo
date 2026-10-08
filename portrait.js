@@ -58,64 +58,149 @@ export function skinMask(img) {
 
 const toYcc = (r, g, b) => [0.299 * r + 0.587 * g + 0.114 * b, 128 - 0.168736 * r - 0.331264 * g + 0.5 * b, 128 + 0.5 * r - 0.418688 * g - 0.081312 * b];
 
+function median(a) { if (!a.length) return 0; const b = Float32Array.from(a).sort(); return b[b.length >> 1]; }
+
+/** 細かい明暗の量（％）: |明るさ − 少しぼかした明るさ| を、まわりで平均して、まわりの明るさで割る */
+function textureMap(d, W, H, S) {
+  const N = W * H; const Y = new Float32Array(N);
+  for (let i = 0, k = 0; i < N; i++, k += 4) Y[i] = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
+  const fine = boxBlur(Y.slice(), W, H, Math.max(1, Math.round(S / 500)), 1);
+  for (let i = 0; i < N; i++) fine[i] = Math.abs(Y[i] - fine[i]);
+  const rl = Math.max(1, Math.round(S / 150));
+  const e = boxBlur(fine, W, H, rl, 1); const m = boxBlur(Y, W, H, rl, 1);
+  for (let i = 0; i < N; i++) e[i] = (e[i] / (m[i] + 20)) * 100;
+  return e;
+}
+
+/** タップがないとき: 肌の色の範囲にあって、なめらか（髪・布の模様のような細かい明暗がない）な所の色の中央値を、肌の色とみなす */
+function autoSkinColor(img) {
+  const { width: W, height: H, data: d } = img;
+  const g = Math.max(2, Math.ceil(Math.max(W, H) / 240)); const cbs = []; const crs = []; const ys = [];
+  for (let y0 = 0; y0 + g <= H; y0 += g) for (let x0 = 0; x0 + g <= W; x0 += g) {
+    let sY = 0; let sY2 = 0; let sb = 0; let sr = 0; let sk = 0; const n = g * g;
+    for (let y = y0; y < y0 + g; y++) for (let x = x0; x < x0 + g; x++) {
+      const k = (y * W + x) * 4; const [Y, cb, cr] = toYcc(d[k], d[k + 1], d[k + 2]);
+      sY += Y; sY2 += Y * Y; sb += cb; sr += cr; sk += skinness(d[k], d[k + 1], d[k + 2]);
+    }
+    const mY = sY / n; if (sk / n < 0.8 || Math.sqrt(Math.max(0, sY2 / n - mY * mY)) > 6 || mY < 60) continue;
+    cbs.push(sb / n); crs.push(sr / n); ys.push(mY);
+  }
+  if (cbs.length < 20) return null;
+  const med = (a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; };
+  return [med(cbs), med(crs), med(ys)];
+}
+
 /**
  * 肌の重み（0〜1、W×H）。
  * 肌の場所（p.seeds: 写真上の [x, y]、0〜1）が選ばれていれば、
  *   ① その場所の肌の色に近い色だけを肌とみなし（p.tol: 色の幅 0〜100）、
  *   ② さらに、選んだ場所から「色が急に変わらずに」つながっている範囲だけに絞る。
  *      肌に似た色の背景（ベージュの壁・木・布）も、顔とつながっていなければ外れる。
- * 選ばれていなければ、一般的な肌の色の範囲で判定する（背景が肌に似た色だと、背景も含まれる）。
+ * 選ばれていなければ、写真の中のなめらかな肌らしい所から肌の色を推定して、その色に近い所を肌とする（つながりは見ない）。
  */
 export function skinWeights(img, p) {
   const seeds = p?.seeds || [];
-  if (!seeds.length) return skinMask(img);
   const { width: W, height: H, data: d } = img; const N = W * H; const S = Math.min(W, H);
-  // ① 選んだ場所のまわりの、肌の色（Cb・Cr）
-  const rad = Math.max(2, Math.round(S / 120));
-  const refs = seeds.map(([sx, sy]) => {
-    const cx = Math.round(sx * (W - 1)); const cy = Math.round(sy * (H - 1)); let cb = 0; let cr = 0; let n = 0;
-    for (let y = Math.max(0, cy - rad); y <= Math.min(H - 1, cy + rad); y++) for (let x = Math.max(0, cx - rad); x <= Math.min(W - 1, cx + rad); x++) {
-      const k = (y * W + x) * 4; const [Y, b, r] = toYcc(d[k], d[k + 1], d[k + 2]); if (Y < 20) continue; cb += b; cr += r; n++;
+  // ① 基準にする肌の色（Cb・Cr）。選んだ場所があればそのまわり、なければ写真から推定する
+  let refs;
+  if (seeds.length) {
+    const rad = Math.max(2, Math.round(S / 120));
+    refs = seeds.map(([sx, sy]) => {
+      const cx = Math.round(sx * (W - 1)); const cy = Math.round(sy * (H - 1)); let cb = 0; let cr = 0; let yy = 0; let n = 0;
+      for (let y = Math.max(0, cy - rad); y <= Math.min(H - 1, cy + rad); y++) for (let x = Math.max(0, cx - rad); x <= Math.min(W - 1, cx + rad); x++) {
+        const k = (y * W + x) * 4; const [Y, b, r] = toYcc(d[k], d[k + 1], d[k + 2]); if (Y < 20) continue; cb += b; cr += r; yy += Y; n++;
+      }
+      return n ? [cb / n, cr / n, yy / n] : null;
+    }).filter(Boolean);
+    if (!refs.length) return new Float32Array(N);
+  } else {
+    const ref = autoSkinColor(img);
+    if (!ref) return skinMask(img);
+    refs = [ref];
+  }
+  // 色は「色相（赤〜黄のどちら寄りか）」と「鮮やかさ」に分けて比べる。
+  // 同じ人の肌は、光の当たり方で鮮やかさは 0.5〜2 倍ほど変わるが、色相はほぼ同じ（±4°）。金髪・茶髪は 15〜30° ずれる
+  const tol = (p?.tol ?? 50) / 100; const Th = 5 + tol * 10; const softH = 4; const T = 6 + tol * 12;
+  // [色相, 鮮やかさ, 明るさ]
+  const refA = refs.map(([rb, rr, ry]) => [Math.atan2(rr - 128, 128 - rb), Math.hypot(rb - 128, rr - 128), ry]);
+  // 細かい明暗の量（髪の毛・ひげ・布の織り目は多く、肌は少ない）。明るさで割って、暗い髪でも比べられるようにする
+  const tex = textureMap(d, W, H, S);
+  let texRef;
+  if (seeds.length) {
+    const vals = []; const rad = Math.max(3, Math.round(S / 60));
+    for (const [sx, sy] of seeds) {
+      const cx = Math.round(sx * (W - 1)); const cy = Math.round(sy * (H - 1));
+      for (let y = Math.max(0, cy - rad); y <= Math.min(H - 1, cy + rad); y += 2) for (let x = Math.max(0, cx - rad); x <= Math.min(W - 1, cx + rad); x += 2) vals.push(tex[y * W + x]);
     }
-    return n ? [cb / n, cr / n] : null;
-  }).filter(Boolean);
-  if (!refs.length) return new Float32Array(N);
-  const T = 5 + ((p.tol ?? 50) / 100) * 20; const soft = T * 0.7;
-  const w = new Float32Array(N);
+    texRef = median(vals);
+  }
+  // 1画素ずつの判定（tight）と、明らかに肌でない色だけを外す判定（loose: 目・眉・服などをくっきり外す）
+  const tight = new Float32Array(N); const loose = new Float32Array(N);
   for (let i = 0, k = 0; i < N; i++, k += 4) {
     const r = d[k]; const g = d[k + 1]; const b = d[k + 2];
     const Y = 0.299 * r + 0.587 * g + 0.114 * b; if (Y < 18) continue;
     const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b; const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
-    let best = Infinity; for (const [rb, rr] of refs) { const q = (cb - rb) ** 2 + (cr - rr) ** 2; if (q < best) best = q; }
-    const dist = Math.sqrt(best);
-    w[i] = dist <= T ? 1 : dist >= T + soft ? 0 : 1 - (dist - T) / soft;
+    const warm = cr - cb; if (warm <= 3) continue; // 白・灰色・黒（色みのないもの）は肌ではない
+    const a = Math.atan2(cr - 128, 128 - cb); const m = Math.hypot(cb - 128, cr - 128);
+    let dh = Infinity; let sat = 1; let bright = 0;
+    for (const [ra, rs, ry] of refA) {
+      const q = Math.abs(a - ra) * 57.2958;
+      if (q < dh) { dh = q; sat = rs > 0.5 ? m / rs : 1; bright = Math.min(1, Math.max(0, (Y - ry - 10) / 40)); }
+    }
+    // 鮮やかさ: 基準の 0.45〜2 倍なら肌（影・赤み）。基準の肌より明るい所（光で白っぽくなった肌）だけは、もっと薄くても許す。
+    // 白髪・灰色の髪は、肌より明るくないのに色が薄いので外れる
+    const lo = 0.45 - 0.25 * bright;
+    const ws = sat < lo - 0.15 || sat > 2.6 ? 0 : sat < lo ? (sat - lo + 0.15) / 0.15 : sat > 2 ? (2.6 - sat) / 0.6 : 1;
+    const wm = Math.min(1, (warm - 3) / 6) * ws;
+    // 光で白っぽくなった肌は色相がぶれやすいので、そのぶん許す（基準より明るい所だけ）
+    const th = Th + (40 / Math.max(m, 2)) * bright;
+    tight[i] = (dh <= th ? 1 : dh >= th + softH ? 0 : 1 - (dh - th) / softH) * wm;
+    const L = th * 2.2 + softH; loose[i] = (dh <= L ? 1 : dh >= L + softH ? 0 : 1 - (dh - L) / softH) * wm;
   }
+  // 面で判定する: 髪（金髪・茶髪）は肌に近い色の毛がまばらに混じるだけだが、肌はほぼ全部が肌の色。
+  // まわりの画素のうち肌の色の割合で決めるので、髪が外れ、肌の中のまだら（判定のムラ）もなくなる
+  if (texRef == null) { const vals = []; for (let i = 0; i < N; i += 7) if (tight[i] > 0.9) vals.push(tex[i]); texRef = vals.length ? median(vals) : 1; }
+  const tLo = 2 * texRef + 1; const tHi = tLo * 2;
+  for (let i = 0; i < N; i++) { const t = tex[i]; if (t > tLo) tight[i] *= t >= tHi ? 0 : 1 - (t - tLo) / (tHi - tLo); }
+  const area = boxBlur(tight, W, H, Math.max(1, Math.round(S / 220)), 2);
+  const w = new Float32Array(N);
+  for (let i = 0; i < N; i++) { if (!loose[i]) continue; const t = (area[i] - 0.3) / 0.35; w[i] = (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t)) * loose[i]; }
+  if (!seeds.length) return w;
   // ② 選んだ場所からつながっている範囲（粗いマス目で、となりのマスと色が近いときだけ広げる）
   const g = Math.max(1, Math.ceil(Math.max(W, H) / 360)); const gw = Math.ceil(W / g); const gh = Math.ceil(H / g); const G = gw * gh;
-  const mw = new Float32Array(G); const mY = new Float32Array(G); const mb = new Float32Array(G); const mr = new Float32Array(G); const vc = new Float32Array(G); const cnt = new Float32Array(G);
+  const mw = new Float32Array(G); const mY = new Float32Array(G); const mb = new Float32Array(G); const mr = new Float32Array(G); const vc = new Float32Array(G); const vy = new Float32Array(G); const cnt = new Float32Array(G);
   const colOf = new Int32Array(W); for (let x = 0; x < W; x++) colOf[x] = (x / g) | 0;
   for (let y = 0, i = 0; y < H; y++) {
     const o = ((y / g) | 0) * gw;
     for (let x = 0; x < W; x++, i++) {
       const j = o + colOf[x]; const k = i * 4; const [Y, cb, cr] = toYcc(d[k], d[k + 1], d[k + 2]);
-      mw[j] += w[i]; mY[j] += Y; mb[j] += cb; mr[j] += cr; vc[j] += cb * cb + cr * cr; cnt[j]++;
+      mw[j] += w[i]; mY[j] += Y; mb[j] += cb; mr[j] += cr; vc[j] += cb * cb + cr * cr; vy[j] += Y * Y; cnt[j]++;
     }
   }
   // vc: マスの中の色のばらつき（くっきりした境目をまたぐマスは大きい）
-  for (let j = 0; j < G; j++) { mw[j] /= cnt[j]; mY[j] /= cnt[j]; mb[j] /= cnt[j]; mr[j] /= cnt[j]; vc[j] = Math.sqrt(Math.max(0, vc[j] / cnt[j] - mb[j] * mb[j] - mr[j] * mr[j])); }
+  for (let j = 0; j < G; j++) { mw[j] /= cnt[j]; mY[j] /= cnt[j]; mb[j] /= cnt[j]; mr[j] /= cnt[j]; vc[j] = Math.sqrt(Math.max(0, vc[j] / cnt[j] - mb[j] * mb[j] - mr[j] * mr[j])); vy[j] = Math.sqrt(Math.max(0, vy[j] / cnt[j] - mY[j] * mY[j])); }
   const gate = new Uint8Array(G); const queue = new Int32Array(G); let qh = 0; let qt = 0;
   for (const [sx, sy] of seeds) {
     const j = Math.min(gh - 1, (sy * (H - 1) / g) | 0) * gw + Math.min(gw - 1, (sx * (W - 1) / g) | 0);
     if (!gate[j]) { gate[j] = 1; queue[qt++] = j; }
   }
   // となりのマスとの色の差、またはマスの中の色のばらつきがこれより大きいと「境目」として越えない
-  const stepY = 10 + T * 0.4; const stepC = 3 + T * 0.2; const edgeC = 2.5 + T * 0.15;
+  const stepY = 10 + T * 0.4; const stepC = 3 + T * 0.2; const edgeC = 2.5 + T * 0.15; const edgeY = 12 + T * 0.2; // edgeY: マスの中の明るさのばらつき（顔の輪郭など）
   while (qh < qt) {
     const j = queue[qh++]; const x = j % gw; const y = (j / gw) | 0;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    // 眼鏡のふち・眉のような細い仕切りは飛び越えられるよう、3マス先まで見る（色が近いマスだけ）
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
       const nx = x + dx; const ny = y + dy; if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
-      const n = ny * gw + nx; if (gate[n] || mw[n] < 0.3 || vc[n] > edgeC) continue;
-      if (Math.abs(mY[n] - mY[j]) > stepY || Math.hypot(mb[n] - mb[j], mr[n] - mr[j]) > stepC) continue;
+      const n = ny * gw + nx; if (gate[n] || mw[n] < 0.5 || vc[n] > edgeC || vy[n] > edgeY) continue; // 半分以上が肌の色のマスだけを通る（色が少しずつずれて背景へ抜けるのを防ぐ）
+      const far = Math.max(Math.abs(dx), Math.abs(dy)); // 離れたマスとは、そのぶん明るさの差を許す（色の差は許さない）
+      if (far > 1) {
+        // 飛び越えてよいのは、両側の肌より暗い、肌でないマス（眼鏡のふち・眉・まつげ）だけ。
+        // 肌に似た色の境目（顔と壁の境）や、明るい髪の輪郭の先のぼけた背景へは飛ばない
+        let ok = true; const dark = Math.min(mY[j], mY[n]) - 15;
+        for (let t = 1; t < far && ok; t++) { const m2 = Math.round(y + (dy * t) / far) * gw + Math.round(x + (dx * t) / far); if (!gate[m2] && (mw[m2] >= 0.3 || mY[m2] > dark)) ok = false; }
+        if (!ok) continue;
+      }
+      if (Math.abs(mY[n] - mY[j]) > stepY * far || Math.hypot(mb[n] - mb[j], mr[n] - mr[j]) > stepC) continue;
       gate[n] = 1; queue[qt++] = n;
     }
   }
@@ -254,7 +339,8 @@ function portraitCore(img, p, S, raw) {
         let cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
         if (ev > 0) {
           const t = ev * w;
-          if (cr > crAvg) cr -= (cr - crAvg) * t * 0.75; // 赤みだけを抑える（血色は残す）
+          // 赤みだけを抑える（血色は残す）。口紅・チークのようにはっきり赤い所（平均より 25 以上）はそのまま
+          const red = cr - crAvg; if (red > 0) cr -= red * t * 0.75 * Math.min(1, Math.max(0, (35 - red) / 10));
           cb += (cbAvg - cb) * t * 0.4; // 黄ぐすみ・青ぐすみをそろえる
         }
         if (br > 0) Y += (255 - Y) * br * w * 0.35 * (Y / 255) ** 0.5; // 暗い影は持ち上げすぎない

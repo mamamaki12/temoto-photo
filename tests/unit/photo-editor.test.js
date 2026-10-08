@@ -310,3 +310,21 @@ test('photo: 美肌 — 肌をタップすると、肌に似た色の背景を�
   assert.ok(meanW(wb, 320, 90, 100, 130, 140) > 0.9, '顔は肌');
   assert.ok(meanW(wb, 320, 240, 20, 310, 220) < 0.05, `壁は肌ではない ${meanW(wb, 320, 240, 20, 310, 220)}`);
 });
+
+test('photo: 美肌 — 赤みは整えるが、口紅のようにはっきり赤い所は残す', () => {
+  const W = 200; const H = 160; const mk = () => {
+    const data = new Uint8ClampedArray(W * H * 4); let seed = 5; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const k = (y * W + x) * 4; const n = (rnd() - 0.5) * 6; let c = [226 + n, 184 + n, 160 + n]; // 肌
+      const a = Math.max(0, 1 - Math.hypot(x - 55, y - 75) / 18); c = [c[0] + 8 * a, c[1] - 14 * a, c[2] - 8 * a]; // 少し赤い（ニキビ跡など。ふちはぼやけている）
+      if (x >= 120 && x < 160 && y >= 70 && y < 85) c = [200 + n, 40 + n, 60 + n]; // 口紅
+      data[k] = c[0]; data[k + 1] = c[1]; data[k + 2] = c[2]; data[k + 3] = 255;
+    }
+    return { width: W, height: H, data };
+  };
+  const before = mk(); const img = mk();
+  applyPortrait(img, { smooth: 0, even: 100, bright: 0, seeds: [[0.1, 0.2]], tol: 50 });
+  const cr = (im, x0, y0, x1, y1) => { let s = 0; let n = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const k = (y * W + x) * 4; s += 0.5 * im.data[k] - 0.418688 * im.data[k + 1] - 0.081312 * im.data[k + 2]; n++; } return s / n; };
+  assert.ok(cr(img, 50, 70, 60, 80) < cr(before, 50, 70, 60, 80) - 3, '赤みは減る');
+  assert.ok(Math.abs(cr(img, 125, 73, 155, 82) - cr(before, 125, 73, 155, 82)) < 2, '口紅はそのまま');
+});
