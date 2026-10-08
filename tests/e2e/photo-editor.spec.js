@@ -266,6 +266,32 @@ test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ね
   expect(Math.abs((c.w * 1200) / (c.h * 800) - 127 / 89)).toBeLessThan(0.01);
 });
 
+test('プレビューの画質: 大きな写真を縮めてもギザギザ（モアレ）にならない・拡大すると細かく描き直す', async ({ page }) => {
+  await page.goto(URL0);
+  // 1画素ごとの白黒の縞（正しく縮めれば一様な灰色になる）
+  const b64 = await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 4000; c.height = 3000; const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 4000, 3000); x.fillStyle = '#000';
+    for (let i = 0; i < 4000; i += 2) x.fillRect(i, 0, 1, 3000);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  await openWith(page, { name: 'stripes.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
+  const sd = () => page.evaluate(() => {
+    const c = document.querySelector('canvas.view'); const d = c.getContext('2d').getImageData(Math.round(c.width * 0.3), Math.round(c.height * 0.3), Math.round(c.width * 0.4), Math.round(c.height * 0.4)).data;
+    let s = 0; let s2 = 0; const n = d.length / 4; for (let i = 0; i < d.length; i += 4) { s += d[i]; s2 += d[i] * d[i]; } return Math.sqrt(s2 / n - (s / n) ** 2);
+  });
+  expect(await sd()).toBeLessThan(20);
+  // 拡大すると、拡大したぶん細かく描く（画面上の大きさは同じ）
+  const w1 = await page.evaluate(() => document.querySelector('canvas.view').width);
+  const css1 = await page.evaluate(() => document.querySelector('canvas.view').style.width);
+  await page.locator('.stage').dblclick();
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => document.querySelector('canvas.view').width)).toBeGreaterThan(w1 * 2);
+  expect(await page.evaluate(() => document.querySelector('canvas.view').style.width)).toBe(css1);
+});
+
 test('文字（XSSの文字列も文字として描くだけ）・ドラッグで移動・スタンプ・描画', async ({ page }) => {
   await openWith(page);
   const m0 = await viewMean(page);

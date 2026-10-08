@@ -301,6 +301,9 @@ export class Engine {
     gl.bindTexture(gl.TEXTURE_2D, this.src);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    // 画面に小さく表示するときに画素を飛ばして読むと、輪郭がギザギザ・ザラザラになるので、縮小版（ミップマップ）をなめらかにつなぐ
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     this.srcW = w; this.srcH = h;
   }
 
