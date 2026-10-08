@@ -5,6 +5,7 @@
 //   元写真の座標 (s, t)      : 0..1（読み込んだ写真。EXIFの向きは読み込み時に反映済み）
 //   向きを変えた後の座標 (u, v): 0..1（90°回転・反転の後。傾き補正と遠近補正はこの枠の中で行う）
 //   出力の座標 (x, y)        : 0..1（切り抜いた結果の画像）
+import { PRINT_ASPECTS } from './state.js';
 
 export const DEG = Math.PI / 180;
 
@@ -73,6 +74,7 @@ export function outputSize(geo, W, H) {
 export function aspectValue(aspect, W, H) {
   if (aspect === 'free') return null;
   if (aspect === 'original') return W / H;
+  if (Object.hasOwn(PRINT_ASPECTS, aspect)) { const [a, b] = PRINT_ASPECTS[aspect]; return W >= H ? b / a : a / b; }
   const [a, b] = aspect.split(':').map(Number);
   return a > 0 && b > 0 ? a / b : null;
 }

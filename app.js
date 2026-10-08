@@ -9,6 +9,7 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
+import { applyPortrait, portraitActive, PORTRAIT } from './portrait.js';
 import { compose, hitOverlay, overlayBox, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -22,7 +23,7 @@ const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔'
 const TOOLS = [
   ['auto', '✦', '自動'], ['looks', '◐', 'フィルター'], ['light', '☀', 'ライト'], ['color', '◒', 'カラー'], ['hsl', '◍', 'HSL'], ['curves', '∿', 'カーブ'],
   ['grade', '◑', 'グレーディング'], ['detail', '◇', 'ディテール'], ['effects', '✧', '効果'], ['crop', '⌗', '切り抜き'], ['local', '◎', '部分補正'],
-  ['heal', '✚', '修復'], ['hide', '▦', 'モザイク'], ['text', 'A', '文字'], ['sticker', '☺', 'スタンプ'], ['draw', '✎', '描画'], ['frame', '▢', 'フレーム'], ['info', 'ⓘ', '情報'],
+  ['skin', '❀', '美肌'], ['heal', '✚', '修復'], ['hide', '▦', 'モザイク'], ['text', 'A', '文字'], ['sticker', '☺', 'スタンプ'], ['draw', '✎', '描画'], ['frame', '▢', 'フレーム'], ['info', 'ⓘ', '情報'],
 ];
 const prefs = {
   get(k, d) { try { const v = localStorage.getItem(`temoto:${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -149,11 +150,22 @@ async function prepare(proj, blob, maxTex) {
   return { base, W: ws.w, H: ws.h, scaled: ws.scaled, origW: proj.w, origH: proj.h };
 }
 
-function retouchCanvas(base, ops) {
+/** 修復・モザイクと美肌を元写真の画素に当てる（美肌が先。あとから足す修復は、美肌の後の画素にそのまま重ねられる） */
+function retouchCanvas(base, ops, portrait, cache) {
   const c = toCanvas(base, base.width, base.height);
-  if (!ops.length) return { canvas: c, data: null };
+  if (!ops.length && !portraitActive(portrait)) return { canvas: c, data: null };
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  const data = ctx.getImageData(0, 0, c.width, c.height);
+  let data;
+  if (!portraitActive(portrait)) data = ctx.getImageData(0, 0, c.width, c.height);
+  else {
+    // 美肌は重いので、同じ強さなら前の結果を使い回す（修復の取り消しなどで計算し直さない）
+    const key = JSON.stringify(portrait);
+    if (cache?.key !== key) {
+      const pd = ctx.getImageData(0, 0, c.width, c.height); applyPortrait(pd, portrait);
+      if (cache) { cache.key = key; cache.data = pd; }
+      data = cache ? new ImageData(new Uint8ClampedArray(pd.data), pd.width, pd.height) : pd;
+    } else data = new ImageData(new Uint8ClampedArray(cache.data.data), cache.data.width, cache.data.height);
+  }
   applyRetouch(data, ops);
   ctx.putImageData(data, 0, 0);
   return { canvas: c, data };
@@ -311,7 +323,7 @@ async function openEditor(id) {
   const state = S.validateState(proj.state);
   E = {
     id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: prefs.get('tool', 'looks'),
-    base: p.base, W: p.W, H: p.H, scaled: p.scaled, src: null, srcData: null, maskCache: new Map(),
+    base: p.base, W: p.W, H: p.H, scaled: p.scaled, src: null, srcData: null, maskCache: new Map(), skinCache: {},
     sel: null, selOverlay: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
   buildEditor();
@@ -321,24 +333,25 @@ async function openEditor(id) {
   if (p.scaled) toast(`大きな写真なので ${p.W}×${p.H} に縮めて編集します`);
 }
 
+const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait]);
 function rebuildSource() {
   const ops = E.state.retouch;
-  if (!ops.length) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
-  else { const r = retouchCanvas(E.base, ops); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
-  E.retouchKey = JSON.stringify(ops);
+  if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
+  else { const r = retouchCanvas(E.base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
+  E.retouchKey = sourceKey(E.state);
   E.small = null; E.thumbsKey = null;
 }
 /** 修復を1つ足す（全部やり直さず、その場所だけ書き換える） */
 function addRetouch(op) {
   if (E.state.retouch.length >= S.MAX_RETOUCH) { toast('修復・モザイクは300個までです'); return; }
   E.state.retouch.push(op);
-  if (!E.src) { const r = retouchCanvas(E.base, []); E.src = r.canvas; }
+  if (!E.src) { const r = retouchCanvas(E.base, [], null); E.src = r.canvas; }
   const ctx = E.src.getContext('2d', { willReadFrequently: true });
   if (!E.srcData) E.srcData = ctx.getImageData(0, 0, E.W, E.H);
   applyRetouch(E.srcData, [op]);
   ctx.putImageData(E.srcData, 0, 0);
   E.engine.setSource(E.src, E.W, E.H);
-  E.retouchKey = JSON.stringify(E.state.retouch);
+  E.retouchKey = sourceKey(E.state);
   E.small = null;
 }
 function maskKey() { return JSON.stringify(E.state.locals.filter((l) => l.type === 'brush').map((l) => [l.id, l.strokes])); }
@@ -374,7 +387,7 @@ function undo() { if (!E?.undo.length) return; commit(); E.redo.push(E.committed
 function redo() { if (!E?.redo.length) return; E.undo.push(E.committed); E.committed = E.redo.pop(); replaceState(); }
 function replaceState() {
   E.state = S.clone(E.committed);
-  if (JSON.stringify(E.state.retouch) !== E.retouchKey) rebuildSource();
+  if (sourceKey(E.state) !== E.retouchKey) rebuildSource();
   if (maskKey() !== E.maskKey) { E.maskCache.clear(); rebuildMask(); }
   if (E.sel && !E.state.locals.some((l) => l.id === E.sel)) E.sel = null;
   if (E.selOverlay && !E.state.overlays.some((o) => o.id === E.selOverlay)) E.selOverlay = null;
@@ -596,6 +609,7 @@ const PANELS = {
   effects() { return adjSliders('effect'); },
   crop() { return cropPanel(); },
   local() { return localPanel(); },
+  skin() { return skinPanel(); },
   heal() {
     const size = prefs.get('healSize', 3);
     return [hint('消したいもの（ほこり・ニキビ・電線など）をタップするか、なぞってください。まわりの似た場所で自然に埋めます。'),
@@ -730,6 +744,36 @@ function curveEditor() {
     chips([['rgb', 'RGB'], ['r', 'レッド'], ['g', 'グリーン'], ['b', 'ブルー']], ch, (k) => { E.curveCh = k; buildPanel(); }, { label: 'チャンネル' }).el,
     h('div', { class: 'curve-box' }, bg, svg),
     row(...presets.map(([n, p]) => btn(n, () => { E.state.curves[ch] = S.clone(p); commit(); buildPanel(); requestRender(); }, 'small ghost'))),
+  ];
+}
+
+// ── 美肌（写真館の仕上げ） ──
+const SKIN_LEVELS = [['off', 'なし', { smooth: 0, even: 0, bright: 0 }], ['light', 'ひかえめ', { smooth: 30, even: 25, bright: 10 }], ['natural', 'ナチュラル', { smooth: 50, even: 40, bright: 18 }], ['strong', 'しっかり', { smooth: 75, even: 55, bright: 28 }]];
+/** 美肌は画素を全部計算し直すので、指を離したときだけ、画面に「仕上げ中」を出してから計算する */
+function applySkin(next, after) {
+  E.state.portrait = { ...next };
+  E.stageEl.classList.add('busy');
+  requestAnimationFrame(() => setTimeout(() => {
+    if (!E) return;
+    try { rebuildSource(); } finally { E.stageEl.classList.remove('busy'); }
+    commit(); requestRender(); after?.();
+  }, 0));
+}
+function skinPanel() {
+  const p = E.state.portrait;
+  const level = SKIN_LEVELS.find(([, , v]) => S.sameState(v, p))?.[0] ?? null;
+  return [
+    hint('肌の色の場所を自動で見つけて、ムラ・赤み・くすみを整えます。肌のきめは残すので、のっぺりしません。ニキビやほくろは「修復」で消せます。'),
+    chips(SKIN_LEVELS.map(([k, label]) => [k, label]), level, (k) => applySkin(SKIN_LEVELS.find((x) => x[0] === k)[2], buildPanel), { label: '美肌の強さ' }).el,
+    ...PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ ...E.state.portrait, [k]: v }, buildPanel) }).el),
+    row(btn('✦ 写真館風におまかせ仕上げ', () => {
+      // 明るさ・色の自動補正 → 美肌（ナチュラル）→ フィルター「透明感」を少し
+      const c = smallSource(); const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+      Object.assign(E.state.adj, autoAdjust(histogram(d)));
+      E.state.look = { id: 'studio-clear', amount: 60 };
+      applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
+    }, 'primary')),
+    hint('おすすめの流れ: ①おまかせ仕上げ → ②「修復」でニキビ・後れ毛・背景のゴミを消す → ③「フィルター」の「透明感」「振袖あでやか」などで雰囲気を選ぶ → ④「切り抜き」の「L判」「2L判」でプリントの比率に。決まった仕上げは「フィルター」のマイプリセットに保存すると、他の写真にも一度で使えます。'),
   ];
 }
 
@@ -1159,7 +1203,7 @@ function renderToCanvas({ base, W, H, state }, { maxSide } = {}) {
   try {
     const st = S.validateState(state);
     let src = base;
-    if (st.retouch.length) src = retouchCanvas(base, st.retouch).canvas;
+    if (st.retouch.length || portraitActive(st.portrait)) src = retouchCanvas(base, st.retouch, st.portrait).canvas;
     eng.setSource(src, W, H);
     eng.setMask(buildMask(st, W, H));
     const o = outputSize(st.geo, W, H);

@@ -8,6 +8,7 @@ import { autoAdjust, histogram } from '../../auto.js';
 import { LOOKS, effective } from '../../presets.js';
 import { readExif } from '../../exif.js';
 import { heal, mosaic, blurRect, applyRetouch, findHealSource } from '../../retouch.js';
+import { applyPortrait, skinness } from '../../portrait.js';
 
 const near = (a, b, e = 1e-6) => assert.ok(Math.abs(a - b) < e, `${a} ≈ ${b}`);
 
@@ -44,7 +45,7 @@ test('photo: 編集内容の検証（不正な値・型・件数を直す）', (
 test('photo: プリセットは色と明るさだけを運ぶ（切り抜きや文字は運ばない）', () => {
   const s = defaultState(); s.adj.exposure = 30; s.geo.rot = 1; s.overlays = [{ type: 'sticker', emoji: '⭐' }];
   const p = presetPart(s);
-  assert.deepEqual(Object.keys(p).sort(), ['adj', 'curves', 'grade', 'hsl', 'look']);
+  assert.deepEqual(Object.keys(p).sort(), ['adj', 'curves', 'grade', 'hsl', 'look', 'portrait']);
   const t = applyPreset(defaultState(), JSON.parse(JSON.stringify(p)));
   assert.equal(t.adj.exposure, 30); assert.equal(t.geo.rot, 0);
 });
@@ -205,4 +206,60 @@ test('photo: モザイク・ぼかし・操作の再現', () => {
   const ops = [{ type: 'heal', x: 0.5, y: 0.5, r: 0.05, sx: null, sy: null }, { type: 'mosaic', x: 0, y: 0, w: 0.2, h: 0.2, size: 20 }];
   applyRetouch(img(50, 50, () => [100, 100, 100]), ops);
   assert.ok(ops[0].sx != null, '自動で選んだコピー元を記録する');
+});
+
+// 肌（ノイズとシミ入り）・眉（暗い線）・青い背景の画像
+function facePhoto(W = 300, H = 240) {
+  const data = new Uint8ClampedArray(W * H * 4); let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const k = (y * W + x) * 4; let c;
+    if (x >= 200) c = [60, 110, 200]; // 背景
+    else if (y >= 40 && y < 46 && x > 40 && x < 160) c = [50, 35, 30]; // 眉
+    else { const n = (rnd() - 0.5) * 30; const spot = Math.hypot(x - 100, y - 140) < 4 ? [-4, -24, -20] : [0, 0, 0]; /* 赤いシミ */ c = [225 + n + spot[0], 180 + n + spot[1], 155 + n + spot[2]]; }
+    data[k] = c[0]; data[k + 1] = c[1]; data[k + 2] = c[2]; data[k + 3] = 255;
+  }
+  return { width: W, height: H, data };
+}
+const regionStat = (img, x0, y0, x1, y1, ch = 0) => { let s = 0; let s2 = 0; let n = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const v = img.data[(y * img.width + x) * 4 + ch]; s += v; s2 += v * v; n++; } return { mean: s / n, sd: Math.sqrt(s2 / n - (s / n) ** 2) }; };
+
+test('photo: 美肌 — 肌の色だけを判定する', () => {
+  assert.ok(skinness(225, 180, 155) > 0.9); // 明るい肌
+  assert.ok(skinness(170, 120, 95) > 0.5); // 影の肌
+  assert.equal(skinness(60, 110, 200), 0); // 青空
+  assert.equal(skinness(128, 128, 128), 0); // 灰色
+  assert.equal(skinness(200, 20, 40), 0); // 真っ赤な振袖
+  assert.equal(skinness(20, 15, 12), 0); // 黒髪
+});
+
+test('photo: 美肌 — 肌のムラ・シミは整い、眉と背景はそのまま', () => {
+  const img = facePhoto(); const before = facePhoto();
+  applyPortrait(img, { smooth: 0, even: 0, bright: 0 });
+  assert.deepEqual(img.data, before.data); // 0 なら何もしない
+  applyPortrait(img, { smooth: 80, even: 60, bright: 20 });
+  // シミ（緑が暗い円）がまわりに近づく
+  const spot0 = regionStat(before, 98, 138, 102, 142, 1).mean; const spot1 = regionStat(img, 98, 138, 102, 142, 1).mean; const skinG = regionStat(before, 20, 80, 60, 120, 1).mean;
+  assert.ok(Math.abs(skinG - spot1) < Math.abs(skinG - spot0) * 0.6, `シミ ${spot0} → ${spot1}（肌 ${skinG}）`);
+  // きめ（細かいノイズ）は残るが、少し穏やかになる
+  const sd0 = regionStat(before, 20, 80, 60, 120).sd; const sd1 = regionStat(img, 20, 80, 60, 120).sd;
+  assert.ok(sd1 < sd0 && sd1 > sd0 * 0.2, `きめ ${sd0} → ${sd1}`);
+  // 肌は明るく
+  assert.ok(regionStat(img, 20, 80, 60, 120).mean > regionStat(before, 20, 80, 60, 120).mean + 2);
+  // 眉は暗いまま、背景は変わらない
+  assert.ok(regionStat(img, 60, 41, 140, 45).mean < 70);
+  assert.deepEqual(regionStat(img, 220, 0, 300, 240), regionStat(before, 220, 0, 300, 240));
+});
+
+test('photo: 美肌の値の検証・プリントの比率', () => {
+  const v = validateState({ portrait: { smooth: 500, even: 'x', bright: -3 } });
+  assert.deepEqual(v.portrait, { smooth: 100, even: 0, bright: 0 });
+  assert.deepEqual(defaultState().portrait, { smooth: 0, even: 0, bright: 0 });
+  // 美肌を含まない古いプリセットを当てても、今の美肌は消えない
+  const s = defaultState(); s.portrait.smooth = 40;
+  assert.equal(applyPreset(s, { adj: { exposure: 10 } }).portrait.smooth, 40);
+  assert.equal(applyPreset(s, presetPart(defaultState())).portrait.smooth, 0);
+  // L判は 89×127mm。縦の写真なら縦長、横の写真なら横長
+  near(aspectValue('print-L', 3000, 4000), 89 / 127); near(aspectValue('print-L', 4000, 3000), 127 / 89);
+  near(aspectValue('print-A4', 2000, 3000), 210 / 297);
+  assert.equal(validateState({ geo: { aspect: 'print-2L' } }).geo.aspect, 'print-2L');
+  assert.ok(LOOKS.filter((l) => l.group === 'studio').length >= 5);
 });
