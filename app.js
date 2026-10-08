@@ -18,6 +18,7 @@ import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
+const VERSION = '1.2.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
@@ -47,12 +48,25 @@ async function decode(blob) {
 /** 大きすぎる写真は、端末が扱える大きさに縮める */
 function workSize(w, hgt, maxTex = MAX_SIDE) {
   const s = Math.min(1, Math.sqrt(MAX_PIXELS / (w * hgt)), Math.min(MAX_SIDE, maxTex) / Math.max(w, hgt));
-  return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(hgt * s)), scaled: s < 1 };
+  return { w: Math.max(1, Math.floor(w * s)), h: Math.max(1, Math.floor(hgt * s)), scaled: s < 1 }; // 切り捨てて、上限を超えないように
 }
 function toCanvas(src, w, hgt) {
   const c = document.createElement('canvas'); c.width = w; c.height = hgt;
   c.getContext('2d').drawImage(src, 0, 0, w, hgt);
   return c;
+}
+/** 高画質で縮める（一度に半分より小さくすると細部がつぶれるので、半分ずつ段階的に） */
+function shrink(src, w, hgt) {
+  let cur = src; let cw = src.width; let ch = src.height;
+  do {
+    const nw = Math.max(w, Math.round(cw / 2)); const nh = Math.max(hgt, Math.round(ch / 2));
+    const c = document.createElement('canvas'); c.width = nw; c.height = nh;
+    const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(cur, 0, 0, nw, nh);
+    if (cur !== src) { cur.width = 0; cur.height = 0; } // 途中の Canvas のメモリをすぐ返す
+    cur = c; cw = nw; ch = nh;
+  } while (cw !== w || ch !== hgt);
+  return cur;
 }
 async function thumbBlob(src, side = 360) {
   const s = Math.min(1, side / Math.max(src.width, src.height));
@@ -143,9 +157,8 @@ async function prepare(proj, blob, maxTex) {
   const ws = workSize(bmp.width, bmp.height, maxTex);
   let base = bmp;
   if (ws.w !== bmp.width || ws.h !== bmp.height) {
-    // 縮小に対応していないブラウザ（大きさが変わらない）では Canvas で縮める
-    try { base = await createImageBitmap(bmp, { resizeWidth: ws.w, resizeHeight: ws.h, resizeQuality: 'high' }); } catch { base = bmp; }
-    if (base.width !== ws.w || base.height !== ws.h) { if (base !== bmp) base.close?.(); base = toCanvas(bmp, ws.w, ws.h); }
+    // createImageBitmap の縮小は、ブラウザによっては画質の指定が効かず粗くなるので、Canvas で高画質に縮める
+    base = shrink(bmp, ws.w, ws.h);
     bmp.close?.();
   }
   return { base, W: ws.w, H: ws.h, scaled: ws.scaled, origW: proj.w, origH: proj.h };
@@ -331,7 +344,7 @@ async function openEditor(id) {
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
   requestRender();
-  if (p.scaled) toast(`大きな写真なので ${p.W}×${p.H} に縮めて編集します`);
+  if (p.scaled) toast(`写真が大きいので、この端末で扱える ${p.W}×${p.H}（約${Math.round(p.W * p.H / 10000)}万画素）で編集します。2L判・A4 のプリントにも十分な大きさです`, 5000);
 }
 
 const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait]);
@@ -896,7 +909,7 @@ function infoPanel() {
   const p = E.proj; const x = p.exif;
   const name = h('input', { id: 'proj-name', maxlength: 80, value: p.name });
   name.addEventListener('change', () => { E.proj.name = name.value.trim().slice(0, 80) || '写真'; db.putProject(E.proj); $('.ed-title').textContent = E.proj.name; });
-  const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
+  const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['アプリの版', VERSION], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
     ...(p.raw ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
     ['書き出す大きさ（元の大きさのとき）', (() => {
       const o = outputSize(E.state.geo, E.W, E.H); const L0 = layout(o.w, o.h, E.state.frame);

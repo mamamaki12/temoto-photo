@@ -449,3 +449,31 @@ test('枠と余白をつけても、書き出しは端末の上限（約1,670万
   await page.locator('canvas.view').click();
   expect(await page.locator('.menu').evaluate((m) => m.open)).toBe(false);
 });
+
+test('大きな写真は高画質に縮めて開く（縞模様がつぶれない）・縮めたことと大きさを知らせる', async ({ page }) => {
+  await page.goto(URL0);
+  // 約2,200万画素（上限の約1,670万画素を超える）。4画素ごとの白黒の縞
+  const b64 = await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 5760; c.height = 3840; const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.fillStyle = '#000';
+    for (let i = 0; i < c.width; i += 8) x.fillRect(i, 0, 4, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  await openWith(page, { name: 'big.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
+  await expect(page.locator('.toast').filter({ hasText: '万画素' })).toBeVisible();
+  const { W, H } = await page.evaluate(() => ({ W: window.__temoto.editor.W, H: window.__temoto.editor.H }));
+  expect(W * H).toBeLessThanOrEqual(16_700_000);
+  expect(W).toBeGreaterThan(4900);
+  // 縮めた元画像の縞: 平均は灰色のまま、行ごとの縞の濃淡が残っている（ギザギザに欠けたりしない）
+  const st = await page.evaluate(() => {
+    const b = window.__temoto.editor.base; const c = document.createElement('canvas'); c.width = 400; c.height = 1;
+    c.getContext('2d').drawImage(b, 1000, 1000, 400, 1, 0, 0, 400, 1);
+    const d = c.getContext('2d').getImageData(0, 0, 400, 1).data; let s = 0; let mn = 255; let mx = 0;
+    for (let i = 0; i < d.length; i += 4) { s += d[i]; mn = Math.min(mn, d[i]); mx = Math.max(mx, d[i]); }
+    return { mean: s / 400, mn, mx };
+  });
+  expect(Math.abs(st.mean - 127)).toBeLessThan(20);
+  expect(st.mx - st.mn).toBeGreaterThan(120);
+});
