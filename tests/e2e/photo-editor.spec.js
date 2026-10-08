@@ -234,6 +234,38 @@ test('スポット修復で黒い点が消え、モザイクで細部が消え�
   expect(await sd()).not.toBe(before);
 });
 
+test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ねられる・プリントの比率で切り抜ける', async ({ page }) => {
+  await openWith(page);
+  const FACE = [0.28, 0.57, 0.32, 0.63]; // テスト画像の肌色の円
+  const f0 = lum(await viewMean(page, FACE)); const s0 = await viewMean(page, SKY);
+  await tab(page, '美肌');
+  await page.getByRole('button', { name: 'しっかり' }).click();
+  await page.waitForFunction(() => window.__temoto.state.portrait.smooth === 75);
+  await page.waitForTimeout(300);
+  expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2.5);
+  const s1 = await viewMean(page, SKY);
+  for (let c = 0; c < 3; c++) expect(Math.abs(s1[c] - s0[c])).toBeLessThan(1);
+  await expect(page.getByRole('button', { name: 'しっかり' })).toHaveAttribute('aria-pressed', 'true');
+  // 美肌のあとに修復しても、両方が残る
+  const dust = [0.61, 0.24, 0.63, 0.26]; const d0 = lum(await viewMean(page, dust));
+  await tab(page, '修復'); await tapAt(page, 0.62, 0.25); await page.waitForTimeout(200);
+  expect(lum(await viewMean(page, dust))).toBeGreaterThan(d0 + 25);
+  expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2.5);
+  // 元に戻すで修復だけが消える
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click(); await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__temoto.state.retouch.length)).toBe(0);
+  expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2.5);
+  // おまかせ仕上げ
+  await tab(page, '美肌');
+  await page.getByRole('button', { name: '✦ 写真館風におまかせ仕上げ' }).click();
+  await page.waitForFunction(() => window.__temoto.state.look.id === 'studio-clear' && window.__temoto.state.portrait.smooth === 50);
+  // L判（横の写真なので横長 127:89）
+  await tab(page, '切り抜き');
+  await page.getByRole('button', { name: 'L判', exact: true }).click();
+  const c = await page.evaluate(() => window.__temoto.state.geo.crop);
+  expect(Math.abs((c.w * 1200) / (c.h * 800) - 127 / 89)).toBeLessThan(0.01);
+});
+
 test('文字（XSSの文字列も文字として描くだけ）・ドラッグで移動・スタンプ・描画', async ({ page }) => {
   await openWith(page);
   const m0 = await viewMean(page);

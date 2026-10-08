@@ -7,6 +7,12 @@ export const LOOKS = [
   { id: 'bright', name: 'あかるく', group: 'basic', adj: { exposure: 18, shadows: 25, highlights: -15, vibrance: 10 } },
   { id: 'warm', name: 'あたたか', group: 'basic', adj: { temp: 28, vibrance: 10 } },
   { id: 'cool', name: 'すずしげ', group: 'basic', adj: { temp: -26, tint: 4, vibrance: 8 } },
+  // 成人式・振袖・七五三などの記念写真向け（写真館の仕上げに近い、肌はきれいに・着物の色は鮮やかに）
+  { id: 'studio-clear', name: '透明感', group: 'studio', adj: { exposure: 10, contrast: -8, highlights: -18, shadows: 18, whites: 6, temp: -8, tint: 4, saturation: -6, vibrance: 6 }, grade: { highs: { h: 210, s: 6 } }, hsl: { orange: { s: -12, l: 12 }, red: { s: -6 } } },
+  { id: 'studio-furisode', name: '振袖あでやか', group: 'studio', adj: { contrast: 10, vibrance: 22, clarity: 4, highlights: -12, shadows: 10 }, hsl: { red: { s: 12 }, magenta: { s: 10 }, purple: { s: 8 }, orange: { s: -8, l: 8 } } },
+  { id: 'studio-white', name: 'スタジオ白', group: 'studio', adj: { exposure: 14, whites: 18, highlights: -6, shadows: 20, contrast: 4, temp: -4, vibrance: 6 }, hsl: { orange: { s: -6, l: 10 } } },
+  { id: 'studio-wa', name: '和モダン', group: 'studio', adj: { contrast: 6, saturation: -12, fade: 10, temp: 8, clarity: -6 }, grade: { shadows: { h: 200, s: 10 }, highs: { h: 40, s: 12 } }, hsl: { red: { s: 6, l: -6 }, orange: { l: 8 } } },
+  { id: 'studio-soft', name: 'ふんわり', group: 'studio', adj: { exposure: 8, contrast: -14, highlights: -10, bloom: 22, clarity: -10, fade: 8 }, grade: { highs: { h: 340, s: 8 } }, hsl: { orange: { s: -8, l: 10 } } },
   { id: 'film-portra', name: 'フィルム・ポートレート', group: 'film', adj: { contrast: -12, temp: 12, saturation: -10, fade: 18, grain: 18, highlights: -12 }, grade: { shadows: { h: 200, s: 12 }, highs: { h: 40, s: 14 } }, hsl: { orange: { s: -8, l: 6 } } },
   { id: 'film-fuji', name: 'フィルム・グリーン', group: 'film', adj: { contrast: 10, temp: -6, fade: 10, grain: 20, saturation: -6 }, grade: { shadows: { h: 160, s: 18 }, highs: { h: 50, s: 8 } }, hsl: { green: { h: 12, s: -15 }, blue: { s: 10 } } },
   { id: 'film-gold', name: 'ゴールド', group: 'film', adj: { temp: 32, contrast: 8, vibrance: 10, fade: 8, grain: 15, halation: 25 }, grade: { highs: { h: 42, s: 22 } } },
