@@ -1,4 +1,5 @@
-// 美肌（写真館の「肌の仕上げ」）。肌の色の場所を自動で見つけて、元写真の画素（ImageData）を直接書き換える。
+// 美肌（写真館の「肌の仕上げ」）。肌の場所を見つけて（タップした肌の色と、そこからのつながりで。タップがなければ一般的な肌の色で）、
+// 元写真の画素（ImageData）を直接書き換える。
 // - なめらかに: 肌のムラ（ニキビ跡・毛穴の影・赤み）になる「中くらいの細かさ」だけを平らにし、肌のきめ（細かい質感）は残す
 //   （周波数分離: 細かい成分＝きめ はそのまま、粗い成分は「肌の画素だけ」で平均を取るので、髪・眉・目の色が混ざらない）
 // - 色むら・赤み: 肌の平均の色より赤いところを、平均に近づける
@@ -55,6 +56,97 @@ export function skinMask(img) {
   return m;
 }
 
+const toYcc = (r, g, b) => [0.299 * r + 0.587 * g + 0.114 * b, 128 - 0.168736 * r - 0.331264 * g + 0.5 * b, 128 + 0.5 * r - 0.418688 * g - 0.081312 * b];
+
+/**
+ * 肌の重み（0〜1、W×H）。
+ * 肌の場所（p.seeds: 写真上の [x, y]、0〜1）が選ばれていれば、
+ *   ① その場所の肌の色に近い色だけを肌とみなし（p.tol: 色の幅 0〜100）、
+ *   ② さらに、選んだ場所から「色が急に変わらずに」つながっている範囲だけに絞る。
+ *      肌に似た色の背景（ベージュの壁・木・布）も、顔とつながっていなければ外れる。
+ * 選ばれていなければ、一般的な肌の色の範囲で判定する（背景が肌に似た色だと、背景も含まれる）。
+ */
+export function skinWeights(img, p) {
+  const seeds = p?.seeds || [];
+  if (!seeds.length) return skinMask(img);
+  const { width: W, height: H, data: d } = img; const N = W * H; const S = Math.min(W, H);
+  // ① 選んだ場所のまわりの、肌の色（Cb・Cr）
+  const rad = Math.max(2, Math.round(S / 120));
+  const refs = seeds.map(([sx, sy]) => {
+    const cx = Math.round(sx * (W - 1)); const cy = Math.round(sy * (H - 1)); let cb = 0; let cr = 0; let n = 0;
+    for (let y = Math.max(0, cy - rad); y <= Math.min(H - 1, cy + rad); y++) for (let x = Math.max(0, cx - rad); x <= Math.min(W - 1, cx + rad); x++) {
+      const k = (y * W + x) * 4; const [Y, b, r] = toYcc(d[k], d[k + 1], d[k + 2]); if (Y < 20) continue; cb += b; cr += r; n++;
+    }
+    return n ? [cb / n, cr / n] : null;
+  }).filter(Boolean);
+  if (!refs.length) return new Float32Array(N);
+  const T = 5 + ((p.tol ?? 50) / 100) * 20; const soft = T * 0.7;
+  const w = new Float32Array(N);
+  for (let i = 0, k = 0; i < N; i++, k += 4) {
+    const r = d[k]; const g = d[k + 1]; const b = d[k + 2];
+    const Y = 0.299 * r + 0.587 * g + 0.114 * b; if (Y < 18) continue;
+    const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b; const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+    let best = Infinity; for (const [rb, rr] of refs) { const q = (cb - rb) ** 2 + (cr - rr) ** 2; if (q < best) best = q; }
+    const dist = Math.sqrt(best);
+    w[i] = dist <= T ? 1 : dist >= T + soft ? 0 : 1 - (dist - T) / soft;
+  }
+  // ② 選んだ場所からつながっている範囲（粗いマス目で、となりのマスと色が近いときだけ広げる）
+  const g = Math.max(1, Math.ceil(Math.max(W, H) / 360)); const gw = Math.ceil(W / g); const gh = Math.ceil(H / g); const G = gw * gh;
+  const mw = new Float32Array(G); const mY = new Float32Array(G); const mb = new Float32Array(G); const mr = new Float32Array(G); const vc = new Float32Array(G); const cnt = new Float32Array(G);
+  const colOf = new Int32Array(W); for (let x = 0; x < W; x++) colOf[x] = (x / g) | 0;
+  for (let y = 0, i = 0; y < H; y++) {
+    const o = ((y / g) | 0) * gw;
+    for (let x = 0; x < W; x++, i++) {
+      const j = o + colOf[x]; const k = i * 4; const [Y, cb, cr] = toYcc(d[k], d[k + 1], d[k + 2]);
+      mw[j] += w[i]; mY[j] += Y; mb[j] += cb; mr[j] += cr; vc[j] += cb * cb + cr * cr; cnt[j]++;
+    }
+  }
+  // vc: マスの中の色のばらつき（くっきりした境目をまたぐマスは大きい）
+  for (let j = 0; j < G; j++) { mw[j] /= cnt[j]; mY[j] /= cnt[j]; mb[j] /= cnt[j]; mr[j] /= cnt[j]; vc[j] = Math.sqrt(Math.max(0, vc[j] / cnt[j] - mb[j] * mb[j] - mr[j] * mr[j])); }
+  const gate = new Uint8Array(G); const queue = new Int32Array(G); let qh = 0; let qt = 0;
+  for (const [sx, sy] of seeds) {
+    const j = Math.min(gh - 1, (sy * (H - 1) / g) | 0) * gw + Math.min(gw - 1, (sx * (W - 1) / g) | 0);
+    if (!gate[j]) { gate[j] = 1; queue[qt++] = j; }
+  }
+  // となりのマスとの色の差、またはマスの中の色のばらつきがこれより大きいと「境目」として越えない
+  const stepY = 10 + T * 0.4; const stepC = 3 + T * 0.2; const edgeC = 2.5 + T * 0.15;
+  while (qh < qt) {
+    const j = queue[qh++]; const x = j % gw; const y = (j / gw) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx; const ny = y + dy; if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+      const n = ny * gw + nx; if (gate[n] || mw[n] < 0.3 || vc[n] > edgeC) continue;
+      if (Math.abs(mY[n] - mY[j]) > stepY || Math.hypot(mb[n] - mb[j], mr[n] - mr[j]) > stepC) continue;
+      gate[n] = 1; queue[qt++] = n;
+    }
+  }
+  // マスの境目がカクカクしないよう、1マス広げてからぼかし、なめらかに引き伸ばす
+  let soft2 = new Float32Array(G);
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    let on = 0; for (let dy = -1; dy <= 1 && !on; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx; const ny = y + dy; if (nx >= 0 && ny >= 0 && nx < gw && ny < gh && gate[ny * gw + nx]) { on = 1; break; } }
+    soft2[y * gw + x] = on;
+  }
+  soft2 = boxBlur(soft2, gw, gh, 1, 1);
+  for (let y = 0, i = 0; y < H; y++) {
+    const fy = Math.min(gh - 1, Math.max(0, (y + 0.5) / g - 0.5)); const y0 = fy | 0; const y1 = Math.min(gh - 1, y0 + 1); const ty = fy - y0;
+    for (let x = 0; x < W; x++, i++) {
+      if (w[i] === 0) continue;
+      const fx = Math.min(gw - 1, Math.max(0, (x + 0.5) / g - 0.5)); const x0 = fx | 0; const x1 = Math.min(gw - 1, x0 + 1); const tx = fx - x0;
+      const top = soft2[y0 * gw + x0] + (soft2[y0 * gw + x1] - soft2[y0 * gw + x0]) * tx; const bot = soft2[y1 * gw + x0] + (soft2[y1 * gw + x1] - soft2[y1 * gw + x0]) * tx;
+      w[i] *= Math.min(1, (top + (bot - top) * ty) * 1.5);
+    }
+  }
+  return w;
+}
+
+/** 肌と判定した範囲を赤く重ねる（確認用。img の画素に色をつける。weightsFrom は判定に使う元の画像） */
+export function tintSkin(img, weightsFrom, p) {
+  const w = skinWeights(weightsFrom, p); const d = img.data;
+  for (let i = 0, k = 0; i < w.length; i++, k += 4) {
+    const a = w[i] * 0.55; if (a <= 0) continue;
+    d[k] = d[k] + (255 - d[k]) * a; d[k + 1] *= 1 - a * 0.8; d[k + 2] *= 1 - a * 0.6;
+  }
+}
+
 const active = (p) => !!p && (p.smooth > 0 || p.even > 0 || p.bright > 0);
 export { active as portraitActive };
 
@@ -63,7 +155,7 @@ export function applyPortrait(img, p) {
   if (!active(p)) return;
   const { width: W, height: H, data: d } = img; const S = Math.min(W, H);
   // 肌のある範囲（＋ぼかしの届く余白）だけを切り出して計算する（背景の多い写真ほど速い）
-  const full = skinMask(img);
+  const full = skinWeights(img, p);
   let x0 = W; let y0 = H; let x1 = -1; let y1 = -1;
   for (let y = 0, i = 0; y < H; y++) {
     let any = false;

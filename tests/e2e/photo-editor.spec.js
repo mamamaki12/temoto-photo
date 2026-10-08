@@ -477,3 +477,42 @@ test('大きな写真は高画質に縮めて開く（縞模様がつぶれな�
   expect(Math.abs(st.mean - 127)).toBeLessThan(20);
   expect(st.mx - st.mn).toBeGreaterThan(120);
 });
+
+test('美肌: 顔をタップすると、肌に似た色の背景は変えない・範囲を赤で表示できる', async ({ page }) => {
+  await page.goto(URL0);
+  // ベージュの壁の前の、髪に囲まれた顔
+  const b64 = await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 1200; c.height = 800; const x = c.getContext('2d');
+    x.fillStyle = 'rgb(222,196,166)'; x.fillRect(0, 0, 1200, 800);
+    x.fillStyle = 'rgb(35,25,22)'; x.beginPath(); x.arc(420, 400, 250, 0, 7); x.fill();
+    x.fillStyle = 'rgb(228,182,158)'; x.beginPath(); x.arc(420, 400, 200, 0, 7); x.fill();
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  await openWith(page, { name: 'wall.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
+  const WALL = [0.8, 0.2, 0.95, 0.8]; const FACE = [0.32, 0.45, 0.38, 0.55];
+  const w0 = await viewMean(page, WALL); const f0 = lum(await viewMean(page, FACE));
+  await tab(page, '美肌');
+  await expect(page.getByText('肌の場所: 未選択')).toBeVisible();
+  await tapAt(page, 0.35, 0.5);
+  await page.waitForFunction(() => window.__temoto.state.portrait.seeds.length === 1 && window.__temoto.state.portrait.smooth === 50);
+  await page.waitForTimeout(300);
+  await expect(page.getByText('肌として選んだ場所: 1か所')).toBeVisible();
+  expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2);
+  const w1 = await viewMean(page, WALL);
+  for (let c = 0; c < 3; c++) expect(Math.abs(w1[c] - w0[c])).toBeLessThan(1);
+  // 範囲の表示: 顔だけが赤くなる
+  await page.getByLabel('肌と判定した範囲を赤で表示').check();
+  await page.waitForTimeout(500);
+  const fr = await viewMean(page, FACE); const wr = await viewMean(page, WALL);
+  expect(fr[0] - fr[1]).toBeGreaterThan(90);
+  for (let c = 0; c < 3; c++) expect(Math.abs(wr[c] - w0[c])).toBeLessThan(1);
+  // 別の道具に移ると、赤い表示は消える（保存される編集には入らない）
+  await tab(page, 'ライト'); await page.waitForTimeout(400);
+  expect((await viewMean(page, FACE))[0] - (await viewMean(page, FACE))[1]).toBeLessThan(60);
+  // 選び直す
+  await tab(page, '美肌');
+  await page.getByRole('button', { name: '選び直す' }).click();
+  await page.waitForFunction(() => window.__temoto.state.portrait.seeds.length === 0);
+});

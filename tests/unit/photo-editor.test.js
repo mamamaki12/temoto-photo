@@ -8,7 +8,7 @@ import { autoAdjust, histogram } from '../../auto.js';
 import { LOOKS, effective } from '../../presets.js';
 import { readExif } from '../../exif.js';
 import { heal, mosaic, blurRect, applyRetouch, findHealSource } from '../../retouch.js';
-import { applyPortrait, skinness } from '../../portrait.js';
+import { applyPortrait, skinness, skinWeights } from '../../portrait.js';
 
 const near = (a, b, e = 1e-6) => assert.ok(Math.abs(a - b) < e, `${a} ≈ ${b}`);
 
@@ -251,8 +251,16 @@ test('photo: 美肌 — 肌のムラ・シミは整い、眉と背景はその�
 
 test('photo: 美肌の値の検証・プリントの比率', () => {
   const v = validateState({ portrait: { smooth: 500, even: 'x', bright: -3 } });
-  assert.deepEqual(v.portrait, { smooth: 100, even: 0, bright: 0 });
-  assert.deepEqual(defaultState().portrait, { smooth: 0, even: 0, bright: 0 });
+  assert.deepEqual(v.portrait, { smooth: 100, even: 0, bright: 0, tol: 50, seeds: [] });
+  assert.deepEqual(defaultState().portrait, { smooth: 0, even: 0, bright: 0, tol: 50, seeds: [] });
+  assert.deepEqual(validateState({ portrait: { seeds: [[0.5, 2], 'x', [-1, 0.3]], tol: 'a' } }).portrait.seeds, [[0.5, 1], [0, 0.3]]);
+  assert.equal(validateState({ portrait: { seeds: Array(50).fill([0.5, 0.5]) } }).portrait.seeds.length, 12);
+  // 肌の場所は写真ごとのものなので、プリセットでは運ばない（当てる側の場所を残す）
+  const withSeeds = defaultState(); withSeeds.portrait.seeds = [[0.3, 0.4]]; withSeeds.portrait.smooth = 60;
+  assert.equal(presetPart(withSeeds).portrait.seeds, undefined);
+  const target = defaultState(); target.portrait.seeds = [[0.7, 0.7]];
+  const applied = applyPreset(target, presetPart(withSeeds));
+  assert.deepEqual(applied.portrait.seeds, [[0.7, 0.7]]); assert.equal(applied.portrait.smooth, 60);
   // 美肌を含まない古いプリセットを当てても、今の美肌は消えない
   const s = defaultState(); s.portrait.smooth = 40;
   assert.equal(applyPreset(s, { adj: { exposure: 10 } }).portrait.smooth, 40);
@@ -262,4 +270,43 @@ test('photo: 美肌の値の検証・プリントの比率', () => {
   near(aspectValue('print-A4', 2000, 3000), 210 / 297);
   assert.equal(validateState({ geo: { aspect: 'print-2L' } }).geo.aspect, 'print-2L');
   assert.ok(LOOKS.filter((l) => l.group === 'studio').length >= 5);
+});
+
+// ベージュの壁（肌に近い色）の前の、髪に囲まれた顔
+function wallPhoto(W = 320, H = 240, hair = true) {
+  const data = new Uint8ClampedArray(W * H * 4); let seed = 3; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const k = (y * W + x) * 4; const n = (rnd() - 0.5) * 16; const r = Math.hypot(x - 110, y - 120);
+    let c = [222 + n, 196 + n, 166 + n]; // ベージュの壁
+    if (r < 60) c = [228 + n, 182 + n, 158 + n]; // 顔
+    else if (r < 75 && hair) c = [35 + n, 25 + n, 22 + n]; // 髪
+    data[k] = c[0]; data[k + 1] = c[1]; data[k + 2] = c[2]; data[k + 3] = 255;
+  }
+  return { width: W, height: H, data };
+}
+const meanW = (w, W, x0, y0, x1, y1) => { let s = 0; let n = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { s += w[y * W + x]; n++; } return s / n; };
+
+test('photo: 美肌 — 肌をタップすると、肌に似た色の背景を外せる', () => {
+  const img = wallPhoto();
+  // タップなし（色だけで判定）だと、壁も肌になってしまう
+  const auto = skinWeights(img, { seeds: [] });
+  assert.ok(meanW(auto, 320, 240, 20, 310, 220) > 0.5, '色だけだと壁も肌');
+  // 顔をタップすると、顔だけが肌になる
+  const w = skinWeights(img, { seeds: [[110 / 319, 120 / 239]], tol: 50 });
+  assert.ok(meanW(w, 320, 90, 100, 130, 140) > 0.9, '顔は肌');
+  assert.ok(meanW(w, 320, 240, 20, 310, 220) < 0.02, '壁は肌ではない');
+  assert.ok(meanW(w, 320, 0, 0, 30, 30) < 0.02, '左上の壁も');
+  // 美肌を当てても、壁の画素は変わらない
+  const before = wallPhoto(); const out = wallPhoto();
+  applyPortrait(out, { smooth: 80, even: 60, bright: 30, seeds: [[110 / 319, 120 / 239]], tol: 50 });
+  assert.deepEqual(regionStat(out, 240, 20, 310, 220), regionStat(before, 240, 20, 310, 220));
+  assert.ok(regionStat(out, 90, 100, 130, 140).mean > regionStat(before, 90, 100, 130, 140).mean + 2);
+  // 壁をタップすると、壁のほうが選ばれる（タップした色が基準）
+  const ww = skinWeights(img, { seeds: [[0.9, 0.5]], tol: 50 });
+  assert.ok(meanW(ww, 320, 240, 20, 310, 220) > 0.8);
+  // 髪がなく、顔が壁にじかに接していても、くっきりした境目は越えない
+  const bare = wallPhoto(320, 240, false);
+  const wb = skinWeights(bare, { seeds: [[110 / 319, 120 / 239]], tol: 50 });
+  assert.ok(meanW(wb, 320, 90, 100, 130, 140) > 0.9, '顔は肌');
+  assert.ok(meanW(wb, 320, 240, 20, 310, 220) < 0.05, `壁は肌ではない ${meanW(wb, 320, 240, 20, 310, 220)}`);
 });
