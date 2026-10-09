@@ -285,7 +285,7 @@ function portraitCore(img, p, S, raw) {
   let Ls = null; let Ll = null; let lw = 0; let lh = 0; let f = 1;
   if (a > 0) {
     // 細かい成分（きめ）: 小さいぼかしとの差
-    const rs = Math.max(1, Math.round(S / 1400));
+    const rs = Math.max(1, Math.round(S / 700)); // 毛穴くらいの細かさまでを「きめ」として残す（これより小さいと毛穴まで消えてのっぺりする）
     Ls = [boxBlur(R.slice(), W, H, rs, 2), boxBlur(G.slice(), W, H, rs, 2), boxBlur(B.slice(), W, H, rs, 2)];
     // 粗い成分: 縮めた画像で「肌の画素だけ」の平均（正規化畳み込み）。髪や眉の色が肌ににじまない
     const rl = Math.max(2, Math.round(S / 90));
@@ -315,7 +315,7 @@ function portraitCore(img, p, S, raw) {
   };
   const tx = a > 0 ? tab(W, lw) : null; const ty = a > 0 ? tab(H, lh) : null;
   const up = [0, 0, 0, 0];
-  const keepTex = 1 - 0.35 * a; // きめは少しだけ弱める（残しすぎるとザラつき、消しすぎるとのっぺりする）
+  const keepTex = 1 - 0.15 * a; // きめはほんの少しだけ弱める（残しすぎるとザラつき、消しすぎるとのっぺりする）
   const T = 34; // これより大きい差は「輪郭」とみなして平らにしない
   for (let y = 0, i = 0; y < H; y++) {
     const r0 = ty ? ty.i0[y] * lw : 0; const r1 = ty ? ty.i1[y] * lw : 0; const wy = ty ? ty.t[y] : 0;
