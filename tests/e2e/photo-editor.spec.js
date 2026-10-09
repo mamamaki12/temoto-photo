@@ -304,6 +304,19 @@ test('文字・スタンプ・描画のタブはない（成人式の写真の�
   for (const t of ['フィルター', '美肌', 'フレーム']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(1);
 });
 
+test('前に選んでいたタブがなくなっていても（描画・RAW 以外の写真での RAW）、写真を表示してフィルターのタブで開く', async ({ page }) => {
+  for (const saved of ['draw', 'text', 'raw']) {
+    const errors = []; page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(URL0);
+    await page.evaluate((t) => localStorage.setItem('temoto:tool', JSON.stringify(t)), saved);
+    await openWith(page);
+    await expect(page.getByRole('tab', { name: 'フィルター', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect((await viewMean(page)).reduce((a, b) => a + b)).toBeGreaterThan(30); // 写真が描かれている
+    expect(errors, saved).toEqual([]);
+    page.removeAllListeners('pageerror');
+  }
+});
+
 test('フレーム: 枠と、余白で正方形にする', async ({ page }) => {
   await openWith(page);
   const w0 = await page.locator('canvas.view').evaluate((c) => c.width / c.height);

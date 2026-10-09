@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.7.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.7.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const TOOLS = [
@@ -352,7 +352,7 @@ async function openEditor(id) {
   try { p = await prepare(proj, blob, engine.maxSize); } catch { engine.dispose(); toast('写真を開けませんでした'); showLibrary(); return; }
   const state = S.validateState(proj.state);
   E = {
-    id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: ((t) => (t === 'raw' && !p.lin ? 'looks' : t))(prefs.get('tool', 'looks')),
+    id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: ((t) => (TOOLS.some(([k]) => k === t) && (t !== 'raw' || p.lin) ? t : 'looks'))(prefs.get('tool', 'looks')), // 前に選んでいたタブ（なくなったタブ・RAW 以外での RAW タブはフィルターに）
     base: p.base, W: p.W, H: p.H, scaled: p.scaled, rawLin: p.lin, src: null, srcData: null, maskCache: new Map(), skinCache: {},
     sel: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
