@@ -55,3 +55,24 @@ for (const [px, w, h] of [[16, 561, 759], [20, 561, 759], [24, 390, 844], [32, 3
     expect(await overflow(page), '書き出し').toEqual([]);
   });
 }
+
+for (const px of [16, 20, 24]) {
+  test(`スマホ（文字 ${px}px）: 見出しは 1 行で、写真は画面の幅いっぱい近くに大きく出る`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.addInitScript((px) => document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style'); s.textContent = `html{font-size:${px}px}`; document.head.append(s); }), px);
+    await page.goto('/');
+    await page.locator('#open-file').setInputFiles({ ...await makePhoto(page, { w: 1200, h: 900 }), name: '前撮り.jpg' });
+    await page.waitForFunction(() => window.__temoto.editor?.L, null, { timeout: 30000 });
+    await page.locator('.rail [role=tab]').nth(1).click(); await page.waitForTimeout(150); // パネルを開いたまま
+    const r = await page.evaluate(() => {
+      const head = document.querySelector('.ed-head').getBoundingClientRect();
+      const tops = [...document.querySelectorAll('.ed-head > *, .ed-tools > *')].filter((e) => e.offsetParent).map((e) => e.getBoundingClientRect()).map((b) => b.top + b.height / 2);
+      const view = document.querySelector('.view').getBoundingClientRect();
+      return { headH: head.height, spread: Math.max(...tops) - Math.min(...tops), viewW: view.width };
+    });
+    expect(r.spread, '見出しのボタンが同じ行に並ぶ').toBeLessThan(4);
+    expect(r.headH).toBeLessThan(64);
+    expect(r.viewW, '写真の幅').toBeGreaterThan(300);
+    await page.screenshot({ path: `test-results/phone-${px}.png` });
+  });
+}
