@@ -107,18 +107,20 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .lib-bar h2 { margin: 0; font-size: 1.05rem; }
 .lib-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .lib-actions:empty { display: none; }
-.lib-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, 9.5rem)), 1fr)); gap: 12px; }
+.lib-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, max(140px, min(9.5rem, 40vw))), 1fr)); /* スマホは文字を大きくしても 2 列 */ gap: 12px; }
 .lib-item { display: grid; gap: 6px; min-width: 0; }
 .lib-open { position: relative; padding: 0; border-radius: var(--radius); overflow: hidden; aspect-ratio: 1; background: var(--surface); border: 1px solid var(--line); transition: box-shadow .15s, transform .15s; }
 .lib-open:hover:not(:disabled) { background: var(--surface); box-shadow: 0 6px 18px var(--shadow); transform: translateY(-1px); }
 .lib-open img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .lib-noimg { font-size: 2rem; color: var(--muted); }
 .lib-badge { position: absolute; left: 6px; bottom: 6px; padding: 1px 8px; border-radius: 999px; background: rgb(14 19 24 / 70%); color: #fff; font-size: .72rem; }
-.lib-meta { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.lib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; }
+.lib-meta { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: center; min-width: 0; } /* 名前が入りきらないときは、大きさを次の行へ */
+.lib-name { flex: 1; min-width: min(6em, 60%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; }
 .lib-check { width: 18px; height: 18px; accent-color: var(--accent); }
 .lib-empty, .privacy { padding: 16px 18px; border-radius: var(--radius); background: var(--bg); border: 1px solid var(--line); }
 .lib-empty h2, .privacy h2 { margin: 0 0 6px; font-size: 1rem; }
+.lib-empty h3 { margin: 14px 0 0; font-size: .95rem; }
+.lib-empty h3 + p { margin: 2px 0 6px; }
 .privacy p { margin: 4px 0; color: var(--muted); max-width: 70ch; }
 .feature-list { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; columns: 2 260px; }
 .loading, .fatal { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 16px; text-align: center; }
@@ -297,6 +299,8 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .dlg h2 { margin: 0; font-size: 1.1rem; }
 .dlg p { margin: 0; }
 .dlg-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+/* 長いダイアログでも、決定のボタンはいつも下に見えている */
+.dlg > .dlg-actions { position: sticky; bottom: -18px; z-index: 2; margin: 4px -18px -18px; padding: 10px 18px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--bg); border-top: 1px solid var(--line); }
 
 /* トースト（shared/lib.js の toast を使う） */
 .toast-wrap { position: fixed; left: 0; right: 0; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; justify-items: center; gap: 6px; z-index: 100; pointer-events: none; padding: 0 16px; }
@@ -314,7 +318,9 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ed-hist { padding-left: 2px; margin-left: 0; }
   .ed-head .export { padding: 4px 12px; min-height: 36px; white-space: nowrap; font-size: clamp(14px, .95rem, 18px); line-height: 1.2; } /* 見出しは文字を大きくしても 1 行に収める */
   .ed-head button.icon, .ed-head .menu summary { font-size: clamp(18px, 1.15rem, 22px); }
-  .side { max-height: 36dvh; }
+  .side { max-height: 40dvh; }
+  .look { width: max(78px, 5rem); }
+  .look canvas { width: 66px; height: 66px; }
   .side-head { gap: 6px; padding: 6px 12px 6px; }
   .rail button { min-height: max(50px, 3.1rem); }
 }
@@ -335,3 +341,23 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .tp-tools { display: flex; flex-wrap: wrap; gap: 0 16px; }
 .menu-mode { padding: 4px 10px; border-bottom: 1px solid var(--line); }
 .ed-head .menu-mode .tg { color: var(--text); font-weight: 600; }
+
+/* スマホの写真一覧: 写真があるときは、見出しと「写真を開く」を小さくして写真を多く見せる */
+@media (max-width: 599px) {
+  .lib-head.compact { padding: 14px 16px; gap: 4px; }
+  .lib-head.compact h1 { font-size: clamp(1.3rem, 1.4rem, 1.8rem); }
+  .lib-head.compact .lib-lead { display: none; }
+  .lib-head.compact .lib-theme { margin-top: 2px; }
+  .drop.compact { grid-auto-flow: column; justify-content: center; align-items: center; gap: 10px; padding: 12px 16px; }
+  .drop.compact .drop-icon { width: 2rem; height: 2rem; font-size: 1.3rem; }
+  .drop.compact .muted { display: none; }
+  /* 写真を選んでいる間の操作は、画面の下に固定した 1 本のバーに */
+  .lib-actions:not(:empty) {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; justify-content: center; gap: 6px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg); border-top: 1px solid var(--line); box-shadow: 0 -6px 20px var(--shadow);
+  }
+  .lib-actions > * { white-space: nowrap; }
+  .lib-actions > span { flex-basis: 100%; text-align: center; font-size: clamp(12px, .85rem, 16px); }
+  .lib-actions button { min-height: 36px; padding: 4px 12px; font-size: clamp(13px, .88rem, 17px); } /* 文字を大きくしても、バーが画面を埋めない */
+  .lib-main:has(.lib-actions:not(:empty)) { padding-bottom: 170px; }
+}

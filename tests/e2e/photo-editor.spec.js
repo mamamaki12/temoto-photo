@@ -24,6 +24,8 @@ async function setSlider(page, label, value) {
 const tab = (page, name) => openTool(page, name === '自動' ? '自動補正' : name);
 /** 美肌の計算（「仕上げ中」）が終わって、描き直すまで待つ */
 async function skinDone(page) { await page.waitForFunction(() => !document.querySelector('.stage.busy')); await page.waitForTimeout(250); }
+/** さっとタップ（押してすぐ離す） */
+const tapNow = (loc) => loc.evaluate((el) => { el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); });
 const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 /** 表示中の写真の上の点（0〜1）を押す・なぞる */
 async function viewBox(page) { return page.locator('canvas.view').boundingBox(); }
@@ -86,13 +88,28 @@ test('露光・彩度で画素が変わり、元に戻す／やり直す／編�
   await setSlider(page, '彩度', -100);
   const [r, g, b] = await viewMean(page, SKY);
   expect(Math.max(Math.abs(r - g), Math.abs(g - b))).toBeLessThan(4);
-  // 編集前を押している間だけ元の画像
+  // 編集前を長押ししている間だけ元の画像
   const cmp = page.getByRole('button', { name: /編集前を表示/ });
+  const edited = lum(await viewMean(page));
   await cmp.dispatchEvent('pointerdown');
-  await page.waitForTimeout(150);
+  await page.waitForTimeout(400);
   expect(Math.abs(lum(await viewMean(page)) - lum(before))).toBeLessThan(2);
   await expect(page.locator('.orig-badge')).toBeVisible();
   await cmp.dispatchEvent('pointerup');
+  await page.waitForTimeout(150);
+  expect(Math.abs(lum(await viewMean(page)) - edited)).toBeLessThan(2);
+  // さっとタップすると切り替わったまま。もう一度タップで戻る
+  await tapNow(cmp);
+  await page.waitForTimeout(150);
+  await expect(cmp).toHaveAttribute('aria-pressed', 'true');
+  expect(Math.abs(lum(await viewMean(page)) - lum(before))).toBeLessThan(2);
+  await tapNow(cmp);
+  await page.waitForTimeout(150);
+  await expect(cmp).toHaveAttribute('aria-pressed', 'false');
+  // 編集前のまま、ほかの道具を触ると、編集後の表示に戻る
+  await tapNow(cmp);
+  await page.locator('.rail [role=tab]').first().click();
+  await expect(cmp).toHaveAttribute('aria-pressed', 'false');
   await page.waitForTimeout(150);
   // 元に戻す（キーボード）
   await page.locator('body').press('Control+z');
@@ -643,4 +660,25 @@ test('編集の見出し: 戻るボタンは「‹」だけ（「写真」の文
   await openWith(page);
   await expect(page.locator('.ed-head .back')).toHaveText('‹');
   await expect(page.getByRole('button', { name: '‹ 写真' })).toBeVisible();
+});
+
+test('スマホ: 長いダイアログでも決定のボタンが見え、写真一覧は写真があると見出しが小さく、選んだ写真の操作は下のバーに出る', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 640 });
+  await openWith(page);
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('button', { name: '書き出す', exact: true })).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press('Escape');
+  await page.locator('.menu summary').click();
+  await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
+  await expect(page.getByRole('dialog').getByRole('button', { name: '決定' })).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await expect(page.locator('.lib-head')).toHaveClass(/compact/);
+  expect((await page.locator('.lib-head').boundingBox()).height).toBeLessThan(130);
+  await page.locator('.lib-check').first().check();
+  const bar = page.getByRole('toolbar', { name: '選んだ写真の操作' });
+  const bb = await bar.boundingBox();
+  expect(bb.y + bb.height).toBeGreaterThan(636); // 画面の下にくっついている
+  expect(bb.height).toBeLessThan(160);
+  await expect(bar.getByRole('button', { name: '選択をやめる' })).toBeVisible();
 });

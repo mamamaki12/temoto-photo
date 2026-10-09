@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.9.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.10.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -293,16 +293,15 @@ async function showLibrary() {
   const projects = await db.listProjects().catch(() => []);
   const fileIn = h('input', { type: 'file', accept: ACCEPT, multiple: true, class: 'vh', id: 'open-file', onchange: () => { importFiles(fileIn.files); fileIn.value = ''; } });
   const sel = () => projects.filter((p) => selecting.has(p.id));
-  const bar = h('div', { class: 'lib-actions' });
+  const bar = h('div', { class: 'lib-actions', role: 'toolbar', 'aria-label': '選んだ写真の操作' });
   const drawBar = () => {
     render(bar, selecting.size ? [
       h('span', { class: 'muted' }, `${selecting.size}枚を選択中`),
-      h('button', { type: 'button', disabled: !prefs.get('clip', null), onclick: async () => { const clip = prefs.get('clip', null); for (const p of sel()) await db.putProject({ ...p, state: S.applyPreset(S.validateState(p.state), clip), updated: Date.now() }); toast('編集を貼り付けました'); selecting.clear(); showLibrary(); } }, '編集を貼り付け'),
       h('button', { type: 'button', class: 'primary', disabled: selecting.size < 2 || selecting.size > MAX_GRID, title: selecting.size > MAX_GRID ? `グリッドは${MAX_GRID}枚まで` : '', onclick: () => showGrid(sel()) }, `▦ グリッドを作る${selecting.size > MAX_GRID ? `（${MAX_GRID}枚まで）` : ''}`),
       h('button', { type: 'button', onclick: () => openExport({ batch: sel() }) }, 'まとめて書き出し'),
+      h('button', { type: 'button', disabled: !prefs.get('clip', null), onclick: async () => { const clip = prefs.get('clip', null); for (const p of sel()) await db.putProject({ ...p, state: S.applyPreset(S.validateState(p.state), clip), updated: Date.now() }); toast('編集を貼り付けました'); selecting.clear(); showLibrary(); } }, '編集を貼り付け'),
       h('button', { type: 'button', class: 'danger', onclick: () => confirmBox(`${selecting.size}枚の写真と編集内容を、この端末から削除します。元に戻せません。`, '削除する', async () => { for (const p of sel()) await db.deleteProject(p.id); selecting.clear(); showLibrary(); }) }, '削除'),
-      h('button', { type: 'button', class: 'ghost', onclick: () => { selecting.clear(); showLibrary(); } }, '選択をやめる'),
-    ] : null);
+      h('button', { type: 'button', class: 'ghost', onclick: () => { selecting.clear(); showLibrary(); } }, '選択をやめる'),] : null);
   };
   drawBar();
   const grid = h('ul', { class: 'lib-grid' }, projects.map((p) => {
@@ -320,12 +319,12 @@ async function showLibrary() {
   const usage = h('p', { class: 'muted small' });
   db.usage().then((u) => { if (u) usage.textContent = `この端末で使っている容量: ${fmtBytes(u.used)}${u.quota ? `（上限の目安 ${fmtBytes(u.quota)}）` : ''}`; });
   render(app,
-    h('header', { class: 'lib-head' },
+    h('header', { class: `lib-head${projects.length ? ' compact' : ''}` },
       h('h1', {}, h('span', { class: 'logo', 'aria-hidden': 'true' }), 'てもとフォト'),
       h('p', { class: 'lib-lead' }, '写真を端末の外に出さずに編集。アップロードもアカウントも不要で、オフラインでも動きます。'),
       h('div', { class: 'lib-theme' }, h('span', {}, '画面の色'), themePicker())),
     h('main', { class: 'lib-main' },
-      h('label', { class: 'drop', for: 'open-file', id: 'drop' },
+      h('label', { class: `drop${projects.length ? ' compact' : ''}`, for: 'open-file', id: 'drop' },
         h('span', { class: 'drop-icon', 'aria-hidden': 'true' }, '＋'),
         h('b', {}, '写真を開く'),
         h('span', { class: 'muted small' }, 'タップして選ぶ・ドラッグ＆ドロップ・貼り付け（複数可）')),
@@ -335,16 +334,20 @@ async function showLibrary() {
       projects.length ? grid : h('div', { class: 'lib-empty' },
         h('h2', {}, 'できること'),
         h('ul', { class: 'feature-list' }, [
-          'RAW（DNG は RAW データから現像。CR3・NEF・ARW・RAF などはカメラが作ったプレビュー）も開ける',
-          '複数の写真を1枚にまとめるグリッド（2〜9枚）',
-          'フィルター22種（フィルム風・モノクロなど）と強さの調整',
-          '明るさ・色・トーンカーブ・HSL・カラーグレーディング',
-          '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
-          '切り抜き・傾き補正・遠近補正・反転',
-          'スポット修復、顔やナンバーを隠すモザイク・ぼかし',
+          'キヤノンなどの RAW を、RAW データから高画質に現像',
+          'フィルター22種（フィルム風・モノクロなど）と強さの調整、自動補正',
+          '美肌、スポット修復、顔やナンバーを隠すモザイク・ぼかし',
           'フレーム・余白（SNS の比率に合わせる）',
+          '複数の写真を1枚にまとめるグリッド（2〜9枚）',
           '編集はいつでもやり直せる（元の写真はそのまま）',
-          '書き出すと位置情報などのメタデータは消える',
+          '書き出すと位置情報などのメタデータは消える。写真アプリにも直接保存できる',
+        ].map((t) => h('li', {}, t))),
+        h('h3', {}, 'スペシャリストモードで使える道具'),
+        h('p', { class: 'muted small' }, '編集画面の「⋯」メニューでオンにすると出てきます。'),
+        h('ul', { class: 'feature-list' }, [
+          '明るさ・色・トーンカーブ・HSL・カラーグレーディング・ディテール・効果',
+          '切り抜き・傾き補正・遠近補正・反転',
+          '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
         ].map((t) => h('li', {}, t)))),
       h('section', { class: 'privacy' },
         h('h2', {}, '写真はこの端末から出ません'),
@@ -570,10 +573,14 @@ function buildEditor() {
   setupPointer(E.stageEl);
   E.undoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': '元に戻す（Ctrl+Z）', title: '元に戻す（Ctrl+Z）', onclick: undo }, '↶');
   E.redoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': 'やり直す（Ctrl+Shift+Z）', title: 'やり直す（Ctrl+Shift+Z）', onclick: redo }, '↷');
-  const cmp = h('button', { type: 'button', class: 'icon', 'aria-label': '押している間、編集前を表示（\\ キー）', title: '押している間、編集前を表示（\\ キー）' }, '◧');
+  const CMP_LABEL = '編集前を表示（タップで切り替え・押している間だけでも・\\ キー）';
+  const cmp = h('button', { type: 'button', class: 'icon', 'aria-label': CMP_LABEL, title: CMP_LABEL, 'aria-pressed': 'false' }, '◧');
   const setOrig = (v) => { if (!E || E.showOriginal === v) return; E.showOriginal = v; cmp.setAttribute('aria-pressed', String(v)); requestRender(); };
-  cmp.addEventListener('pointerdown', (e) => { e.preventDefault(); setOrig(true); });
-  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) cmp.addEventListener(ev, () => setOrig(false));
+  // さっとタップしたら、編集前の表示を切り替える（もう一度タップで戻る）。長押しは、押している間だけ編集前
+  let press = null;
+  cmp.addEventListener('pointerdown', (e) => { e.preventDefault(); press = { t: performance.now(), was: !!E?.showOriginal }; setOrig(true); });
+  cmp.addEventListener('pointerup', () => { if (!press) return; const tap = performance.now() - press.t < 350; setOrig(tap ? !press.was : false); press = null; });
+  for (const ev of ['pointerleave', 'pointercancel']) cmp.addEventListener(ev, () => { if (press) { setOrig(press.was); press = null; } });
   cmp.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setOrig(true); } });
   cmp.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') setOrig(false); });
   E.setOrig = setOrig;
@@ -613,6 +620,9 @@ function buildEditor() {
       h('div', { class: 'ed-tools' }, cmp, menu,
         h('button', { type: 'button', class: 'primary export', onclick: () => openExport({}) }, '書き出し'))),
     E.tabs, E.side, E.stageEl);
+  // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
+  E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
+  E.root.addEventListener('input', () => { if (E?.showOriginal) setOrig(false); }, true);
   render(app, E.root);
   syncHistoryButtons(); setTool(E.tool, { keepSide: true });
 }
