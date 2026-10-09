@@ -544,3 +544,25 @@ test('Canva のような画面: グループを押すとパネルが開き、も
   await page.getByRole('button', { name: /表示の大きさ/ }).click();
   await expect(page.locator('.zoom-val')).toHaveText('100%');
 });
+
+test('画面の色: 自動は端末の設定に合わせ、ライト・ダークを選ぶと覚える（一覧・編集のメニュー）', async ({ page }) => {
+  const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto(URL0);
+  expect(await theme()).toBe('dark'); // 自動: 端末がダーク
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect.poll(theme).toBe('light'); // 端末の設定を変えると、すぐ変わる
+  // 一覧で「ダーク」を選ぶと、端末の設定によらずダーク。再読み込みしても覚えている
+  await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ダーク' }).click();
+  expect(await theme()).toBe('dark');
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(21, 22, 25)');
+  await page.reload();
+  expect(await theme()).toBe('dark');
+  // 編集画面のメニューからも選べる
+  await page.locator('#open-file').setInputFiles(await makePhoto(page));
+  await page.waitForFunction(() => window.__temoto.editor?.L);
+  await page.locator('.menu summary').click();
+  await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ライト' }).click();
+  expect(await theme()).toBe('light');
+  await expect(page.locator('.editor')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+});

@@ -44,6 +44,24 @@ const prefs = {
   set(k, v) { try { localStorage.setItem(`temoto:${k}`, JSON.stringify(v)); } catch { /* 保存できない環境 */ } },
 };
 
+// ── 画面の色（自動＝端末の設定に合わせる／ライト／ダーク） ──
+const darkMQ = matchMedia('(prefers-color-scheme: dark)');
+const THEMES = [['auto', '自動'], ['light', 'ライト'], ['dark', 'ダーク']];
+function applyTheme() {
+  const t = prefs.get('theme', 'auto');
+  const dark = t === 'dark' || (t === 'auto' && darkMQ.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#1e1f23' : '#7d2ae8');
+}
+const isDark = () => document.documentElement.dataset.theme === 'dark';
+function setTheme(t) {
+  prefs.set('theme', t); applyTheme();
+  if (E) { buildPanel(); requestRender(); } else if (GR) gridPanel();
+}
+darkMQ.addEventListener?.('change', () => { if (prefs.get('theme', 'auto') === 'auto') setTheme('auto'); });
+/** 画面の色を選ぶチップ */
+const themePicker = () => chips(THEMES, prefs.get('theme', 'auto'), setTheme, { label: '画面の色', cls: 'theme-chips' }).el;
+
 let E = null; // 編集中の写真
 
 // ───────────────────────── 読み込み ─────────────────────────
@@ -293,7 +311,8 @@ async function showLibrary() {
   render(app,
     h('header', { class: 'lib-head' },
       h('h1', {}, h('span', { class: 'logo', 'aria-hidden': 'true' }), 'てもとフォト'),
-      h('p', { class: 'lib-lead' }, '写真を端末の外に出さずに編集。アップロードもアカウントも不要で、オフラインでも動きます。')),
+      h('p', { class: 'lib-lead' }, '写真を端末の外に出さずに編集。アップロードもアカウントも不要で、オフラインでも動きます。'),
+      h('div', { class: 'lib-theme' }, h('span', {}, '画面の色'), themePicker())),
     h('main', { class: 'lib-main' },
       h('label', { class: 'drop', for: 'open-file', id: 'drop' },
         h('span', { class: 'drop-icon', 'aria-hidden': 'true' }, '＋'),
@@ -519,8 +538,9 @@ function drawHistogram(c, hist, only) {
   const ctx = ctx2d(c); const w = c.width; const hh = c.height;
   ctx.clearRect(0, 0, w, hh);
   const max = Math.max(1, ...['r', 'g', 'b'].flatMap((k) => hist[k].slice(2, 254)));
-  ctx.globalCompositeOperation = 'multiply'; // 明るい背景の上で、重なった所が濃くなるように
-  for (const [k, col] of only ? [[only, 'rgba(70,72,90,.35)']] : [['r', 'rgba(229,72,77,.45)'], ['g', 'rgba(47,158,91,.45)'], ['b', 'rgba(59,111,224,.5)']]) {
+  const dark = isDark();
+  ctx.globalCompositeOperation = dark ? 'lighter' : 'multiply'; // 重なった所が、暗い画面では明るく・明るい画面では濃く
+  for (const [k, col] of only ? [[only, dark ? 'rgba(200,200,210,.45)' : 'rgba(70,72,90,.35)']] : dark ? [['r', 'rgba(255,80,80,.55)'], ['g', 'rgba(80,220,120,.5)'], ['b', 'rgba(90,140,255,.6)']] : [['r', 'rgba(229,72,77,.45)'], ['g', 'rgba(47,158,91,.45)'], ['b', 'rgba(59,111,224,.5)']]) {
     ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, hh);
     for (let i = 0; i < 256; i++) ctx.lineTo((i / 255) * w, hh - Math.min(1, hist[k][i] / max) * hh);
     ctx.lineTo(w, hh); ctx.fill();
@@ -551,6 +571,7 @@ function buildEditor() {
       h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'),
       h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'),
       h('button', { type: 'button', onclick: async () => { const blob = await db.getBlob(E.id); const id = uid(); await db.addProject({ ...E.proj, id, name: `${E.proj.name}（コピー）`, created: Date.now(), updated: Date.now(), state: S.clone(E.committed) }, blob); toast('複製しました'); openEditor(id); } }, '複製して別の編集を作る'),
+      h('div', { class: 'menu-theme' }, h('span', { class: 'muted small' }, '画面の色'), themePicker()),
       h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
   // 項目を選んだら・外側を押したらメニューを閉じる
   menu.addEventListener('click', (e) => { if (e.target.closest('.menu-list button')) menu.open = false; });
@@ -814,7 +835,7 @@ function curveEditor() {
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '-0.03 -0.03 1.06 1.06'); svg.classList.add('curve'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'トーンカーブ（点をドラッグして調整、タップで点を追加、上下の外に出すと削除）');
   const bg = h('canvas', { class: 'curve-bg', width: 256, height: 256, 'aria-hidden': 'true', dataset: { ch: ch === 'rgb' ? 'l' : ch } });
-  const color = { rgb: '#30333a', r: '#e5484d', g: '#2f9e5b', b: '#3b6fe0' }[ch];
+  const color = (isDark() ? { rgb: '#e8e8e8', r: '#ff6b6b', g: '#5fd47e', b: '#6aa2ff' } : { rgb: '#30333a', r: '#e5484d', g: '#2f9e5b', b: '#3b6fe0' })[ch];
   const draw = () => {
     const pts = E.state.curves[ch]; const f = monotoneSpline(pts);
     svg.replaceChildren();
@@ -1488,7 +1509,7 @@ function gridPanel() {
   if (GR.tab === 'layout') {
     const thumbs = h('div', { class: 'grid-layouts', role: 'group', 'aria-label': 'レイアウト' }, LAYOUTS[n].map((l) => {
       const c = h('canvas', { width: 64, height: 64, 'aria-hidden': 'true' });
-      const ctx = ctx2d(c); ctx.fillStyle = '#eceef2'; ctx.fillRect(0, 0, 64, 64); ctx.fillStyle = '#9a9db0';
+      const ctx = ctx2d(c); ctx.fillStyle = isDark() ? '#2a2c31' : '#eceef2'; ctx.fillRect(0, 0, 64, 64); ctx.fillStyle = isDark() ? '#8b8e95' : '#9a9db0';
       for (const r of cellRects(l, 64, 64, { gap: 6, margin: 6 })) ctx.fillRect(r.x, r.y, r.w, r.h);
       return h('button', { type: 'button', class: 'grid-layout', 'aria-pressed': String(G.layout === l.id), onclick: () => { G.layout = l.id; G.lines = {}; gridPanel(); drawGridView(); } }, c, h('span', {}, l.name));
     }));
@@ -1653,6 +1674,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // ホーム画面のアプリとして「ファイルを開く」から起動されたとき
 if ('launchQueue' in window) window.launchQueue.setConsumer(async (p) => { const files = await Promise.all((p.files || []).map((f) => f.getFile())); if (files.length) importFiles(files); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register(new URL('./sw.js', import.meta.url), { scope: new URL('./', import.meta.url).pathname }).catch(() => {});
+applyTheme();
 showLibrary();
 // テスト・デバッグ用（中身の確認だけ。外部には何も送らない）
 window.__temoto = { get state() { return E && S.clone(E.state); }, get editor() { return E; }, get grid() { return GR; } };
