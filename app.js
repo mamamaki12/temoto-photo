@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.9.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.9.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -517,7 +517,7 @@ function renderNow() {
   const f = st.frame; const m = Math.min(out.w, out.h); const b = (f.width / 100) * m * 2;
   let cw = out.w + b; let ch = out.h + b;
   if (f.pad !== 'none') { const [a, c] = f.pad.split(':').map(Number); if (cw / ch > a / c) ch = cw / (a / c); else cw = ch * (a / c); }
-  const pad = stage.width >= 700 ? 80 : 24; // 広い画面では、Canva のように写真のまわりに余白をとる
+  const pad = stage.width >= 700 ? 80 : 20; // スマホは余白を少なく、写真を大きく（切り抜きの角の印が収まるぶんだけ） // 広い画面では、Canva のように写真のまわりに余白をとる
   const fit0 = Math.min((stage.width - pad) * dpr / cw, (stage.height - pad) * dpr / ch, PREVIEW_MAX / Math.max(cw, ch), 1);
   // 拡大中は、拡大したぶん細かく描く（引き伸ばすとぼやけるので）。元写真の画素数と GPU の上限まで
   const zk = Math.max(1, Math.min(E.zoom, 1 / fit0, Math.min(ZOOM_MAX, E.engine.maxSize) / (Math.max(cw, ch) * fit0)));
@@ -607,7 +607,7 @@ function buildEditor() {
   E.stageEl.append(zoomBar);
   E.root = h('div', { class: 'editor' },
     h('header', { class: 'ed-head' },
-      h('button', { type: 'button', class: 'back', onclick: showLibrary }, '‹ 写真'),
+      h('button', { type: 'button', class: 'back', 'aria-label': '‹ 写真', title: '写真の一覧に戻る', onclick: showLibrary }, '‹'),
       h('div', { class: 'ed-hist' }, E.undoBtn, E.redoBtn),
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
@@ -1423,13 +1423,17 @@ function openExport({ batch }) {
   const opt = prefs.get('export', { format: 'image/jpeg', quality: 92, maxSide: 0 });
   if (opt.format === 'image/webp' && !canWebp) opt.format = 'image/jpeg';
   if (opt.space !== 'srgb' || COLOR_SPACE === 'srgb') opt.space = COLOR_SPACE;
-  const save = () => prefs.set('export', opt);
+  let ready = null; // 写真アプリへの保存で、用意できた画像（iPhone は時間がたつと共有を開けないので、もう一度押してもらう）
+  const save = () => { prefs.set('export', opt); ready = null; };
   const status = h('p', { class: 'muted small', 'aria-live': 'polite' });
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
   const q = slider({ label: '画質', min: 50, max: 100, value: opt.quality, def: 92, unit: '%', onChange: (v) => { opt.quality = v; save(); } });
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
   const go = h('button', { type: 'button', class: 'primary' }, batch ? `${batch.length}枚を書き出す` : '書き出す');
-  const shareBtn = h('button', { type: 'button', hidden: !(navigator.canShare && !batch) }, '共有…');
+  const SHARE_LABEL = '写真アプリに保存';
+  const shareBtn = h('button', { type: 'button', class: 'primary', hidden: !(navigator.canShare && !batch) }, SHARE_LABEL);
+  if (!shareBtn.hidden) go.classList.remove('primary');
+  name.addEventListener('input', () => { ready = null; shareBtn.textContent = SHARE_LABEL; });
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'exp-h' },
     h('h2', { id: 'exp-h' }, batch ? `まとめて書き出し（${batch.length}枚）` : '書き出し'),
     h('div', { class: 'sub-head' }, h('b', {}, '形式')),
@@ -1441,6 +1445,7 @@ function openExport({ batch }) {
       chips([['display-p3', 'Display P3（鮮やかなまま）'], ['srgb', 'sRGB（プリント店・古い機器向け）']], opt.space, (v) => { opt.space = v; save(); }, { label: '色' }).el,
       h('p', { class: 'muted small' }, 'iPhone で撮った写真の鮮やかな赤や緑は、Display P3 でそのまま残ります。プリント店で色が変わるときは sRGB を選んでください。')] : []),
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
+    ...(navigator.canShare && !batch ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→ 出てきたメニューの「画像を保存」で、写真アプリに入ります。「書き出す」はファイルアプリ（ダウンロード）に保存します。')] : []),
     h('p', { class: 'ok-note' }, '✓ 位置情報・撮影日時・カメラ情報などのメタデータは、書き出した画像には入りません。'),
     status,
     h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), shareBtn, go));
@@ -1484,10 +1489,16 @@ function openExport({ batch }) {
   });
   shareBtn.addEventListener('click', async () => {
     shareBtn.disabled = true;
+    let file = ready;
     try {
-      const r = await one(); const file = new File([r.blob], r.file, { type: opt.format });
-      if (navigator.canShare({ files: [file] })) await navigator.share({ files: [file] }); else { download(r.blob, r.file); toast('共有できないので保存しました'); }
-    } catch (e) { if (e?.name !== 'AbortError') status.textContent = '共有できませんでした'; } finally { shareBtn.disabled = false; }
+      if (!file) { const r = await one(); file = new File([r.blob], r.file, { type: opt.format }); }
+      if (!navigator.canShare({ files: [file] })) { download(file, file.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
+      await navigator.share({ files: [file] }); ready = null; shareBtn.textContent = SHARE_LABEL;
+    } catch (e) {
+      if (e?.name === 'NotAllowedError' && file) { // 書き出しに時間がかかって、押したことが切れた。用意はできたので、もう一度押してもらう
+        ready = file; shareBtn.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
+      } else if (e?.name !== 'AbortError') status.textContent = '写真アプリに保存できませんでした';
+    } finally { shareBtn.disabled = false; }
   });
   document.body.append(dlg); dlg.showModal();
 }
@@ -1525,7 +1536,7 @@ function buildGrid() {
   }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', {}, label))));
   render(app, h('div', { class: 'editor grid-editor' },
     h('header', { class: 'ed-head' },
-      h('button', { type: 'button', class: 'back', onclick: () => { GR = null; showLibrary(); } }, '‹ 写真'),
+      h('button', { type: 'button', class: 'back', 'aria-label': '‹ 写真', title: '写真の一覧に戻る', onclick: () => { GR = null; showLibrary(); } }, '‹'),
       h('span', { class: 'ed-title' }, `グリッド（${GR.ps.length}枚）`),
       h('div', { class: 'ed-tools' }, h('button', { type: 'button', class: 'primary', onclick: openGridExport }, '書き出し'))),
     GR.tabs, h('aside', { class: 'side' }, GR.panel), GR.stage));
@@ -1698,8 +1709,8 @@ function openGridExport() {
         } catch { status.textContent = '保存できませんでした'; }
       } }, '写真一覧に保存'),
       h('button', { type: 'button', hidden: !navigator.canShare, onclick: async () => {
-        try { const r = await make(); const f = new File([r.blob], fileName(), { type: opt.format }); if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f] }); else download(r.blob, fileName()); } catch (e) { if (e?.name !== 'AbortError') status.textContent = '共有できませんでした'; }
-      } }, '共有…'),
+        try { const r = await make(); const f = new File([r.blob], fileName(), { type: opt.format }); if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f] }); else download(r.blob, fileName()); } catch (e) { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? '用意ができました。もう一度押してください。' : '写真アプリに保存できませんでした'; }
+      } }, '写真アプリに保存'),
       h('button', { type: 'button', class: 'primary', onclick: async () => { try { const r = await make(); download(r.blob, fileName()); toast('書き出しました'); } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } } }, '書き出す')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();

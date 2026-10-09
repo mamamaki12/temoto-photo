@@ -140,7 +140,7 @@ test('HSL・カーブ・カラーグレーディング・効果', async ({ page 
   await page.waitForTimeout(150);
   expect(lum(await viewMean(page))).toBeGreaterThan(l0 + 8);
   // カーブを直接ドラッグして点を追加
-  const svg = page.locator('svg.curve'); const bb = await svg.boundingBox();
+  const svg = page.locator('svg.curve'); await svg.evaluate((el) => el.scrollIntoView({ block: 'center' })); const bb = await svg.boundingBox();
   await page.mouse.move(bb.x + bb.width * 0.3, bb.y + bb.height * 0.5); await page.mouse.down(); await page.mouse.move(bb.x + bb.width * 0.3, bb.y + bb.height * 0.2, { steps: 4 }); await page.mouse.up();
   expect((await page.evaluate(() => window.__temoto.state.curves.rgb)).length).toBe(4);
   await tab(page, '効果');
@@ -619,4 +619,28 @@ test.describe('はじめて使う端末', () => {
     await expect(rail).toHaveCount(4);
     await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
   });
+});
+
+test('書き出し: 「写真アプリに保存」で共有メニューに画像を渡す。時間切れで開けなかったら、もう一度押すと用意した画像を渡す', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__shared = []; let n = 0;
+    navigator.canShare = (d) => !!d?.files?.length;
+    navigator.share = async (d) => { if (n++ === 0) throw new DOMException('no activation', 'NotAllowedError'); window.__shared.push({ name: d.files[0].name, type: d.files[0].type, size: d.files[0].size }); };
+  });
+  await openWith(page);
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  const dlg = page.getByRole('dialog');
+  await dlg.getByRole('button', { name: '写真アプリに保存' }).click();
+  await expect(dlg.getByRole('button', { name: 'もう一度押して保存' })).toBeVisible({ timeout: 20000 });
+  await dlg.getByRole('button', { name: 'もう一度押して保存' }).click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(1);
+  const f = (await page.evaluate(() => window.__shared))[0];
+  expect(f.type).toBe('image/jpeg'); expect(f.name).toMatch(/_edit\.jpg$/); expect(f.size).toBeGreaterThan(1000);
+  await expect(dlg.getByRole('button', { name: '写真アプリに保存' })).toBeVisible();
+});
+
+test('編集の見出し: 戻るボタンは「‹」だけ（「写真」の文字は出さない）', async ({ page }) => {
+  await openWith(page);
+  await expect(page.locator('.ed-head .back')).toHaveText('‹');
+  await expect(page.getByRole('button', { name: '‹ 写真' })).toBeVisible();
 });

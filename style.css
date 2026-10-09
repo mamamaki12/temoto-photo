@@ -138,7 +138,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .stage { grid-area: stage; }
 .editor.side-closed .side { display: none; }
 .ed-head {
-  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;
+  position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;
   background: var(--header); color: #fff;
 }
 .ed-head button, .ed-head .menu summary { background: transparent; border-color: transparent; color: #fff; }
@@ -152,9 +152,9 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .ed-head .menu-theme .chips button { background: var(--surface); color: var(--text); }
 .ed-head .menu-theme .chips button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent); }
 .ed-hist { display: flex; gap: 2px; padding-left: 6px; margin-left: 2px; border-left: 1px solid rgb(255 255 255 / 30%); }
-.ed-head .back { padding-inline: 10px; font-weight: 600; }
+.ed-head .back { padding: 0 12px; font-weight: 600; font-size: clamp(22px, 1.3rem, 26px); line-height: 1; }
 .ed-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: .95rem; text-align: center; }
-.ed-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; align-items: center; margin-left: auto; } /* 文字が大きくて入りきらないときは、次の行へ */
+.ed-tools { display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 6px; align-items: center; margin-left: auto; flex: none; }
 .menu { position: static; } /* メニューは見出しの右端にそろえる（画面の外にはみ出さない） */
 .menu summary { list-style: none; width: clamp(40px, 2.5rem, 52px); height: clamp(40px, 2.5rem, 52px); display: grid; place-items: center; border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-size: 1.2rem; line-height: 1; }
 .menu summary::-webkit-details-marker { display: none; }
@@ -304,7 +304,20 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .nojs { padding: 16px; }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
 
-@media (max-width: 420px) { .ed-title { display: none; } .ed-head { justify-content: space-between; } }
+/* スマホ: 見出しは 1 行に（文字を大きくしても折り返さない）、パネルは低めにして写真を大きく */
+@media (max-width: 599px) {
+  .ed-title { display: none; }
+  .ed-head { gap: 2px; padding-inline: 4px; }
+  .ed-head .back { padding: 0 8px; min-height: 36px; font-size: clamp(22px, 1.3rem, 26px); line-height: 1; }
+  .ed-tools { gap: 2px; }
+  .ed-head button.icon, .ed-head .menu summary { width: clamp(36px, 2.3rem, 44px); min-height: clamp(36px, 2.3rem, 44px); height: clamp(36px, 2.3rem, 44px); }
+  .ed-hist { padding-left: 2px; margin-left: 0; }
+  .ed-head .export { padding: 4px 12px; min-height: 36px; white-space: nowrap; font-size: clamp(14px, .95rem, 18px); line-height: 1.2; } /* 見出しは文字を大きくしても 1 行に収める */
+  .ed-head button.icon, .ed-head .menu summary { font-size: clamp(18px, 1.15rem, 22px); }
+  .side { max-height: 36dvh; }
+  .side-head { gap: 6px; padding: 6px 12px 6px; }
+  .rail button { min-height: max(50px, 3.1rem); }
+}
 /* 長押し（比較ボタンなど）で iPhone の選択メニューが出ないように */
 .ed-head button, .rail button, .stage { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .lib-badge.raw { left: auto; right: 6px; background: var(--accent); color: var(--accent-ink); font-weight: 700; }
