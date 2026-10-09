@@ -35,15 +35,14 @@ test('photo: 編集内容の検証（不正な値・型・件数を直す）', (
   near(bad.geo.crop.x + bad.geo.crop.w, 1, 1e-9); assert.ok(bad.geo.crop.h <= 1);
   assert.equal(bad.locals.length, 4); // ブラシは4つまで
   assert.deepEqual(bad.retouch, [{ type: 'heal', x: 0.5, y: 0.5, r: 0.02, sx: null, sy: null }]);
-  assert.equal(bad.overlays.length, 1);
-  assert.equal(bad.overlays[0].text, 'ab'); assert.equal(bad.overlays[0].color, '#ffffff'); assert.equal(bad.overlays[0].font, 'gothic');
+  assert.equal(bad.overlays, undefined); // 文字・スタンプ・描画はなくなったので、古い保存の値は捨てる
   assert.equal(bad.frame.width, 30); assert.equal(bad.frame.color, '#ffffff'); assert.equal(bad.frame.pad, 'none');
   const many = validateState({ locals: Array(20).fill(0).map(() => newLocal('radial', 'x')) });
   assert.equal(many.locals.length, MAX_LOCALS);
 });
 
-test('photo: プリセットは色と明るさだけを運ぶ（切り抜きや文字は運ばない）', () => {
-  const s = defaultState(); s.adj.exposure = 30; s.geo.rot = 1; s.overlays = [{ type: 'sticker', emoji: '⭐' }];
+test('photo: プリセットは色と明るさだけを運ぶ（切り抜きやフレームは運ばない）', () => {
+  const s = defaultState(); s.adj.exposure = 30; s.geo.rot = 1; s.frame.width = 10;
   const p = presetPart(s);
   assert.deepEqual(Object.keys(p).sort(), ['adj', 'curves', 'grade', 'hsl', 'look', 'portrait']);
   const t = applyPreset(defaultState(), JSON.parse(JSON.stringify(p)));

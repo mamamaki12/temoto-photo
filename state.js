@@ -38,18 +38,9 @@ export const MAX_BRUSH_LOCALS = 4;
 export const MAX_STROKES = 400;
 export const MAX_RETOUCH = 300;
 export const MAX_SKIN_SEEDS = 12;
-export const MAX_OVERLAYS = 60;
 export const ASPECTS = { free: '自由', original: '元の比率', '1:1': '1:1', '4:5': '4:5', '3:4': '3:4', '2:3': '2:3', '9:16': '9:16', '16:9': '16:9', '3:2': '3:2', '4:3': '4:3', 'print-L': 'L判', 'print-2L': '2L判', 'print-6': '六つ切り', 'print-A4': 'A4' };
 /** プリントの大きさ（短い辺:長い辺）。写真の向き（縦・横）に合わせて使う */
 export const PRINT_ASPECTS = { 'print-L': [89, 127], 'print-2L': [127, 178], 'print-6': [203, 254], 'print-A4': [210, 297] };
-export const FONTS = { gothic: 'ゴシック', mincho: '明朝', round: '丸ゴシック', mono: '等幅', hand: '手書き風' };
-export const FONT_CSS = {
-  gothic: '"Hiragino Sans", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif',
-  mincho: '"Hiragino Mincho ProN", "Noto Serif JP", "Yu Mincho", serif',
-  round: '"Hiragino Maru Gothic ProN", "M PLUS Rounded 1c", "Noto Sans JP", sans-serif',
-  mono: 'ui-monospace, "SFMono-Regular", Menlo, monospace',
-  hand: '"Klee One", "Yomogi", "Comic Sans MS", cursive',
-};
 export const PADS = { none: 'なし', '1:1': '正方形 1:1', '4:5': '縦 4:5', '9:16': 'ストーリー 9:16', '16:9': '横 16:9' };
 
 const zeroAdj = () => Object.fromEntries(ADJ.map(([k]) => [k, ADJ_DEFAULT[k] ?? 0]));
@@ -72,7 +63,6 @@ export function defaultState() {
     // RAW の現像（RAW 以外の写真では使わない）。exposure: RAW の露出（EV×100）、nr: ノイズ除去、sharpen: シャープ、
     // ca: 色にじみの自動補正、vignette: 周辺の暗さの補正、distortion: ゆがみの補正（＋で樽型・－で糸巻き型を直す）
     raw: { exposure: 0, nr: 50, sharpen: 50, ca: true, vignette: 0, distortion: 0 },
-    overlays: [],
     frame: { width: 0, color: '#ffffff', radius: 0, pad: 'none', padFill: 'blur', padColor: '#ffffff' },
   };
 }
@@ -131,19 +121,6 @@ function validRetouch(r) {
   return null;
 }
 
-function validOverlay(o) {
-  if (!o || typeof o !== 'object') return null;
-  const base = { id: str(o.id, 40) || Math.random().toString(36).slice(2), x: num(o.x, -0.5, 1.5, 0.5), y: num(o.y, -0.5, 1.5, 0.5), rot: num(o.rot, -180, 180), opacity: num(o.opacity, 0, 1, 1) };
-  if (o.type === 'text') {
-    return { ...base, type: 'text', text: str(o.text, 500, 'テキスト'), size: num(o.size, 0.01, 0.5, 0.08), font: oneOf(o.font, FONTS, 'gothic'), bold: bool(o.bold), color: color(o.color, '#ffffff'), align: ['left', 'center', 'right'].includes(o.align) ? o.align : 'center', stroke: num(o.stroke, 0, 0.3), strokeColor: color(o.strokeColor, '#000000'), shadow: bool(o.shadow), bg: bool(o.bg), bgColor: color(o.bgColor, '#000000'), vertical: bool(o.vertical) };
-  }
-  if (o.type === 'sticker') return { ...base, type: 'sticker', emoji: str(o.emoji, 16, '⭐') || '⭐', size: num(o.size, 0.02, 0.8, 0.15) };
-  if (o.type === 'draw') {
-    return { ...base, type: 'draw', color: color(o.color, '#ff3b30'), width: num(o.width, 0.001, 0.1, 0.01), mode: ['pen', 'marker', 'neon'].includes(o.mode) ? o.mode : 'pen', pts: arr(o.pts, 4000).filter((p) => Array.isArray(p)).map(([x, y]) => [num(x, -0.5, 1.5), num(y, -0.5, 1.5)]) };
-  }
-  return null;
-}
-
 /** どんな値が来ても、正しい形の編集内容を返す */
 export function validateState(s) {
   const d = defaultState();
@@ -169,7 +146,6 @@ export function validateState(s) {
   d.raw.nr = int(s.raw?.nr, 0, 100, 50); d.raw.sharpen = int(s.raw?.sharpen, 0, 100, 50); d.raw.ca = s.raw?.ca !== false;
   d.raw.vignette = int(s.raw?.vignette, -100, 100); d.raw.distortion = int(s.raw?.distortion, -100, 100);
   d.portrait.seeds = arr(s.portrait?.seeds, MAX_SKIN_SEEDS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, 0, 1), num(y, 0, 1)]);
-  d.overlays = arr(s.overlays, MAX_OVERLAYS).map(validOverlay).filter(Boolean);
   const f = s.frame || {};
   d.frame = { width: int(f.width, 0, 30), color: color(f.color, '#ffffff'), radius: int(f.radius, 0, 50), pad: oneOf(f.pad, PADS, 'none'), padFill: f.padFill === 'color' ? 'color' : 'blur', padColor: color(f.padColor, '#ffffff') };
   return d;

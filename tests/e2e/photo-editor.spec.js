@@ -298,29 +298,10 @@ test('プレビューの画質: 大きな写真を縮めてもギザギザ（モ
   expect(await page.evaluate(() => document.querySelector('canvas.view').style.width)).toBe(css1);
 });
 
-test('文字（XSSの文字列も文字として描くだけ）・ドラッグで移動・スタンプ・描画', async ({ page }) => {
+test('文字・スタンプ・描画のタブはない（成人式の写真の仕上げに使わないので消した）', async ({ page }) => {
   await openWith(page);
-  const m0 = await viewMean(page);
-  await tab(page, '文字');
-  await page.getByRole('button', { name: '＋ 文字を追加' }).click();
-  await page.getByLabel('文字（改行できます）').fill('<img src=x onerror="window.__xss=1">こんにちは');
-  await page.getByLabel('文字（改行できます）').blur();
-  await page.waitForTimeout(150);
-  expect(await page.evaluate(() => window.__xss)).toBeUndefined();
-  expect(await page.locator('img[src="x"]').count()).toBe(0);
-  const m1 = await viewMean(page);
-  expect(m1).not.toEqual(m0);
-  await dragOn(page, [0.5, 0.5], [0.5, 0.2]);
-  const y = await page.evaluate(() => window.__temoto.state.overlays[0].y);
-  expect(y).toBeLessThan(0.35);
-  await page.getByText('縦書き').click();
-  await tab(page, 'スタンプ');
-  await page.getByRole('button', { name: '🎉 を追加' }).click();
-  await tab(page, '描画');
-  await dragOn(page, [0.1, 0.9], [0.9, 0.9]);
-  const ov = await page.evaluate(() => window.__temoto.state.overlays.map((o) => [o.type, o.vertical ?? null]));
-  expect(ov.map((o) => o[0])).toEqual(['text', 'sticker', 'draw']);
-  expect(ov[0][1]).toBe(true);
+  for (const t of ['文字', 'スタンプ', '描画']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(0);
+  for (const t of ['フィルター', '美肌', 'フレーム']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(1);
 });
 
 test('フレーム: 枠と、余白で正方形にする', async ({ page }) => {
@@ -386,9 +367,8 @@ test('a11y: 編集画面（重大な違反なし）', async ({ page }) => {
   await openWith(page);
   const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
   const axe = await readFile(axePath, 'utf8');
-  for (const t of ['フィルター', '切り抜き', '文字']) {
+  for (const t of ['フィルター', '切り抜き', 'フレーム']) {
     await tab(page, t);
-    if (t === '文字') await page.getByRole('button', { name: '＋ 文字を追加' }).click();
     await page.evaluate(axe); // CSP は script-src 'self' だが evaluate は CDP 経由なので注入できる
     const res = await page.evaluate(async () => window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] } }));
     const serious = res.violations.filter((v) => ['serious', 'critical'].includes(v.impact)).map((v) => `${v.id}: ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(' | ')}`);

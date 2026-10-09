@@ -8,7 +8,7 @@
 import { Engine } from './engine.js';
 import { effective } from './presets.js';
 import { outputSize } from './geometry.js';
-import { layout, drawOverlay, roundRect } from './compose.js';
+import { layout, roundRect } from './compose.js';
 import { skinPlan, portraitTile, portraitMargin, portraitActive } from './portrait.js';
 import { heal, mosaic, blurRect } from './retouch.js';
 import { jpegEncoder, pngEncoder, readJpegIcc } from './encode.js';
@@ -122,7 +122,6 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
         sx.drawImage(img, 0, 0, outW, b - a, L.ix, L.iy + a, outW, b - a);
         if (r > 0) sx.restore();
       }
-      for (const ov of state.overlays) drawOverlay(sx, ov, L);
       sx.restore();
       const data = sx.getImageData(0, 0, L.cw, rows, { colorSpace: space }).data;
       await enc.add(data, rows);
