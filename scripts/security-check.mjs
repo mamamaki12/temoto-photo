@@ -5,12 +5,15 @@
 // - target="_blank" には rel="noopener" を必須
 // - 外部スクリプトの読み込みを禁止
 // - CSP で外部への通信を禁止していること（connect-src 'none'。写真を端末の外に出さない）
+// - vendor/（そのまま入れた外部のライブラリ。WebAssembly のつなぎで new Function を使う）は上の規則の対象外にし、
+//   代わりに「外部の URL を含まない」「決めたファイルだけ」を確かめる（Worker の中で、同じサイトのファイルだけを読む）
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP = new Set(['node_modules', '.git', 'test-results', 'playwright-report', 'tests', 'scripts', '_site', 'playwright.config.js']);
+const SKIP = new Set(['node_modules', '.git', 'test-results', 'playwright-report', 'tests', 'scripts', '_site', 'playwright.config.js', 'vendor']);
+const VENDOR = { 'vendor/libraw': ['index.js', 'worker.js', 'libraw.js', 'libraw.wasm', 'LICENSE.txt'] };
 const files = [];
 (function walk(d) {
   for (const n of readdirSync(d)) {
@@ -54,6 +57,16 @@ for (const f of files) {
       if (/target:\s*'_blank'/.test(line) && !/rel:\s*'[^']*noopener/.test(line)) problems.push(`${rel}:${i + 1}: target=_blank に rel=noopener がない`);
     });
     if (/import\s[^;]*from\s+['"]https?:/.test(src)) problems.push(`${rel}: 外部モジュールの import`);
+  }
+}
+
+for (const [dir, allowed] of Object.entries(VENDOR)) {
+  const names = readdirSync(join(root, dir));
+  for (const n of names) if (!allowed.includes(n)) problems.push(`${dir}/${n}: 決めたファイル以外がある`);
+  for (const n of names.filter((x) => x.endsWith('.js'))) {
+    const src = readFileSync(join(root, dir, n), 'utf8');
+    if (/https?:\/\//.test(src)) problems.push(`${dir}/${n}: 外部の URL がある`);
+    if (/import\s*\(\s*['"`]https?:/.test(src) || /importScripts\s*\(\s*['"`]https?:/.test(src)) problems.push(`${dir}/${n}: 外部のスクリプトを読み込む`);
   }
 }
 

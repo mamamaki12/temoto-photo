@@ -34,7 +34,8 @@ async function iccFor(space) {
 
 /**
  * @param {object} a
- * @param {ImageBitmap|HTMLCanvasElement} a.full 元の大きさの写真（向きは直したもの）
+ * @param {ImageBitmap|HTMLCanvasElement|{width,height,region}} a.full 元の大きさの写真（向きは直したもの）。
+ *   region(x, y, w, h) を持つものは、RAW を現像した画素（書き出す色空間の値。Canvas を通さずに一部ずつ取り出す）
  * @param {HTMLCanvasElement|ImageBitmap} a.work 編集用の大きさの写真（美肌の範囲を決めるのに使う）
  * @param {object} a.state 編集内容（検証済み）
  * @param {ImageData|object} a.mask ブラシの部分補正のマスク
@@ -49,13 +50,18 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     let src = full; let FW = full.width; let FH = full.height;
     const lim = eng.maxSize;
     if (Math.max(FW, FH) > lim) {
+      if (full.region) throw new Error('too large for GPU');
       const s = lim / Math.max(FW, FH); FW = Math.floor(FW * s); FH = Math.floor(FH * s);
       src = await createImageBitmap(full, { resizeWidth: FW, resizeHeight: FH, resizeQuality: 'high' });
     }
     onProgress(0.02);
     // ① 元の写真を GPU に
     eng.allocSource(FW, FH);
-    eng.putSource(0, 0, src);
+    if (src.region) {
+      // RAW を現像した画素（Canvas に入りきらない大きさ）: 帯ごとに現像して GPU に送る
+      const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
+      for (let y = 0; y < FH; y += band) { const bh = Math.min(band, FH - y); eng.putSourcePixels(0, y, FW, bh, src.region(0, y, FW, bh)); onProgress(0.02 * (y / FH)); await later(); }
+    } else eng.putSource(0, 0, src);
     if (portraitActive(state.portrait)) await portraitFull(eng, src, work, state.portrait, FW, FH, (t) => onProgress(0.02 + t * 0.3));
     for (const op of state.retouch) await retouchFull(eng, op, FW, FH);
     eng.finishSource();
@@ -142,9 +148,13 @@ async function portraitFull(eng, src, work, p, FW, FH, onProgress) {
     const x0 = Math.max(0, tx - margin); const y0 = Math.max(0, ty - margin);
     const x1 = Math.min(FW, tx + T + margin); const y1 = Math.min(FH, ty + T + margin);
     const w = x1 - x0; const h = y1 - y0;
-    tc.width = w; tc.height = h; const tx2 = ctx2d(tc, { willReadFrequently: true });
-    tx2.clearRect(0, 0, w, h); tx2.drawImage(src, x0, y0, w, h, 0, 0, w, h);
-    const img = tx2.getImageData(0, 0, w, h);
+    let img;
+    if (src.region) img = { width: w, height: h, data: src.region(x0, y0, w, h) };
+    else {
+      tc.width = w; tc.height = h; const tx2 = ctx2d(tc, { willReadFrequently: true });
+      tx2.clearRect(0, 0, w, h); tx2.drawImage(src, x0, y0, w, h, 0, 0, w, h);
+      img = tx2.getImageData(0, 0, w, h);
+    }
     if (portraitTile(img, p, plan, { S, ox: x0, oy: y0, fullW: FW, fullH: FH })) {
       // 内側（余白を除いた部分）だけを GPU に戻す
       const ix0 = tx - x0; const iy0 = ty - y0; const iw = Math.min(T, FW - tx); const ih = Math.min(T, FH - ty);
