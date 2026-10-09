@@ -70,3 +70,14 @@ export function savedExposures(page) {
     r.onerror = () => res([]);
   }));
 }
+
+/** 道具のグループ（左・下の列）。中に道具が複数あるものは、パネルの上のタブで選ぶ */
+const GROUP_OF = { フィルター: 'おまかせ', 自動補正: 'おまかせ', ライト: '調整', カラー: '調整', HSL: '調整', カーブ: '調整', グレーディング: '調整', ディテール: '調整', 効果: '調整', 美肌: 'レタッチ', 修復: 'レタッチ', モザイク: 'レタッチ' };
+/** 道具を開く（グループを選んでから、その中のタブを選ぶ。開いているグループをもう一度押すとパネルが閉じるので、押さない） */
+export async function openTool(page, name) {
+  const g = GROUP_OF[name] || name;
+  const gtab = page.getByRole('tab', { name: g, exact: true });
+  const open = (await gtab.getAttribute('aria-selected')) === 'true' && !(await page.locator('.editor.side-closed').count());
+  if (!open) await gtab.click();
+  if (GROUP_OF[name]) await page.getByRole('tab', { name, exact: true }).click();
+}

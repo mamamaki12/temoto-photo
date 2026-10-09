@@ -15,7 +15,7 @@ const overflow = (page) => page.evaluate(() => {
     if (el.closest('details:not([open]) > :not(summary)')) continue;
     const b = el.getBoundingClientRect(); if (!b.width || !b.height) continue;
     let p = el.parentElement; let inScroller = false;
-    while (p && p !== document.body) { if (p.matches('.tabs, .looks, .grid-layouts')) { inScroller = true; break; } p = p.parentElement; }
+    while (p && p !== document.body) { if (p.matches('.tabs, .subtabs, .looks, .grid-layouts')) { inScroller = true; break; } p = p.parentElement; }
     if (!inScroller && (b.right > vw + 1 || b.left < -1)) out.push(`${el.tagName.toLowerCase()}.${el.className}「${el.textContent.trim().slice(0, 12)}」 ${Math.round(b.left)}〜${Math.round(b.right)}`);
   }
   return out;
@@ -33,10 +33,17 @@ for (const [px, w, h] of [[16, 561, 759], [20, 561, 759], [24, 390, 844], [32, 3
     await page.waitForFunction(() => window.__temoto.editor?.L, null, { timeout: 30000 });
     // 見出しのボタンが画面に入っている
     await expect(page.getByRole('button', { name: '書き出し', exact: true })).toBeInViewport({ ratio: 1 });
-    const tabs = page.getByRole('tab');
-    for (let i = 0; i < await tabs.count(); i++) {
-      await tabs.nth(i).click(); await page.waitForTimeout(80);
-      expect(await overflow(page), await tabs.nth(i).textContent()).toEqual([]);
+    // 道具のグループと、その中の道具を全部開く
+    const groups = page.locator('.rail [role=tab]');
+    for (let i = 0; i < await groups.count(); i++) {
+      if ((await groups.nth(i).getAttribute('aria-selected')) !== 'true') await groups.nth(i).click();
+      await page.waitForTimeout(80);
+      expect(await overflow(page), await groups.nth(i).textContent()).toEqual([]);
+      const subs = page.locator('.subtabs [role=tab]');
+      for (let j = 0; j < await subs.count(); j++) {
+        await subs.nth(j).click(); await page.waitForTimeout(80);
+        expect(await overflow(page), await subs.nth(j).textContent()).toEqual([]);
+      }
     }
     await page.locator('.menu summary').click();
     await expect(page.getByRole('button', { name: 'すべての編集をリセット' })).toBeInViewport({ ratio: 1 });

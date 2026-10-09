@@ -2,7 +2,7 @@
 import { test, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
-import { makePhoto, viewMean, withExif, savedExposures } from './photo-helpers.js';
+import { makePhoto, viewMean, withExif, savedExposures, openTool } from './photo-helpers.js';
 
 const URL0 = '/';
 const SKY = [0.05, 0.05, 0.5, 0.3]; // 表示中の写真の、空の部分（左上）
@@ -21,7 +21,7 @@ async function setSlider(page, label, value) {
   await s.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, value);
   await page.waitForTimeout(120);
 }
-const tab = (page, name) => page.getByRole('tab', { name }).click();
+const tab = (page, name) => openTool(page, name === '自動' ? '自動補正' : name);
 /** 美肌の計算（「仕上げ中」）が終わって、描き直すまで待つ */
 async function skinDone(page) { await page.waitForFunction(() => !document.querySelector('.stage.busy')); await page.waitForTimeout(250); }
 const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -301,7 +301,7 @@ test('プレビューの画質: 大きな写真を縮めてもギザギザ（モ
 test('文字・スタンプ・描画のタブはない（成人式の写真の仕上げに使わないので消した）', async ({ page }) => {
   await openWith(page);
   for (const t of ['文字', 'スタンプ', '描画']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(0);
-  for (const t of ['フィルター', '美肌', 'フレーム']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(1);
+  for (const t of ['おまかせ', 'レタッチ', 'フレーム']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(1);
 });
 
 test('前に選んでいたタブがなくなっていても（描画・RAW 以外の写真での RAW）、写真を表示してフィルターのタブで開く', async ({ page }) => {
@@ -310,6 +310,7 @@ test('前に選んでいたタブがなくなっていても（描画・RAW 以�
     await page.goto(URL0);
     await page.evaluate((t) => localStorage.setItem('temoto:tool', JSON.stringify(t)), saved);
     await openWith(page);
+    await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('tab', { name: 'フィルター', exact: true })).toHaveAttribute('aria-selected', 'true');
     expect((await viewMean(page)).reduce((a, b) => a + b)).toBeGreaterThan(30); // 写真が描かれている
     expect(errors, saved).toEqual([]);
@@ -445,7 +446,7 @@ test('枠と余白をつけても、書き出しは端末の上限（約1,670万
   await page.getByRole('button', { name: '編集をコピー' }).click();
   expect(await page.locator('.menu').evaluate((m) => m.open)).toBe(false);
   await page.locator('.menu summary').click();
-  await page.locator('canvas.view').click();
+  await page.locator('canvas.view').click({ position: { x: 4, y: 4 } }); // メニューの外（写真の左上）を押す
   expect(await page.locator('.menu').evaluate((m) => m.open)).toBe(false);
 });
 
@@ -514,4 +515,54 @@ test('美肌: 顔をタップすると、肌に似た色の背景は変えない
   await tab(page, '美肌');
   await page.getByRole('button', { name: '選び直す' }).click();
   await page.waitForFunction(() => window.__temoto.state.portrait.seeds.length === 0);
+});
+
+test('Canva のような画面: グループを押すとパネルが開き、もう一度押す・✕で閉じて写真が広くなる・右下で拡大縮小', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openWith(page, await (async () => { await page.goto(URL0); return makePhoto(page, { w: 4000, h: 2400 }); })()); // 画面より大きな写真（小さな写真は元の大きさより大きく表示しない）
+  const width = () => page.locator('canvas.view').evaluate((c) => c.getBoundingClientRect().width);
+  await page.getByRole('tab', { name: '調整', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'ライト', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: '調整' })).toBeVisible();
+  const w0 = await width();
+  // もう一度押すと閉じる
+  await page.getByRole('tab', { name: '調整', exact: true }).click();
+  await expect(page.locator('.editor')).toHaveClass(/side-closed/);
+  await expect.poll(width).toBeGreaterThan(w0 + 50);
+  // 押すと開いて、前に使っていた道具（グループの中）に戻る
+  await expect(page.getByRole('tab', { name: 'ライト', exact: true })).toHaveCount(0); // 閉じている間は出ていない
+  await page.getByRole('tab', { name: '調整', exact: true }).click();
+  await page.getByRole('tab', { name: 'カーブ', exact: true }).click();
+  await page.getByRole('tab', { name: 'おまかせ', exact: true }).click();
+  await page.getByRole('tab', { name: '調整', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'カーブ', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('button', { name: 'パネルを閉じる' }).click();
+  await expect(page.locator('.editor')).toHaveClass(/side-closed/);
+  // 拡大・縮小
+  await page.getByRole('button', { name: '拡大', exact: true }).click();
+  await expect(page.locator('.zoom-val')).toHaveText('125%');
+  await page.getByRole('button', { name: /表示の大きさ/ }).click();
+  await expect(page.locator('.zoom-val')).toHaveText('100%');
+});
+
+test('画面の色: 自動は端末の設定に合わせ、ライト・ダークを選ぶと覚える（一覧・編集のメニュー）', async ({ page }) => {
+  const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto(URL0);
+  expect(await theme()).toBe('dark'); // 自動: 端末がダーク
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect.poll(theme).toBe('light'); // 端末の設定を変えると、すぐ変わる
+  // 一覧で「ダーク」を選ぶと、端末の設定によらずダーク。再読み込みしても覚えている
+  await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ダーク' }).click();
+  expect(await theme()).toBe('dark');
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(21, 22, 25)');
+  await page.reload();
+  expect(await theme()).toBe('dark');
+  // 編集画面のメニューからも選べる
+  await page.locator('#open-file').setInputFiles(await makePhoto(page));
+  await page.waitForFunction(() => window.__temoto.editor?.L);
+  await page.locator('.menu summary').click();
+  await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ライト' }).click();
+  expect(await theme()).toBe('light');
+  await expect(page.locator('.editor')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
 });
