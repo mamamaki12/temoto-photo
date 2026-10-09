@@ -6,7 +6,7 @@ import { solidPhoto } from './photo-helpers.js';
 test.describe.configure({ timeout: 60000 });
 const COLORS = { red: [255, 0, 0], green: [0, 200, 0], blue: [0, 0, 255], yellow: [255, 220, 0] };
 /** グリッドの表示の、点（0〜1）の色 */
-const at = (page, x, y) => page.locator('canvas.grid-view').evaluate((c, [x, y]) => [...c.getContext('2d').getImageData(Math.floor(c.width * x), Math.floor(c.height * y), 1, 1).data].slice(0, 3), [x, y]);
+const at = (page, x, y) => page.locator('canvas.grid-view').evaluate((c, [x, y]) => [...c.getContext('2d').getImageData(Math.floor(c.width * x), Math.floor(c.height * y), 1, 1, { colorSpace: 'srgb' }).data].slice(0, 3), [x, y]);
 const is = (got, want, tol = 30) => got.every((v, i) => Math.abs(v - want[i]) <= tol);
 
 async function setup(page) {
@@ -136,7 +136,7 @@ test('グリッド: 写真の間の線をドラッグして大きさの割合を
   const px = await page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))]));
     const c = new OffscreenCanvas(bmp.width, bmp.height); const x = c.getContext('2d'); x.drawImage(bmp, 0, 0);
-    return [[0.65, 0.2], [0.65, 0.45]].map(([u, v]) => [...x.getImageData(Math.floor(u * bmp.width), Math.floor(v * bmp.height), 1, 1).data].slice(0, 3));
+    return [[0.65, 0.2], [0.65, 0.45]].map(([u, v]) => [...x.getImageData(Math.floor(u * bmp.width), Math.floor(v * bmp.height), 1, 1, { colorSpace: 'srgb' }).data].slice(0, 3));
   }, buf.toString('base64'));
   expect(is(px[0], COLORS[names[0]])).toBe(true);
   expect(is(px[1], COLORS[names[2]])).toBe(true);

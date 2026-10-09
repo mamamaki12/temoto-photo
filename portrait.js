@@ -99,6 +99,16 @@ function autoSkinColor(img) {
  * 選ばれていなければ、写真の中のなめらかな肌らしい所から肌の色を推定して、その色に近い所を肌とする（つながりは見ない）。
  */
 export function skinWeights(img, p) {
+  const plan = skinPlan(img, p);
+  return plan.w;
+}
+
+/**
+ * 肌の判定のうち、写真全体を見て決めること（基準の色・肌のきめの細かさ・選んだ場所からつながる範囲）をまとめて計算する。
+ * 元の大きさで書き出すときは、編集用の大きさの写真でこれを作り、元の大きさの写真の一部ずつに weightsWithPlan で当てる。
+ * w: この写真での肌の重み。stats: 肌の平均の色（色むらを整える目標）
+ */
+export function skinPlan(img, p) {
   const seeds = p?.seeds || [];
   const { width: W, height: H, data: d } = img; const N = W * H; const S = Math.min(W, H);
   // ① 基準にする肌の色（Cb・Cr）。選んだ場所があればそのまわり、なければ写真から推定する
@@ -112,20 +122,15 @@ export function skinWeights(img, p) {
       }
       return n ? [cb / n, cr / n, yy / n] : null;
     }).filter(Boolean);
-    if (!refs.length) return new Float32Array(N);
+    if (!refs.length) return finishPlan(img, new Float32Array(N), null);
   } else {
     const ref = autoSkinColor(img);
-    if (!ref) return skinMask(img);
+    if (!ref) return finishPlan(img, skinMask(img), { generic: true });
     refs = [ref];
   }
-  // 色は「色相（赤〜黄のどちら寄りか）」と「鮮やかさ」に分けて比べる。
-  // 同じ人の肌は、光の当たり方で鮮やかさは 0.5〜2 倍ほど変わるが、色相はほぼ同じ（±4°）。金髪・茶髪は 15〜30° ずれる
-  const tol = (p?.tol ?? 50) / 100; const Th = 5 + tol * 10; const softH = 4; const T = 6 + tol * 12;
-  // [色相, 鮮やかさ, 明るさ]
-  const refA = refs.map(([rb, rr, ry]) => [Math.atan2(rr - 128, 128 - rb), Math.hypot(rb - 128, rr - 128), ry]);
-  // 細かい明暗の量（髪の毛・ひげ・布の織り目は多く、肌は少ない）。明るさで割って、暗い髪でも比べられるようにする
+  // 細かい明暗の量（髪の毛・ひげ・布の織り目は多く、肌は少ない）の、肌での値
   const tex = textureMap(d, W, H, S);
-  let texRef;
+  let texRef = null;
   if (seeds.length) {
     const vals = []; const rad = Math.max(3, Math.round(S / 60));
     for (const [sx, sy] of seeds) {
@@ -134,6 +139,45 @@ export function skinWeights(img, p) {
     }
     texRef = median(vals);
   }
+  const plan = { refs, texRef, gate: null };
+  const w = localWeights(img, p, plan, S, tex);
+  if (seeds.length) {
+    plan.gate = connectedGate(img, w, seeds, colorTol(p).T);
+    applyGate(w, W, H, plan.gate, 0, 0, W, H);
+  }
+  return finishPlan(img, w, plan);
+}
+
+/** 肌の平均の色・肌のある範囲をまとめる */
+function finishPlan(img, w, plan) {
+  const { width: W, height: H, data: d } = img;
+  let cbAvg = 0; let crAvg = 0; let wsum = 0; let msum = 0; let x0 = 1; let y0 = 1; let x1 = 0; let y1 = 0;
+  for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) {
+    const v = w[i]; msum += v; if (v <= 0.02) continue;
+    const u = x / W; const t = y / H; if (u < x0) x0 = u; if (u > x1) x1 = u; if (t < y0) y0 = t; if (t > y1) y1 = t;
+    if (v < 0.5) continue;
+    const k = i * 4; cbAvg += v * (128 - 0.168736 * d[k] - 0.331264 * d[k + 1] + 0.5 * d[k + 2]); crAvg += v * (128 + 0.5 * d[k] - 0.418688 * d[k + 1] - 0.081312 * d[k + 2]); wsum += v;
+  }
+  const S = Math.min(W, H);
+  return { ...(plan || {}), w, stats: wsum > 0 ? { cbAvg: cbAvg / wsum, crAvg: crAvg / wsum } : { cbAvg: 108, crAvg: 152 }, bbox: x1 >= x0 ? [x0, y0, x1 + 1 / W, y1 + 1 / H] : null, enough: msum >= S * S * 0.002 };
+}
+
+const colorTol = (p) => { const tol = (p?.tol ?? 50) / 100; return { Th: 5 + tol * 10, T: 6 + tol * 12 }; };
+
+/**
+ * 1画素ずつの肌らしさ（色・細かい明暗・まわりの割合）。plan の基準の色・きめで判定する。
+ * S: 写真全体の短い辺（一部だけを渡すときも、全体の大きさで半径を決める）。tex: 計算済みなら渡す
+ */
+function localWeights(img, p, plan, S, tex) {
+  const { width: W, height: H, data: d } = img; const N = W * H;
+  const { refs } = plan;
+  // 色は「色相（赤〜黄のどちら寄りか）」と「鮮やかさ」に分けて比べる。
+  // 同じ人の肌は、光の当たり方で鮮やかさは 0.5〜2 倍ほど変わるが、色相はほぼ同じ（±4°）。金髪・茶髪は 15〜30° ずれる
+  const { Th } = colorTol(p); const softH = 4;
+  // [色相, 鮮やかさ, 明るさ]
+  const refA = refs.map(([rb, rr, ry]) => [Math.atan2(rr - 128, 128 - rb), Math.hypot(rb - 128, rr - 128), ry]);
+  // 細かい明暗の量（髪の毛・ひげ・布の織り目は多く、肌は少ない）。明るさで割って、暗い髪でも比べられるようにする
+  tex ||= textureMap(d, W, H, S);
   // 1画素ずつの判定（tight）と、明らかに肌でない色だけを外す判定（loose: 目・眉・服などをくっきり外す）
   const tight = new Float32Array(N); const loose = new Float32Array(N);
   for (let i = 0, k = 0; i < N; i++, k += 4) {
@@ -159,14 +203,19 @@ export function skinWeights(img, p) {
   }
   // 面で判定する: 髪（金髪・茶髪）は肌に近い色の毛がまばらに混じるだけだが、肌はほぼ全部が肌の色。
   // まわりの画素のうち肌の色の割合で決めるので、髪が外れ、肌の中のまだら（判定のムラ）もなくなる
-  if (texRef == null) { const vals = []; for (let i = 0; i < N; i += 7) if (tight[i] > 0.9) vals.push(tex[i]); texRef = vals.length ? median(vals) : 1; }
+  if (plan.texRef == null) { const vals = []; for (let i = 0; i < N; i += 7) if (tight[i] > 0.9) vals.push(tex[i]); plan.texRef = vals.length ? median(vals) : 1; }
+  const texRef = plan.texRef;
   const tLo = 2 * texRef + 1; const tHi = tLo * 2;
   for (let i = 0; i < N; i++) { const t = tex[i]; if (t > tLo) tight[i] *= t >= tHi ? 0 : 1 - (t - tLo) / (tHi - tLo); }
   const area = boxBlur(tight, W, H, Math.max(1, Math.round(S / 220)), 2);
   const w = new Float32Array(N);
   for (let i = 0; i < N; i++) { if (!loose[i]) continue; const t = (area[i] - 0.3) / 0.35; w[i] = (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t)) * loose[i]; }
-  if (!seeds.length) return w;
-  // ② 選んだ場所からつながっている範囲（粗いマス目で、となりのマスと色が近いときだけ広げる）
+  return w;
+}
+
+/** ② 選んだ場所からつながっている範囲（粗いマス目で、となりのマスと色が近いときだけ広げる）。マス目の 0〜1 の値を返す */
+function connectedGate(img, w, seeds, T) {
+  const { width: W, height: H, data: d } = img;
   const g = Math.max(1, Math.ceil(Math.max(W, H) / 360)); const gw = Math.ceil(W / g); const gh = Math.ceil(H / g); const G = gw * gh;
   const mw = new Float32Array(G); const mY = new Float32Array(G); const mb = new Float32Array(G); const mr = new Float32Array(G); const vc = new Float32Array(G); const vy = new Float32Array(G); const cnt = new Float32Array(G);
   const colOf = new Int32Array(W); for (let x = 0; x < W; x++) colOf[x] = (x / g) | 0;
@@ -211,15 +260,29 @@ export function skinWeights(img, p) {
     soft2[y * gw + x] = on;
   }
   soft2 = boxBlur(soft2, gw, gh, 1, 1);
+  return { soft: soft2, gw, gh, g, W, H };
+}
+
+/** つながっている範囲を、画像（写真全体の (ox, oy) から fullW×fullH の写真の一部）の重みに掛ける */
+function applyGate(w, W, H, gate, ox, oy, fullW, fullH) {
+  const { soft, gw, gh, g } = gate; const sx = gate.W / fullW; const sy = gate.H / fullH; // 元の大きさ → 判定した大きさ
   for (let y = 0, i = 0; y < H; y++) {
-    const fy = Math.min(gh - 1, Math.max(0, (y + 0.5) / g - 0.5)); const y0 = fy | 0; const y1 = Math.min(gh - 1, y0 + 1); const ty = fy - y0;
+    const fy = Math.min(gh - 1, Math.max(0, ((oy + y + 0.5) * sy) / g - 0.5)); const y0 = fy | 0; const y1 = Math.min(gh - 1, y0 + 1); const ty = fy - y0;
     for (let x = 0; x < W; x++, i++) {
       if (w[i] === 0) continue;
-      const fx = Math.min(gw - 1, Math.max(0, (x + 0.5) / g - 0.5)); const x0 = fx | 0; const x1 = Math.min(gw - 1, x0 + 1); const tx = fx - x0;
-      const top = soft2[y0 * gw + x0] + (soft2[y0 * gw + x1] - soft2[y0 * gw + x0]) * tx; const bot = soft2[y1 * gw + x0] + (soft2[y1 * gw + x1] - soft2[y1 * gw + x0]) * tx;
+      const fx = Math.min(gw - 1, Math.max(0, ((ox + x + 0.5) * sx) / g - 0.5)); const x0 = fx | 0; const x1 = Math.min(gw - 1, x0 + 1); const tx = fx - x0;
+      const top = soft[y0 * gw + x0] + (soft[y0 * gw + x1] - soft[y0 * gw + x0]) * tx; const bot = soft[y1 * gw + x0] + (soft[y1 * gw + x1] - soft[y1 * gw + x0]) * tx;
       w[i] *= Math.min(1, (top + (bot - top) * ty) * 1.5);
     }
   }
+}
+
+/** 元の大きさの写真の一部（左上が全体の (ox, oy)）の肌の重みを、編集用の大きさで作った plan から計算する */
+export function weightsWithPlan(img, p, plan, { S, ox, oy, fullW, fullH }) {
+  if (plan.generic) return skinMask(img);
+  if (!plan.refs) return new Float32Array(img.width * img.height);
+  const w = localWeights(img, p, plan, S);
+  if (plan.gate) applyGate(w, img.width, img.height, plan.gate, ox, oy, fullW, fullH);
   return w;
 }
 
@@ -240,7 +303,9 @@ export function applyPortrait(img, p) {
   if (!active(p)) return;
   const { width: W, height: H, data: d } = img; const S = Math.min(W, H);
   // 肌のある範囲（＋ぼかしの届く余白）だけを切り出して計算する（背景の多い写真ほど速い）
-  const full = skinWeights(img, p);
+  const plan = skinPlan(img, p);
+  if (!plan.enough) return; // 肌がほとんど写っていない
+  const full = plan.w;
   let x0 = W; let y0 = H; let x1 = -1; let y1 = -1;
   for (let y = 0, i = 0; y < H; y++) {
     let any = false;
@@ -251,36 +316,46 @@ export function applyPortrait(img, p) {
   const pad = Math.round(S / 30) + 2;
   x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(W - 1, x1 + pad); y1 = Math.min(H - 1, y1 + pad);
   const w = x1 - x0 + 1; const h = y1 - y0 + 1;
-  if (w === W && h === H) { portraitCore(img, p, S, full); return; }
+  if (w === W && h === H) { portraitCore(img, p, S, full, plan.stats); return; }
   const sub = { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; const raw = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
     sub.data.set(d.subarray(((y0 + y) * W + x0) * 4, ((y0 + y) * W + x1 + 1) * 4), y * w * 4);
     raw.set(full.subarray((y0 + y) * W + x0, (y0 + y) * W + x1 + 1), y * w);
   }
-  portraitCore(sub, p, S, raw);
+  portraitCore(sub, p, S, raw, plan.stats);
   for (let y = 0; y < h; y++) d.set(sub.data.subarray(y * w * 4, (y + 1) * w * 4), ((y0 + y) * W + x0) * 4);
 }
 
-/** S: 元の写真の短い辺（切り出しても、効き方は写真全体の大きさで決める）。raw: 肌らしさ */
-function portraitCore(img, p, S, raw) {
+/**
+ * 元の大きさで書き出すとき: 写真の一部（左上が全体の (ox, oy)）に美肌を当てる。plan は編集用の大きさで作ったもの。
+ * 一部の端では計算が途切れるので、portraitMargin(S) ぶん広く切り出して渡し、内側だけを使う
+ * @returns {boolean} 肌があって書き換えたか
+ */
+export function portraitTile(img, p, plan, { S, ox, oy, fullW, fullH }) {
+  const raw = weightsWithPlan(img, p, plan, { S, ox, oy, fullW, fullH });
+  let any = false; for (let i = 0; i < raw.length; i++) if (raw[i] > 0.003) { any = true; break; }
+  if (!any) return false;
+  portraitCore(img, p, S, raw, plan.stats);
+  return true;
+}
+/** 一部ずつ当てるときの、切り出しの余白と、そろえる単位（粗い成分のマス目の大きさ） */
+export function portraitMargin(S) {
+  const f = Math.max(1, Math.round(Math.max(2, Math.round(S / 90)) / 5));
+  return { f, margin: Math.ceil(S / 25 / f) * f };
+}
+
+/** S: 元の写真の短い辺（切り出しても、効き方は写真全体の大きさで決める）。raw: 肌らしさ。stats: 肌の平均の色 */
+function portraitCore(img, p, S, raw, stats) {
   const { width: W, height: H, data: d } = img; const N = W * H;
   // 肌のマスク: 画素単位だと目・まつげの境目がガタつくので、ごく小さくぼかす
   const m = boxBlur(raw.slice(), W, H, Math.max(1, Math.round(S / 900)), 2);
-  let msum = 0; for (let i = 0; i < N; i++) msum += m[i];
-  if (msum < S * S * 0.002) return; // 肌がほとんど写っていない
 
   const a = (p.smooth || 0) / 100; const ev = (p.even || 0) / 100; const br = (p.bright || 0) / 100;
   const R = new Float32Array(N); const G = new Float32Array(N); const B = new Float32Array(N);
   for (let i = 0, k = 0; i < N; i++, k += 4) { R[i] = d[k]; G[i] = d[k + 1]; B[i] = d[k + 2]; }
 
-  // 肌の平均の色（色むらを整える目標）
-  let cbAvg = 0; let crAvg = 0; let wsum = 0;
-  for (let i = 0; i < N; i++) {
-    const w = raw[i]; if (w < 0.5) continue;
-    cbAvg += w * (128 - 0.168736 * R[i] - 0.331264 * G[i] + 0.5 * B[i]);
-    crAvg += w * (128 + 0.5 * R[i] - 0.418688 * G[i] - 0.081312 * B[i]); wsum += w;
-  }
-  if (wsum > 0) { cbAvg /= wsum; crAvg /= wsum; } else { cbAvg = 108; crAvg = 152; }
+  // 肌の平均の色（色むらを整える目標）は写真全体で決めたもの
+  const { cbAvg, crAvg } = stats;
 
   let Ls = null; let Ll = null; let lw = 0; let lh = 0; let f = 1;
   if (a > 0) {

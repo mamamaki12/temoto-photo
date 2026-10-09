@@ -1,6 +1,7 @@
 // 仕上げの合成（2D Canvas）: 色を整えた画像 + フレーム（枠・角丸・余白） + 文字・スタンプ・手描き
 // プレビューと書き出しで同じ関数を使うので、見た目が一致する。
 import { FONT_CSS } from './state.js';
+import { ctx2d } from './color.js';
 
 /** フレームを含めた最終的な大きさと、画像を置く位置 */
 export function layout(W, H, frame) {
@@ -14,7 +15,7 @@ export function layout(W, H, frame) {
   return { cw, ch, ix: Math.round((cw - W) / 2), iy: Math.round((ch - H) / 2), iw: W, ih: H, border: b };
 }
 
-function roundRect(ctx, x, y, w, h, r) {
+export function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h);
 }
@@ -104,7 +105,7 @@ export function compose(target, image, state, { hide } = {}) {
   const W = image.width; const H = image.height;
   const L = layout(W, H, state.frame);
   if (target.width !== L.cw || target.height !== L.ch) { target.width = L.cw; target.height = L.ch; }
-  const ctx = target.getContext('2d');
+  const ctx = ctx2d(target);
   ctx.save();
   ctx.clearRect(0, 0, L.cw, L.ch);
   const f = state.frame;

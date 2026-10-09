@@ -15,6 +15,8 @@
 - **RAW**: DNG は RAW データから現像。CR3・NEF・ARW・RAF などは中のプレビュー画像で開く
 - **グリッド**: 2〜9枚を1枚にまとめる（29レイアウト。写真の間の線をドラッグして大きさの割合も変えられる）
 - **書き出し**: JPEG・PNG・WebP、大きさを指定、まとめて書き出し。位置情報などのメタデータは入らない
+  - **元の大きさ**: 編集中は端末が扱える大きさ（約1,670万画素まで）に縮めて表示し、書き出すときは元の写真から描き直す（JPEG・PNG）。iPhone の Safari でも、画像を帯に分けて描き、自分で JPEG / PNG を組み立てるので、2,400万・4,800万画素の写真もそのままの大きさで書き出せる
+  - **色**: iPhone の写真の Display P3（sRGB より鮮やかな赤・緑）のまま読み込み・編集・書き出しする。プリント店向けに sRGB も選べる
 - **非破壊編集**: 元の写真は残したまま。いつでも元に戻せる。編集のコピー・貼り付け、プリセット
 
 一般的な写真編集アプリとの比較や仕組みは [`docs/photo-editor.md`](docs/photo-editor.md) にあります。
@@ -56,7 +58,7 @@ npm test                          # セキュリティチェック・単体テ�
 ```
 
 - `tests/unit/`: 編集レシピの検証、座標変換、カーブ、自動補正、Exif、修復、美肌、RAW の現像、グリッドの計算
-- `tests/e2e/`: 実際のブラウザで、画素の変化・書き出し・保存・RAW・グリッド・アクセシビリティを確認
+- `tests/e2e/`: 実際のブラウザで、画素の変化・書き出し（元の大きさ・Display P3）・保存・RAW・グリッド・アクセシビリティを確認
 
 ## 構成
 
@@ -67,6 +69,7 @@ engine.js     WebGL2 の描画（補正・色の処理）
 state.js      編集レシピ（保存する内容）と検証
 geometry.js   切り抜き・回転・遠近の座標変換
 curves.js auto.js presets.js retouch.js portrait.js compose.js   カーブ・自動補正・フィルター・修復・美肌・文字や枠
+fullres.js encode.js color.js   元の大きさでの書き出し・JPEG/PNG の組み立て・色空間（Display P3）
 exif.js raw.js ljpeg.js raw-worker.js   Exif・RAW の読み込みと現像
 grid.js       グリッド（コラージュ）
 db.js ui.js lib.js   保存・画面部品・共通の小さな部品

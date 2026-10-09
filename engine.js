@@ -5,6 +5,7 @@
 import { geoParams } from './geometry.js';
 import { curvesLut } from './curves.js';
 import { HSL_BANDS, LOCAL_TYPES } from './state.js';
+import { glColorSpace } from './color.js';
 
 const VERT = `#version 300 es
 in vec2 aPos; out vec2 vUv;
@@ -29,11 +30,12 @@ vec2 outToSrc(vec2 o) {
 
 const GEO_FRAG = `#version 300 es
 precision highp float;
-in vec2 vUv; out vec4 outColor; uniform sampler2D uSrc;
+in vec2 vUv; out vec4 outColor; uniform sampler2D uSrc; uniform vec4 uRegion;
 ${GEO_FN}
 void main() {
-  // 画面の上が y=0 になるように反転
-  vec2 s = outToSrc(vec2(vUv.x, 1.0 - vUv.y));
+  // uRegion: 出力全体のうち、描く範囲（帯ごとに描くとき）。画面の上が y=0 になるように反転
+  vec2 g = uRegion.xy + vUv * uRegion.zw;
+  vec2 s = outToSrc(vec2(g.x, 1.0 - g.y));
   outColor = vec4(texture(uSrc, clamp(s, 0.0, 1.0)).rgb, 1.0);
 }`;
 
@@ -52,8 +54,8 @@ void main() {
 
 const COPY_FRAG = `#version 300 es
 precision highp float;
-in vec2 vUv; out vec4 outColor; uniform sampler2D uTex;
-void main() { outColor = vec4(texture(uTex, vUv).rgb, 1.0); }`;
+in vec2 vUv; out vec4 outColor; uniform sampler2D uTex; uniform vec4 uRect;
+void main() { outColor = vec4(texture(uTex, uRect.xy + vUv * uRect.zw).rgb, 1.0); }`;
 
 const MAIN_FRAG = `#version 300 es
 precision highp float;
@@ -67,6 +69,7 @@ uniform int uUseLut; uniform vec3 uHsl[8]; uniform float uHslHue[8];
 uniform vec3 uGradeSh, uGradeMid, uGradeHi; uniform float uGradeBal;
 uniform int uLocalCount; uniform vec4 uLocA[8]; uniform vec4 uLocB[8]; uniform vec4 uLocAdj0[8]; uniform vec4 uLocAdj1[8]; uniform vec4 uLocAdj2[8];
 uniform int uBypass; uniform int uShowMask; uniform int uUseNbr; uniform int uUseHsl;
+uniform vec4 uRegion, uGeoRegion; // 帯ごとに描くとき: 出力全体のうちこの帯の範囲と、幾何パスの画像（少し上下に広い）の範囲
 ${GEO_FN}
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -127,11 +130,13 @@ float localMask(int i, vec2 sp, vec3 orig) {
 }
 
 void main() {
-  vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
-  vec3 orig = texture(uGeo, vUv).rgb;
+  vec2 G = uRegion.xy + vUv * uRegion.zw; // 出力全体での位置
+  vec2 gv = (G - uGeoRegion.xy) / uGeoRegion.zw; // 幾何パスの画像での位置
+  vec2 uv = vec2(G.x, 1.0 - G.y);
+  vec3 orig = texture(uGeo, gv).rgb;
   if (uBypass == 1) { outColor = vec4(orig, 1.0); return; }
-  vec3 blur = texture(uBlur, vUv).rgb;
-  vec3 blurMid = texture(uBlurMid, vUv).rgb;
+  vec3 blur = texture(uBlur, G).rgb;
+  vec3 blurMid = texture(uBlurMid, G).rgb;
   vec3 c = orig;
 
   // ノイズ軽減（明るさが近い近傍だけを混ぜる）とシャープ用の近傍
@@ -140,7 +145,7 @@ void main() {
   if (uUseNbr == 1) {
     vec3 sum = vec3(0.0); float wsum = 0.0; avg = vec3(0.0);
     for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
-      vec3 n = texture(uGeo, vUv + vec2(float(x), float(y)) * uTexel * uDetailStep).rgb;
+      vec3 n = texture(uGeo, gv + vec2(float(x), float(y)) * uTexel * uDetailStep).rgb;
       avg += n;
       float w = exp(-pow(luma(n) - luma(orig), 2.0) * 200.0);
       sum += n * w; wsum += w;
@@ -244,11 +249,16 @@ function hueToRgbOffset(h, s) {
   return rgb.map((v) => (v - m) * (s / 100) * 0.35);
 }
 
+const FULL = [0, 0, 1, 1];
+/** シャープ・ノイズ軽減で近くの画素を読む間隔（画像の大きさに比例させて、どの大きさでも同じ見た目に） */
+const detailStep = (w, h) => Math.max(1, Math.max(w, h) / 2000);
+
 export class Engine {
   constructor(canvas) {
     this.canvas = canvas;
     const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true, antialias: false });
     if (!gl) throw new Error('webgl2');
+    glColorSpace(gl); // Display P3 の写真を、くすませずに読み込み・描く
     this.gl = gl;
     this.maxSize = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
     const buf = gl.createBuffer();
@@ -341,14 +351,24 @@ export class Engine {
    * @param {{bypass?: boolean, showMask?: number}} opts bypass: 色の調整をせずに表示（比較用）／showMask: 部分補正の範囲を赤く表示
    */
   render(state, outW, outH, { bypass = false, showMask = -1 } = {}) {
-    const gl = this.gl;
     if (this.canvas.width !== outW || this.canvas.height !== outH) { this.canvas.width = outW; this.canvas.height = outH; }
-    // 1. 幾何
     const geo = this.fb('geo', outW, outH);
-    const pg = this.progs.geo; gl.useProgram(pg.p);
-    this.bindTex(pg, 'uSrc', this.src, 0); this.setGeo(pg, state.geo);
-    this.draw(pg, geo, outW, outH);
-    // 2. ぼかし（長辺 192px に縮小 → 縦横にぼかす ×2）
+    this.drawGeo(state, geo, outW, outH, FULL);
+    const blurs = this.blurs(geo, outW, outH);
+    this.drawMain(state, null, outW, outH, { geo, blurs, region: FULL, geoRegion: FULL, texel: [1 / outW, 1 / outH], bypass, showMask });
+  }
+
+  /** 1. 幾何（region: 出力全体のうち描く範囲。GL の座標で [x, y, 幅, 高さ]） */
+  drawGeo(state, target, w, h, region) {
+    const gl = this.gl; const pg = this.progs.geo; gl.useProgram(pg.p);
+    this.bindTex(pg, 'uSrc', this.src, 0); this.setGeo(pg, state.geo); gl.uniform4f(pg.loc.uRegion, ...region);
+    this.draw(pg, target, w, h);
+  }
+
+  /** 2. ぼかし（長辺 192px に縮小 → 縦横にぼかす ×2）。geo は出力全体の幾何画像（縮小したものでもよい） */
+  blurs(geo, outW, outH) {
+    const gl = this.gl; const pc = this.progs.copy;
+    const copy = (src, dst, w, h) => { gl.useProgram(pc.p); this.bindTex(pc, 'uTex', src.tex, 0); gl.uniform4f(pc.loc.uRect, 0, 0, 1, 1); this.draw(pc, dst, w, h); };
     const s = 192 / Math.max(outW, outH);
     const bw = Math.max(4, Math.round(outW * Math.min(1, s))); const bh = Math.max(4, Math.round(outH * Math.min(1, s)));
     // 段階的に縮小してちらつき（エイリアス）を防ぐ
@@ -356,26 +376,26 @@ export class Engine {
     let mid = Math.max(outW, outH) <= 720 ? geo : null; // 明瞭度用（長辺720px前後）
     while (lw / 2 > bw && lh / 2 > bh && step < 6) {
       lw = Math.max(bw, Math.round(lw / 2)); lh = Math.max(bh, Math.round(lh / 2));
-      const f = this.fb(`down${step}`, lw, lh); const pc = this.progs.copy; gl.useProgram(pc.p); this.bindTex(pc, 'uTex', prev.tex, 0); this.draw(pc, f, lw, lh); prev = f; step++;
+      const f = this.fb(`down${step}`, lw, lh); copy(prev, f, lw, lh); prev = f; step++;
       if (!mid && Math.max(lw, lh) <= 720) mid = f;
     }
     if (!mid) mid = prev;
     const m1 = this.fb('mid1', mid.w, mid.h); const m2 = this.fb('mid2', mid.w, mid.h);
-    {
-      const pbm = this.progs.blur;
-      gl.useProgram(pbm.p); this.bindTex(pbm, 'uTex', mid.tex, 0); gl.uniform2f(pbm.loc.uDir, 1 / mid.w, 0); this.draw(pbm, m2, mid.w, mid.h);
-      gl.useProgram(pbm.p); this.bindTex(pbm, 'uTex', m2.tex, 0); gl.uniform2f(pbm.loc.uDir, 0, 1 / mid.h); this.draw(pbm, m1, mid.w, mid.h);
-    }
-    const b1 = this.fb('blur1', bw, bh); const b2 = this.fb('blur2', bw, bh);
-    const pc = this.progs.copy; gl.useProgram(pc.p); this.bindTex(pc, 'uTex', prev.tex, 0); this.draw(pc, b1, bw, bh);
     const pb = this.progs.blur;
-    for (let i = 0; i < 2; i++) {
-      gl.useProgram(pb.p); this.bindTex(pb, 'uTex', b1.tex, 0); gl.uniform2f(pb.loc.uDir, 1.5 / bw, 0); this.draw(pb, b2, bw, bh);
-      gl.useProgram(pb.p); this.bindTex(pb, 'uTex', b2.tex, 0); gl.uniform2f(pb.loc.uDir, 0, 1.5 / bh); this.draw(pb, b1, bw, bh);
-    }
-    // 3. 色
+    const pass = (src, dst, w, h, dx, dy) => { gl.useProgram(pb.p); this.bindTex(pb, 'uTex', src.tex, 0); gl.uniform2f(pb.loc.uDir, dx, dy); this.draw(pb, dst, w, h); };
+    pass(mid, m2, mid.w, mid.h, 1 / mid.w, 0); pass(m2, m1, mid.w, mid.h, 0, 1 / mid.h);
+    const b1 = this.fb('blur1', bw, bh); const b2 = this.fb('blur2', bw, bh);
+    copy(prev, b1, bw, bh);
+    for (let i = 0; i < 2; i++) { pass(b1, b2, bw, bh, 1.5 / bw, 0); pass(b2, b1, bw, bh, 0, 1.5 / bh); }
+    return { b1, m1 };
+  }
+
+  /** 3. 色。target が null なら画面（canvas）に描く */
+  drawMain(state, target, outW, outH, { geo, blurs, region, geoRegion, texel, bypass = false, showMask = -1, w = outW, h = outH }) {
+    const gl = this.gl;
     const pm = this.progs.main; const L = pm.loc; gl.useProgram(pm.p);
-    this.bindTex(pm, 'uGeo', geo.tex, 0); this.bindTex(pm, 'uBlur', b1.tex, 1); this.bindTex(pm, 'uBlurMid', m1.tex, 4);
+    this.bindTex(pm, 'uGeo', geo.tex, 0); this.bindTex(pm, 'uBlur', blurs.b1.tex, 1); this.bindTex(pm, 'uBlurMid', blurs.m1.tex, 4);
+    gl.uniform4f(L.uRegion, ...region); gl.uniform4f(L.uGeoRegion, ...geoRegion);
     const key = JSON.stringify(state.curves);
     if (key !== this.lutKey) {
       gl.bindTexture(gl.TEXTURE_2D, this.lut);
@@ -387,7 +407,7 @@ export class Engine {
     gl.uniform1i(L.uBypass, bypass ? 1 : 0); gl.uniform1i(L.uShowMask, showMask);
     gl.uniform1i(L.uUseNbr, state.adj.sharpen > 0 || state.adj.noise > 0 ? 1 : 0);
     gl.uniform1i(L.uUseHsl, HSL_BANDS.some(([k]) => state.hsl[k].h || state.hsl[k].s || state.hsl[k].l) ? 1 : 0);
-    gl.uniform2f(L.uTexel, 1 / outW, 1 / outH); gl.uniform1f(L.uDetailStep, Math.max(1, Math.max(outW, outH) / 2000));
+    gl.uniform2f(L.uTexel, ...texel); gl.uniform1f(L.uDetailStep, detailStep(outW, outH));
     gl.uniform2f(L.uOutSize, outW, outH); gl.uniform2f(L.uSrcSize, this.srcW, this.srcH);
     this.setGeo(pm, state.geo);
     const a = state.adj; const f = (k) => (a[k] || 0) / 100;
@@ -418,7 +438,85 @@ export class Engine {
     });
     gl.uniform1i(L.uLocalCount, locs.length);
     gl.uniform4fv(L.uLocA, A); gl.uniform4fv(L.uLocB, B); gl.uniform4fv(L.uLocAdj0, J0); gl.uniform4fv(L.uLocAdj1, J1); gl.uniform4fv(L.uLocAdj2, J2);
-    this.draw(pm, null, outW, outH);
+    this.draw(pm, target, w, h);
+  }
+
+  // ── 元の大きさで書き出すとき: 大きな画像を、横長の帯に分けて描く（大きな Canvas を作らない） ──
+
+  /** 帯で描く準備（ぼかしは、全体を縮めて描いた画像から先に作っておく） */
+  beginStrips(state, outW, outH) {
+    const s = Math.min(1, 2048 / Math.max(outW, outH));
+    const pw = Math.max(4, Math.round(outW * s)); const ph = Math.max(4, Math.round(outH * s));
+    const small = this.fb('pgeo', pw, ph);
+    this.drawGeo(state, small, pw, ph, FULL);
+    this.strip = { state, outW, outH, blurs: this.blurs(small, pw, ph) };
+  }
+
+  /** 出力の y0 行目から rows 行を描いて、画素（RGBA、上の行から）を返す */
+  renderStrip(y0, rows) {
+    const gl = this.gl; const { state, outW, outH, blurs } = this.strip;
+    const m = Math.ceil(detailStep(outW, outH)) + 2; // シャープ・ノイズ軽減が近くの画素を読むぶん、上下に広く
+    const gy0 = Math.max(0, y0 - m); const gy1 = Math.min(outH, y0 + rows + m); const gh = gy1 - gy0;
+    const geoRegion = [0, 1 - gy1 / outH, 1, gh / outH];
+    const geo = this.fb('sgeo', outW, gh); this.drawGeo(state, geo, outW, gh, geoRegion);
+    const out = this.fb('sout', outW, rows);
+    this.drawMain(state, out, outW, outH, { geo, blurs, region: [0, 1 - (y0 + rows) / outH, 1, rows / outH], geoRegion, texel: [1 / outW, 1 / gh], w: outW, h: rows });
+    const px = new Uint8Array(outW * rows * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, out.fb); gl.readPixels(0, 0, outW, rows, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    // GL は下の行から並ぶので、上下を入れ替える
+    const flip = new Uint8ClampedArray(px.length); const stride = outW * 4;
+    for (let y = 0; y < rows; y++) flip.set(px.subarray((rows - 1 - y) * stride, (rows - y) * stride), y * stride);
+    return flip;
+  }
+
+  endStrips() { this.strip = null; for (const k of ['sgeo', 'sout', 'pgeo']) { const f = this.fbs[k]; if (f) { this.gl.deleteTexture(f.tex); this.gl.deleteFramebuffer(f.fb); delete this.fbs[k]; } } }
+
+  /** 元の大きさの写真を、分けて GPU に送る（allocSource → putSource… → finishSource） */
+  allocSource(w, h) {
+    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.src);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    this.srcW = w; this.srcH = h;
+    if (this.srcFb) gl.deleteFramebuffer(this.srcFb);
+    this.srcFb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, this.srcFb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.src, 0);
+  }
+  /** 画像（Canvas・ImageBitmap）を (x, y) に置く。色空間はそろえて読み込まれる */
+  putSource(x, y, image) {
+    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.src); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  }
+  /** 画素（RGBA の配列。色空間は変換しない）を置く */
+  putSourcePixels(x, y, w, h, data) {
+    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.src); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(data.buffer, data.byteOffset, data.length));
+  }
+  /** 置いた画像の一部を読み出す（修復・モザイクを元の大きさで当てるため） */
+  readSource(x, y, w, h) {
+    const gl = this.gl; const px = new Uint8ClampedArray(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.srcFb); gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(px.buffer));
+    return px;
+  }
+  /** 置いた画像の一部を、縮めて読み出す（大きなぼかしは縮めた画像の上で計算する） */
+  readSourceScaled(x, y, w, h, sw, sh) {
+    const gl = this.gl; const pc = this.progs.copy; const f = this.fb('tmpA', sw, sh);
+    gl.useProgram(pc.p); this.bindTex(pc, 'uTex', this.src, 0); gl.uniform4f(pc.loc.uRect, x / this.srcW, y / this.srcH, w / this.srcW, h / this.srcH); this.draw(pc, f, sw, sh);
+    const px = new Uint8ClampedArray(sw * sh * 4); gl.readPixels(0, 0, sw, sh, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(px.buffer));
+    return px;
+  }
+  /** 小さな画素を、引き伸ばして (x, y, w, h) に描く */
+  putSourceScaled(x, y, w, h, sw, sh, data) {
+    const gl = this.gl; const pc = this.progs.copy;
+    if (!this.tmpTex) this.tmpTex = this.texture();
+    gl.bindTexture(gl.TEXTURE_2D, this.tmpTex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, sw, sh, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(data.buffer, data.byteOffset, data.length));
+    gl.useProgram(pc.p); this.bindTex(pc, 'uTex', this.tmpTex, 0); gl.uniform4f(pc.loc.uRect, 0, 0, 1, 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.srcFb); gl.viewport(x, y, w, h);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  finishSource() {
+    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.src);
+    gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   }
 
   /** 表示中の画像を小さく読み出す（ヒストグラム用） */
@@ -434,7 +532,8 @@ export class Engine {
   dispose() {
     const gl = this.gl;
     for (const f of Object.values(this.fbs)) { gl.deleteTexture(f.tex); gl.deleteFramebuffer(f.fb); }
-    for (const t of [this.src, this.lut, this.mask]) gl.deleteTexture(t);
+    for (const t of [this.src, this.lut, this.mask, this.tmpTex]) if (t) gl.deleteTexture(t);
+    if (this.srcFb) gl.deleteFramebuffer(this.srcFb);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
   }
 }

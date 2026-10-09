@@ -22,6 +22,8 @@ async function setSlider(page, label, value) {
   await page.waitForTimeout(120);
 }
 const tab = (page, name) => page.getByRole('tab', { name }).click();
+/** 美肌の計算（「仕上げ中」）が終わって、描き直すまで待つ */
+async function skinDone(page) { await page.waitForFunction(() => !document.querySelector('.stage.busy')); await page.waitForTimeout(250); }
 const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 /** 表示中の写真の上の点（0〜1）を押す・なぞる */
 async function viewBox(page) { return page.locator('canvas.view').boundingBox(); }
@@ -115,7 +117,7 @@ test('フィルター（モノクロ）と強さ、自動補正', async ({ page 
   [r, g, b] = await viewMean(page, SKY);
   expect(b - r).toBeGreaterThan(40);
   // 見本の画像が描かれている
-  const thumbFilled = await page.locator('.look canvas').nth(3).evaluate((c) => { const d = c.getContext('2d').getImageData(40, 40, 1, 1).data; return d[3] > 0; });
+  const thumbFilled = await page.locator('.look canvas').nth(3).evaluate((c) => { const d = c.getContext('2d').getImageData(40, 40, 1, 1, { colorSpace: 'srgb' }).data; return d[3] > 0; });
   expect(thumbFilled).toBe(true);
   await tab(page, '自動');
   await page.getByRole('button', { name: '✦ 自動補正' }).click();
@@ -224,7 +226,7 @@ test('スポット修復で黒い点が消え、モザイクで細部が消え�
   await page.waitForTimeout(200);
   expect(lum(await viewMean(page, dust))).toBeGreaterThan(d0 + 25);
   await tab(page, 'モザイク');
-  const sd = () => page.evaluate(() => { const c = document.querySelector('canvas.view'); const d = c.getContext('2d').getImageData(Math.round(c.width * 0.22), Math.round(c.height * 0.5), Math.round(c.width * 0.16), Math.round(c.height * 0.3)).data; let s = 0; let s2 = 0; const n = d.length / 4; for (let i = 0; i < d.length; i += 4) { s += d[i]; s2 += d[i] * d[i]; } return Math.sqrt(s2 / n - (s / n) ** 2); });
+  const sd = () => page.evaluate(() => { const c = document.querySelector('canvas.view'); const d = c.getContext('2d').getImageData(Math.round(c.width * 0.22), Math.round(c.height * 0.5), Math.round(c.width * 0.16), Math.round(c.height * 0.3), { colorSpace: 'srgb' }).data; let s = 0; let s2 = 0; const n = d.length / 4; for (let i = 0; i < d.length; i += 4) { s += d[i]; s2 += d[i] * d[i]; } return Math.sqrt(s2 / n - (s / n) ** 2); });
   const before = await sd();
   await dragOn(page, [0.2, 0.48], [0.4, 0.82]);
   await page.waitForTimeout(200);
@@ -245,7 +247,7 @@ test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ね
   expect(await page.evaluate(() => window.__temoto.state.portrait.smooth)).toBe(0);
   await tapAt(page, 0.3, 0.6);
   await page.waitForFunction(() => window.__temoto.state.portrait.smooth === 75 && window.__temoto.state.portrait.seeds.length === 1);
-  await page.waitForTimeout(300);
+  await skinDone(page);
   expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2.5);
   const s1 = await viewMean(page, SKY);
   for (let c = 0; c < 3; c++) expect(Math.abs(s1[c] - s0[c])).toBeLessThan(1);
@@ -283,7 +285,7 @@ test('プレビューの画質: 大きな写真を縮めてもギザギザ（モ
   });
   await openWith(page, { name: 'stripes.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
   const sd = () => page.evaluate(() => {
-    const c = document.querySelector('canvas.view'); const d = c.getContext('2d').getImageData(Math.round(c.width * 0.3), Math.round(c.height * 0.3), Math.round(c.width * 0.4), Math.round(c.height * 0.4)).data;
+    const c = document.querySelector('canvas.view'); const d = c.getContext('2d').getImageData(Math.round(c.width * 0.3), Math.round(c.height * 0.3), Math.round(c.width * 0.4), Math.round(c.height * 0.4), { colorSpace: 'srgb' }).data;
     let s = 0; let s2 = 0; const n = d.length / 4; for (let i = 0; i < d.length; i += 4) { s += d[i]; s2 += d[i] * d[i]; } return Math.sqrt(s2 / n - (s / n) ** 2);
   });
   expect(await sd()).toBeLessThan(20);
@@ -397,7 +399,7 @@ test('a11y: 編集画面（重大な違反なし）', async ({ page }) => {
 /** 表示中の写真の一部の「細かさ」（隣の画素との差の平均）。ぼけると小さくなる */
 const detail = (page, [x0, y0, x1, y1]) => page.evaluate(([x0, y0, x1, y1]) => {
   const c = document.querySelector('canvas.view'); const w = Math.floor(c.width * (x1 - x0)); const hh = Math.floor(c.height * (y1 - y0));
-  const d = c.getContext('2d').getImageData(Math.floor(c.width * x0), Math.floor(c.height * y0), w, hh).data;
+  const d = c.getContext('2d').getImageData(Math.floor(c.width * x0), Math.floor(c.height * y0), w, hh, { colorSpace: 'srgb' }).data;
   let s = 0; let n = 0;
   for (let y = 0; y < hh; y++) for (let x = 1; x < w; x++) { const i = (y * w + x) * 4; s += Math.abs(d[i] - d[i - 4]) + Math.abs(d[i + 1] - d[i - 3]); n++; }
   return s / n;
@@ -466,7 +468,7 @@ test('大きな写真は高画質に縮めて開く（縞模様がつぶれな�
     return btoa(s);
   });
   await openWith(page, { name: 'big.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
-  await expect(page.locator('.toast').filter({ hasText: '万画素' })).toBeVisible();
+  await expect(page.locator('.toast').filter({ hasText: '書き出しは元の大きさ（5760×3840）' })).toBeVisible();
   const { W, H } = await page.evaluate(() => ({ W: window.__temoto.editor.W, H: window.__temoto.editor.H }));
   expect(W * H).toBeLessThanOrEqual(16_700_000);
   expect(W).toBeGreaterThan(4900);
@@ -474,7 +476,7 @@ test('大きな写真は高画質に縮めて開く（縞模様がつぶれな�
   const st = await page.evaluate(() => {
     const b = window.__temoto.editor.base; const c = document.createElement('canvas'); c.width = 400; c.height = 1;
     c.getContext('2d').drawImage(b, 1000, 1000, 400, 1, 0, 0, 400, 1);
-    const d = c.getContext('2d').getImageData(0, 0, 400, 1).data; let s = 0; let mn = 255; let mx = 0;
+    const d = c.getContext('2d').getImageData(0, 0, 400, 1, { colorSpace: 'srgb' }).data; let s = 0; let mn = 255; let mx = 0;
     for (let i = 0; i < d.length; i += 4) { s += d[i]; mn = Math.min(mn, d[i]); mx = Math.max(mx, d[i]); }
     return { mean: s / 400, mn, mx };
   });
@@ -501,14 +503,14 @@ test('美肌: 顔をタップすると、肌に似た色の背景は変えない
   await expect(page.getByText('肌の場所: 未選択')).toBeVisible();
   await tapAt(page, 0.35, 0.5);
   await page.waitForFunction(() => window.__temoto.state.portrait.seeds.length === 1 && window.__temoto.state.portrait.smooth === 50);
-  await page.waitForTimeout(300);
+  await skinDone(page);
   await expect(page.getByText('肌として選んだ場所: 1か所')).toBeVisible();
   expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2);
   const w1 = await viewMean(page, WALL);
   for (let c = 0; c < 3; c++) expect(Math.abs(w1[c] - w0[c])).toBeLessThan(1);
   // 範囲の表示: 顔だけが赤くなる
   await page.getByLabel('肌と判定した範囲を赤で表示').check();
-  await page.waitForTimeout(500);
+  await skinDone(page);
   const fr = await viewMean(page, FACE); const wr = await viewMean(page, WALL);
   expect(fr[0] - fr[1]).toBeGreaterThan(90);
   for (let c = 0; c < 3; c++) expect(Math.abs(wr[c] - w0[c])).toBeLessThan(1);
