@@ -14,11 +14,13 @@ import { compose, hitOverlay, overlayBox, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
 import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
+import { ctx2d, imageData, COLOR_SPACE } from './color.js';
+import { exportFull } from './fullres.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.3.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.4.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
@@ -52,7 +54,7 @@ function workSize(w, hgt, maxTex = MAX_SIDE) {
 }
 function toCanvas(src, w, hgt) {
   const c = document.createElement('canvas'); c.width = w; c.height = hgt;
-  c.getContext('2d').drawImage(src, 0, 0, w, hgt);
+  ctx2d(c).drawImage(src, 0, 0, w, hgt);
   return c;
 }
 /** 高画質で縮める（一度に半分より小さくすると細部がつぶれるので、半分ずつ段階的に） */
@@ -61,7 +63,7 @@ function shrink(src, w, hgt) {
   do {
     const nw = Math.max(w, Math.round(cw / 2)); const nh = Math.max(hgt, Math.round(ch / 2));
     const c = document.createElement('canvas'); c.width = nw; c.height = nh;
-    const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    const ctx = ctx2d(c); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(cur, 0, 0, nw, nh);
     if (cur !== src) { cur.width = 0; cur.height = 0; } // 途中の Canvas のメモリをすぐ返す
     cur = c; cw = nw; ch = nh;
@@ -81,7 +83,7 @@ function orientCanvas(img, o) {
   if (!o || o === 1) return img;
   const w = img.width; const hgt = img.height; const swap = o >= 5;
   const c = document.createElement('canvas'); c.width = swap ? hgt : w; c.height = swap ? w : hgt;
-  const x = c.getContext('2d');
+  const x = ctx2d(c);
   const T = { 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, hgt], 4: [1, 0, 0, -1, 0, hgt], 5: [0, 1, 1, 0, 0, 0], 6: [0, 1, -1, 0, hgt, 0], 7: [0, -1, -1, 0, hgt, w], 8: [0, -1, 1, 0, 0, w] }[o];
   if (T) x.setTransform(...T);
   x.drawImage(img, 0, 0);
@@ -152,23 +154,24 @@ async function importFiles(files) {
 }
 
 /** 写真と編集内容から、描画に必要なもの（元画像・修復後の画像・マスク）を用意する */
-async function prepare(proj, blob, maxTex) {
+async function prepare(proj, blob, maxTex, { keepFull = false } = {}) {
   const { image: bmp } = await decodeAny(blob, proj.fileName, proj);
   const ws = workSize(bmp.width, bmp.height, maxTex);
   let base = bmp;
   if (ws.w !== bmp.width || ws.h !== bmp.height) {
     // createImageBitmap の縮小は、ブラウザによっては画質の指定が効かず粗くなるので、Canvas で高画質に縮める
     base = shrink(bmp, ws.w, ws.h);
-    bmp.close?.();
+    if (!keepFull) bmp.close?.();
   }
-  return { base, W: ws.w, H: ws.h, scaled: ws.scaled, origW: proj.w, origH: proj.h };
+  // keepFull: 元の大きさで書き出すために、縮める前の写真も返す
+  return { base, W: ws.w, H: ws.h, scaled: ws.scaled, origW: proj.w, origH: proj.h, full: keepFull ? bmp : null };
 }
 
 /** 修復・モザイクと美肌を元写真の画素に当てる（美肌が先。あとから足す修復は、美肌の後の画素にそのまま重ねられる） */
 function retouchCanvas(base, ops, portrait, cache) {
   const c = toCanvas(base, base.width, base.height);
   if (!ops.length && !portraitActive(portrait)) return { canvas: c, data: null };
-  const ctx = c.getContext('2d', { willReadFrequently: true });
+  const ctx = ctx2d(c, { willReadFrequently: true });
   let data;
   if (!portraitActive(portrait)) data = ctx.getImageData(0, 0, c.width, c.height);
   else {
@@ -177,8 +180,8 @@ function retouchCanvas(base, ops, portrait, cache) {
     if (cache?.key !== key) {
       const pd = ctx.getImageData(0, 0, c.width, c.height); applyPortrait(pd, portrait);
       if (cache) { cache.key = key; cache.data = pd; }
-      data = cache ? new ImageData(new Uint8ClampedArray(pd.data), pd.width, pd.height) : pd;
-    } else data = new ImageData(new Uint8ClampedArray(cache.data.data), cache.data.width, cache.data.height);
+      data = cache ? imageData(new Uint8ClampedArray(pd.data), pd.width, pd.height) : pd;
+    } else data = imageData(new Uint8ClampedArray(cache.data.data), cache.data.width, cache.data.height);
   }
   applyRetouch(data, ops);
   ctx.putImageData(data, 0, 0);
@@ -193,7 +196,7 @@ function buildMask(state, W, H, cache = new Map()) {
   const out = { width: mw, height: mh, data: new Uint8Array(mw * mh * 4) };
   brushes.forEach((l, ch) => {
     const c = brushCanvas(l, mw, mh, cache);
-    const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, mw, mh).data;
+    const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, mw, mh).data;
     for (let i = 0; i < mw * mh; i++) out.data[i * 4 + ch] = d[i * 4 + 3];
   });
   return out;
@@ -202,8 +205,8 @@ function brushCanvas(l, mw, mh, cache) {
   const key = `${l.id}:${mw}x${mh}`;
   let ent = cache.get(key);
   if (!ent) { const c = document.createElement('canvas'); c.width = mw; c.height = mh; ent = { c, n: 0 }; cache.set(key, ent); }
-  if (ent.n > l.strokes.length) { ent.c.getContext('2d').clearRect(0, 0, mw, mh); ent.n = 0; }
-  const ctx = ent.c.getContext('2d');
+  if (ent.n > l.strokes.length) { ctx2d(ent.c).clearRect(0, 0, mw, mh); ent.n = 0; }
+  const ctx = ctx2d(ent.c);
   for (; ent.n < l.strokes.length; ent.n++) paintStroke(ctx, l.strokes[ent.n], mw, mh);
   return ent.c;
 }
@@ -344,7 +347,7 @@ async function openEditor(id) {
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
   requestRender();
-  if (p.scaled) toast(`写真が大きいので、この端末で扱える ${p.W}×${p.H}（約${Math.round(p.W * p.H / 10000)}万画素）で編集します。2L判・A4 のプリントにも十分な大きさです`, 5000);
+  if (p.scaled) toast(`写真が大きいので、編集中は ${p.W}×${p.H} に縮めて表示します。書き出しは元の大きさ（${p.origW}×${p.origH}）のままできます`, 5000);
 }
 
 const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait]);
@@ -361,7 +364,7 @@ function addRetouch(op) {
   if (E.state.retouch.length >= S.MAX_RETOUCH) { toast('修復・モザイクは300個までです'); return; }
   E.state.retouch.push(op);
   if (!E.src) { const r = retouchCanvas(E.base, [], null); E.src = r.canvas; }
-  const ctx = E.src.getContext('2d', { willReadFrequently: true });
+  const ctx = ctx2d(E.src, { willReadFrequently: true });
   if (!E.srcData) E.srcData = ctx.getImageData(0, 0, E.W, E.H);
   applyRetouch(E.srcData, [op]);
   ctx.putImageData(E.srcData, 0, 0);
@@ -377,13 +380,13 @@ function smallSource() {
   if (!E.small) {
     const s = Math.min(1, 320 / Math.max(E.W, E.H));
     const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(E.W * s)); c.height = Math.max(1, Math.round(E.H * s));
-    c.getContext('2d', { willReadFrequently: true }).drawImage(E.src || E.base, 0, 0, c.width, c.height);
+    ctx2d(c, { willReadFrequently: true }).drawImage(E.src || E.base, 0, 0, c.width, c.height);
     E.small = c;
   }
   return E.small;
 }
 function sampleSource(s, t, rad = 2) {
-  const c = smallSource(); const ctx = c.getContext('2d', { willReadFrequently: true });
+  const c = smallSource(); const ctx = ctx2d(c, { willReadFrequently: true });
   const x = Math.round(s * (c.width - 1)); const y = Math.round(t * (c.height - 1));
   const d = ctx.getImageData(Math.max(0, x - rad), Math.max(0, y - rad), rad * 2 + 1, rad * 2 + 1).data;
   let r = 0; let g = 0; let b = 0; const n = d.length / 4;
@@ -483,7 +486,7 @@ function scheduleHistogram() {
   }, 150);
 }
 function drawHistogram(c, hist, only) {
-  const ctx = c.getContext('2d'); const w = c.width; const hh = c.height;
+  const ctx = ctx2d(c); const w = c.width; const hh = c.height;
   ctx.clearRect(0, 0, w, hh);
   const max = Math.max(1, ...['r', 'g', 'b'].flatMap((k) => hist[k].slice(2, 254)));
   ctx.globalCompositeOperation = 'lighter';
@@ -573,7 +576,7 @@ const PANELS = {
     return [
       histo(),
       row(btn('✦ 自動補正', () => {
-        const c = smallSource(); const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+        const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d))); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
       }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); requestRender(); })),
       hint('写真の明るさの分布から、露光・白黒レベル・ホワイトバランスを整えます。気に入らなければ「元に戻す」で戻せます。'),
@@ -715,7 +718,7 @@ function drawLookThumbs(grid) {
   for (const b of grid.children) {
     const c = b.querySelector('canvas');
     E.thumbEngine.render(effective({ ...base, look: { id: b.dataset.id, amount: 100 } }), tw, th);
-    c.getContext('2d').drawImage(E.thumbEngine.canvas, (tw - 96) / 2, (th - 96) / 2, 96, 96, 0, 0, 96, 96);
+    ctx2d(c).drawImage(E.thumbEngine.canvas, (tw - 96) / 2, (th - 96) / 2, 96, 96, 0, 0, 96, 96);
   }
   E.thumbsKey = key;
 }
@@ -787,8 +790,8 @@ function setShowSkin(on) {
   requestAnimationFrame(() => setTimeout(() => { if (!E) return; try { rebuildSource(); } finally { E.stageEl.classList.remove('busy'); } requestRender(); }, 0));
 }
 function skinOverlaySource() {
-  if (!E.baseData) E.baseData = toCanvas(E.base, E.W, E.H).getContext('2d', { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
-  const c = toCanvas(E.src || E.base, E.W, E.H); const ctx = c.getContext('2d', { willReadFrequently: true });
+  if (!E.baseData) E.baseData = ctx2d(toCanvas(E.base, E.W, E.H), { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
+  const c = toCanvas(E.src || E.base, E.W, E.H); const ctx = ctx2d(c, { willReadFrequently: true });
   const d = ctx.getImageData(0, 0, E.W, E.H); tintSkin(d, E.baseData, E.state.portrait); ctx.putImageData(d, 0, 0);
   return c;
 }
@@ -821,7 +824,7 @@ function skinPanel() {
     n ? hint('背景や服まで赤くなるときは「色の幅」を下げ、肌の一部が赤くならないときは上げるか、その場所もタップしてください。') : null,
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
-      const c = smallSource(); const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+      const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
       Object.assign(E.state.adj, autoAdjust(histogram(d)));
       E.state.look = { id: 'studio-clear', amount: 60 };
       if (n) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
@@ -968,6 +971,7 @@ function infoPanel() {
   const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['アプリの版', VERSION], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
     ...(p.raw ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
     ['書き出す大きさ（元の大きさのとき）', (() => {
+      if (E.scaled && p.w) { const o = outputSize(E.state.geo, p.w, p.h); const L0 = layout(o.w, o.h, E.state.frame); return `${L0.cw}×${L0.ch}（JPEG・PNG は元の写真から描き直します）`; }
       const o = outputSize(E.state.geo, E.W, E.H); const L0 = layout(o.w, o.h, E.state.frame);
       const k = Math.min(1, Math.sqrt((MAX_PIXELS * 0.99) / (L0.cw * L0.ch))); // 丸めで上限を超えないよう少し余裕を持たせる
       return `${Math.round(L0.cw * k)}×${Math.round(L0.ch * k)}${k < 1 ? '（端末の上限に合わせて縮小）' : ''}`;
@@ -1108,7 +1112,7 @@ function localAction(e, c, o, p) {
         st.pts.push(q);
         // 新しく伸びた部分だけを塗り足す
         const ent = [...E.maskCache.entries()].find(([k]) => k.startsWith(`${cur.id}:`))?.[1];
-        if (ent) paintStroke(ent.c.getContext('2d'), st, ent.c.width, ent.c.height, st.pts.length - 1);
+        if (ent) paintStroke(ctx2d(ent.c), st, ent.c.width, ent.c.height, st.pts.length - 1);
         refresh();
       },
       end: () => { E.maskKey = maskKey(); commit(); },
@@ -1194,7 +1198,7 @@ function drawAction(o) {
 
 function overlayAction(c, o, tool) {
   const kind = tool === 'text' ? 'text' : 'sticker';
-  const hit = hitOverlay(E.view.getContext('2d'), E.state.overlays.filter((x) => x.type === kind), c[0], c[1], E.L);
+  const hit = hitOverlay(ctx2d(E.view), E.state.overlays.filter((x) => x.type === kind), c[0], c[1], E.L);
   if (!hit) { if (E.selOverlay) { E.selOverlay = null; buildPanel(); drawHandles(); } return null; }
   if (E.selOverlay !== hit.id) { E.selOverlay = hit.id; buildPanel(); }
   const start = o; const p0 = [hit.x, hit.y];
@@ -1252,7 +1256,7 @@ function drawHandles() {
   if ((E.tool === 'text' || E.tool === 'sticker') && E.selOverlay) {
     const o = E.state.overlays.find((x) => x.id === E.selOverlay);
     if (o && o.type !== 'draw') {
-      const b = overlayBox(E.view.getContext('2d'), o, L); const w = b.w; const hh = b.h; const fs = b.fs;
+      const b = overlayBox(ctx2d(E.view), o, L); const w = b.w; const hh = b.h; const fs = b.fs;
       const [cx, cy] = outToCanvas([o.x, o.y]); const pad = fs * 0.3;
       el('rect', { x: cx - w / 2 - pad, y: cy - hh / 2 - pad, width: w + pad * 2, height: hh + pad * 2, transform: `rotate(${o.rot} ${cx} ${cy})`, class: 'sel-box', 'stroke-width': 2 * k });
     }
@@ -1298,16 +1302,36 @@ function renderToCanvas({ base, W, H, state }, { maxSide } = {}) {
     return out;
   } finally { eng.dispose(); }
 }
-async function canvasToBlob(canvas, format, quality) {
+async function canvasToBlob(canvas, format, quality, space = COLOR_SPACE) {
   let out = canvas;
-  if (format === 'image/jpeg') { const f = document.createElement('canvas'); f.width = out.width; f.height = out.height; const ctx = f.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, f.width, f.height); ctx.drawImage(out, 0, 0); out = f; }
+  // JPEG は透明にできないので白で埋める。sRGB で書き出すときは、sRGB の Canvas に描き写す（ブラウザが色を変換する）
+  if (format === 'image/jpeg' || space !== COLOR_SPACE) {
+    const f = document.createElement('canvas'); f.width = out.width; f.height = out.height; const ctx = f.getContext('2d', { colorSpace: space });
+    if (format === 'image/jpeg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, f.width, f.height); }
+    ctx.drawImage(out, 0, 0); out = f;
+  }
   const blob = await new Promise((r) => out.toBlob(r, format, quality));
   if (!blob) throw new Error('toBlob');
   return { blob, w: out.width, h: out.height };
 }
-/** 1枚を書き出す（元の大きさで描き直す） */
-async function renderToBlob(src, { format, quality, maxSide }) {
-  return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality);
+/**
+ * 1枚を書き出す。編集用に縮めた写真（約1,670万画素まで）より大きく書き出すときは、元の写真から帯ごとに描き直す（fullres.js）
+ * @param {object} src { base, W, H, state, full?（元の大きさの写真）, origW, origH }
+ */
+async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE, onProgress }) {
+  if (useFull(src, format, maxSide)) {
+    const st = S.validateState(src.state);
+    // 修復で自動で選んだコピー元は、編集用の大きさで決めておく（プレビューと同じ場所になる）
+    if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(src.base, st.retouch, null);
+    try {
+      return await exportFull({ full: src.full, work: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, onProgress });
+    } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
+  }
+  return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality, space);
+}
+/** 元の写真から描き直すか（編集用に縮めていて、それより大きく書き出すとき。WebP は帯ごとに作れないので縮めたまま） */
+function useFull(src, format, maxSide) {
+  return !!src.full && format !== 'image/webp' && (src.full.width > src.W || src.full.height > src.H) && (!maxSide || maxSide > Math.max(src.W, src.H));
 }
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 const safeName = (s) => s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80) || 'photo';
@@ -1315,6 +1339,7 @@ const safeName = (s) => s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80
 function openExport({ batch }) {
   const opt = prefs.get('export', { format: 'image/jpeg', quality: 92, maxSide: 0 });
   if (opt.format === 'image/webp' && !canWebp) opt.format = 'image/jpeg';
+  if (opt.space !== 'srgb' || COLOR_SPACE === 'srgb') opt.space = COLOR_SPACE;
   const save = () => prefs.set('export', opt);
   const status = h('p', { class: 'muted small', 'aria-live': 'polite' });
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
@@ -1328,7 +1353,10 @@ function openExport({ batch }) {
     chips([['image/jpeg', 'JPEG'], ['image/png', 'PNG（劣化なし）'], ...(canWebp ? [['image/webp', 'WebP（小さい）']] : [])], opt.format, (v) => { opt.format = v; qWrap.hidden = v === 'image/png'; save(); }, { label: '形式' }).el,
     qWrap,
     h('div', { class: 'sub-head' }, h('b', {}, '大きさ（長い辺）')),
-    chips([[0, '元の大きさ'], [4096, '4096px'], [2048, '2048px'], [1080, '1080px（SNS）']], opt.maxSide, (v) => { opt.maxSide = v; save(); }, { label: '大きさ' }).el,
+    chips([[0, batch || !E.proj.w ? '元の大きさ' : `元の大きさ（${E.proj.w}×${E.proj.h}）`], [4096, '4096px'], [2048, '2048px'], [1080, '1080px（SNS）']], opt.maxSide, (v) => { opt.maxSide = v; save(); }, { label: '大きさ' }).el,
+    ...(COLOR_SPACE === 'display-p3' ? [h('div', { class: 'sub-head' }, h('b', {}, '色')),
+      chips([['display-p3', 'Display P3（鮮やかなまま）'], ['srgb', 'sRGB（プリント店・古い機器向け）']], opt.space, (v) => { opt.space = v; save(); }, { label: '色' }).el,
+      h('p', { class: 'muted small' }, 'iPhone で撮った写真の鮮やかな赤や緑は、Display P3 でそのまま残ります。プリント店で色が変わるときは sRGB を選んでください。')] : []),
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
     h('p', { class: 'ok-note' }, '✓ 位置情報・撮影日時・カメラ情報などのメタデータは、書き出した画像には入りません。'),
     status,
@@ -1338,7 +1366,14 @@ function openExport({ batch }) {
     flushSave();
     const st = S.clone(E.state);
     status.textContent = '書き出しています…';
-    const r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide });
+    let full = null;
+    if (useFull({ full: { width: E.proj.w || 0, height: E.proj.h || 0 }, W: E.W, H: E.H }, opt.format, opt.maxSide)) {
+      status.textContent = '元の大きさの写真を読み込んでいます…';
+      try { full = (await decodeAny(await db.getBlob(E.id), E.proj.fileName, E.proj)).image; } catch { full = null; }
+    }
+    const progress = (t) => { status.textContent = `書き出しています… ${Math.round(t * 100)}%`; };
+    let r;
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     status.textContent = `${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
   };
@@ -1350,9 +1385,9 @@ function openExport({ batch }) {
         let i = 0;
         for (const p of batch) {
           status.textContent = `書き出しています… ${++i}/${batch.length}`;
-          const blob = await db.getBlob(p.id); const prep = await prepare(p, blob);
-          const r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide });
-          prep.base.close?.();
+          const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
+          let r;
+          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
           download(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
           await new Promise((res) => setTimeout(res, 400));
         }
@@ -1419,7 +1454,7 @@ function drawGridView() {
   const fit = Math.min((st.width - 24) * dpr / base.w, (st.height - 24) * dpr / base.h, 2);
   const W = Math.max(1, Math.round(base.w * fit)); const H = Math.max(1, Math.round(base.h * fit));
   if (GR.view.width !== W || GR.view.height !== H) { GR.view.width = W; GR.view.height = H; }
-  GR.rects = drawGrid(GR.view.getContext('2d'), W, H, GR.grid, gridImages(), { selected: GR.sel, handles: true, active: GR.line });
+  GR.rects = drawGrid(ctx2d(GR.view), W, H, GR.grid, gridImages(), { selected: GR.sel, handles: true, active: GR.line });
   GR.view.style.width = `${W / dpr}px`; GR.view.style.height = `${H / dpr}px`;
 }
 function saveGridStyle() { const { aspect, gap, margin, radius, bg } = GR.grid; prefs.set('gridStyle', { aspect, gap, margin, radius, bg }); }
@@ -1430,7 +1465,7 @@ function gridPanel() {
   if (GR.tab === 'layout') {
     const thumbs = h('div', { class: 'grid-layouts', role: 'group', 'aria-label': 'レイアウト' }, LAYOUTS[n].map((l) => {
       const c = h('canvas', { width: 64, height: 64, 'aria-hidden': 'true' });
-      const ctx = c.getContext('2d'); ctx.fillStyle = '#1c1d20'; ctx.fillRect(0, 0, 64, 64); ctx.fillStyle = '#8b8e95';
+      const ctx = ctx2d(c); ctx.fillStyle = '#1c1d20'; ctx.fillRect(0, 0, 64, 64); ctx.fillStyle = '#8b8e95';
       for (const r of cellRects(l, 64, 64, { gap: 6, margin: 6 })) ctx.fillRect(r.x, r.y, r.w, r.h);
       return h('button', { type: 'button', class: 'grid-layout', 'aria-pressed': String(G.layout === l.id), onclick: () => { G.layout = l.id; G.lines = {}; gridPanel(); drawGridView(); } }, c, h('span', {}, l.name));
     }));
@@ -1539,7 +1574,7 @@ async function renderGridFull(longSide) {
     prep.base.close?.();
   }
   const out = document.createElement('canvas'); out.width = w; out.height = hh;
-  drawGrid(out.getContext('2d'), w, hh, GR.grid, images);
+  drawGrid(ctx2d(out), w, hh, GR.grid, images);
   return out;
 }
 

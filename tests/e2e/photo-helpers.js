@@ -23,7 +23,7 @@ export async function viewMean(page, region) {
   return page.evaluate((region) => {
     const c = document.querySelector('canvas.view'); const x = c.getContext('2d');
     const [x0, y0, x1, y1] = region || [0, 0, 1, 1];
-    const d = x.getImageData(Math.floor(c.width * x0), Math.floor(c.height * y0), Math.max(1, Math.floor(c.width * (x1 - x0))), Math.max(1, Math.floor(c.height * (y1 - y0)))).data;
+    const d = x.getImageData(Math.floor(c.width * x0), Math.floor(c.height * y0), Math.max(1, Math.floor(c.width * (x1 - x0))), Math.max(1, Math.floor(c.height * (y1 - y0))), { colorSpace: 'srgb' }).data;
     let r = 0; let g = 0; let b = 0; const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
     return [r / n, g / n, b / n];
