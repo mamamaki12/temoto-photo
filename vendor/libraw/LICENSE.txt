@@ -1,0 +1,14 @@
+このフォルダは、RAW 現像ライブラリ LibRaw を WebAssembly にしたもの（libraw-wasm 1.6.0）をそのまま入れています。
+ソースマップの行だけを取り除き、ほかは変更していません。
+
+- libraw-wasm（JavaScript のつなぎ部分）: ISC License
+  https://github.com/ybouane/LibRaw-Wasm
+- LibRaw: GNU Lesser General Public License 2.1 または Common Development and Distribution License 1.0 のどちらか
+  Copyright (C) 2008-2024 LibRaw LLC (info@libraw.org)
+  https://www.libraw.org/ ・ https://github.com/LibRaw/LibRaw
+  LGPL 2.1 に従い、LibRaw はこのアプリとは別のファイル（libraw.wasm）になっていて、差し替えられます。
+- Little CMS（LibRaw の色管理）: MIT License
+  Copyright (c) Marti Maria Saguer
+
+This directory contains libraw-wasm 1.6.0 (a WebAssembly build of LibRaw) unmodified except for removed source-map comments.
+LibRaw is dual-licensed under LGPL 2.1 / CDDL 1.0; the wrapper is ISC; Little CMS is MIT.

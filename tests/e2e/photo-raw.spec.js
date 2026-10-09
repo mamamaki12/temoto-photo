@@ -74,3 +74,48 @@ test('対応していない・壊れた RAW は、分かる言葉で知らせる
   await expect(page.locator('.toast').last()).toContainText('このRAWの形式には対応していません');
   await expect(page.locator('.lib-item')).toHaveCount(0);
 });
+
+test('キヤノンなどの RAW は LibRaw で RAW データから現像し、「RAW の露出」で明るさを戻せて、元の大きさで書き出せる', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = []; page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(URL0);
+  // 中身は DNG だが、名前を .CR2 にすると LibRaw で読む（LibRaw は中身で形式を見分ける）
+  const raw = makeDng({ w: 600, h: 400, scene: scene(600, 400), neutral: [0.5, 1, 0.75], black: 512, white: 16000, colorMatrix: XYZ_TO_SRGB });
+  await page.locator('#open-file').setInputFiles(file('IMG_0004.CR2', raw));
+  await opened(page);
+  // 編集中は半分の大きさで現像（元の大きさは 600×400 のまま覚えている）
+  expect(await page.evaluate(() => [window.__temoto.editor.W, window.__temoto.editor.H, window.__temoto.editor.proj.w])).toEqual([300, 200, 600]);
+  await page.getByRole('tab', { name: '情報' }).click();
+  await expect(page.locator('.info')).toContainText('LibRaw・16bit');
+  await expect(page.locator('.info')).toContainText('TestCam RAW-1');
+  // 色の面の並び（赤み・青・緑・灰色）が保たれている
+  const [red, blue, green, gray] = await Promise.all([[0.1, 0.1, 0.4, 0.4], [0.6, 0.1, 0.9, 0.4], [0.1, 0.6, 0.4, 0.9], [0.6, 0.6, 0.9, 0.9]].map((r) => viewMean(page, r)));
+  expect(red[0]).toBeGreaterThan(red[2] + 30); expect(blue[2]).toBeGreaterThan(blue[0] + 30); expect(green[1]).toBeGreaterThan(green[0] + 30);
+  expect(Math.max(...gray) - Math.min(...gray)).toBeLessThan(12);
+  // RAW の露出を下げると暗くなる（16bit のデータから現像し直す）
+  const before = lum(gray);
+  await page.getByRole('tab', { name: 'ライト' }).click();
+  await page.getByLabel('RAW の露出（白飛び・黒つぶれを戻す）').evaluate((el) => { el.value = -1; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForFunction(() => window.__temoto.state.raw.exposure === -100);
+  await page.waitForFunction(() => !document.querySelector('.stage.busy'));
+  await expect.poll(async () => lum(await viewMean(page, [0.6, 0.6, 0.9, 0.9]))).toBeLessThan(before - 20);
+  // 元の大きさで書き出す（元の大きさで現像し直す）
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  const dlg = page.getByRole('dialog');
+  await dlg.getByRole('button', { name: /元の大きさ/ }).click();
+  const dl = page.waitForEvent('download');
+  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  expect((await dl).suggestedFilename()).toBe('IMG_0004_edit.jpg');
+  await expect(dlg.locator('p[aria-live]')).toContainText('600×400');
+  expect(errors).toEqual([]);
+});
+
+test('LibRaw で読めない RAW（画像データのない CR3 など）は、中のプレビュー JPEG で開く', async ({ page }) => {
+  await page.goto(URL0);
+  const photo = await makePhoto(page, { w: 900, h: 600 });
+  await page.locator('#open-file').setInputFiles(file('IMG_0005.CR3', makeContainerRaw([new Uint8Array(photo.buffer)])));
+  await opened(page);
+  await page.getByRole('tab', { name: '情報' }).click();
+  await expect(page.locator('.info')).toContainText('プレビュー画像（900×600）');
+  await expect(page.locator('.info')).not.toContainText('LibRaw');
+});

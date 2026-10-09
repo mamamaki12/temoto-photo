@@ -12,7 +12,7 @@
 - **修復**: スポット修復、モザイク、ぼかし
 - **切り抜き**: 比率（L判・2L判・六つ切り・A4 のプリント比率を含む）・回転・反転・傾き補正・遠近補正
 - **装飾**: 文字、スタンプ、手描き、フレーム・余白
-- **RAW**: DNG は RAW データから現像。CR3・NEF・ARW・RAF などは中のプレビュー画像で開く
+- **RAW**: キヤノン（CR3・CR2）・ニコン・ソニー・富士フイルムなどの RAW を、RAW データから 16bit で現像（[LibRaw](https://www.libraw.org/) を WebAssembly にしたものを端末の中で動かす）。編集中は半分の大きさで表示し、書き出すときは元の大きさで、細かい所の色にじみが出にくいデモザイク（DHT）で現像し直す。「RAW の露出」で、白飛び・黒つぶれした所の階調を RAW データから戻せる。読めないものは中のプレビュー画像で開く。DNG はこのアプリの現像で開く
 - **グリッド**: 2〜9枚を1枚にまとめる（29レイアウト。写真の間の線をドラッグして大きさの割合も変えられる）
 - **書き出し**: JPEG・PNG・WebP、大きさを指定、まとめて書き出し。位置情報などのメタデータは入らない
   - **元の大きさ**: 編集中は端末が扱える大きさ（約1,670万画素まで）に縮めて表示し、書き出すときは元の写真から描き直す（JPEG・PNG）。iPhone の Safari でも、画像を帯に分けて描き、自分で JPEG / PNG を組み立てるので、2,400万・4,800万画素の写真もそのままの大きさで書き出せる
@@ -57,7 +57,7 @@ npx playwright install chromium   # 初回だけ
 npm test                          # セキュリティチェック・単体テスト・画面のテスト
 ```
 
-- `tests/unit/`: 編集レシピの検証、座標変換、カーブ、自動補正、Exif、修復、美肌、RAW の現像、グリッドの計算
+- `tests/unit/`: 編集レシピの検証、座標変換、カーブ、自動補正、Exif、修復、美肌、RAW の現像（DNG・LibRaw の出力の仕上げ）、グリッドの計算
 - `tests/e2e/`: 実際のブラウザで、画素の変化・書き出し（元の大きさ・Display P3）・保存・RAW・グリッド・アクセシビリティを確認
 
 ## 構成
@@ -70,7 +70,9 @@ state.js      編集レシピ（保存する内容）と検証
 geometry.js   切り抜き・回転・遠近の座標変換
 curves.js auto.js presets.js retouch.js portrait.js compose.js   カーブ・自動補正・フィルター・修復・美肌・文字や枠
 fullres.js encode.js color.js   元の大きさでの書き出し・JPEG/PNG の組み立て・色空間（Display P3）
-exif.js raw.js ljpeg.js raw-worker.js   Exif・RAW の読み込みと現像
+exif.js raw.js ljpeg.js raw-worker.js   Exif・RAW の読み込みと現像（DNG）
+rawlib.js rawdev.js   LibRaw での RAW の読み込みと、16bit からの現像（色・トーン・色ノイズ除去）
+vendor/libraw/   LibRaw（WebAssembly。libraw-wasm 1.6.0。ライセンスは vendor/libraw/LICENSE.txt）
 grid.js       グリッド（コラージュ）
 db.js ui.js lib.js   保存・画面部品・共通の小さな部品
 ```

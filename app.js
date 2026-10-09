@@ -16,11 +16,13 @@ import * as db from './db.js';
 import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull } from './fullres.js';
+import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
+import { autoGain } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.4.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.5.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
@@ -97,6 +99,15 @@ function orientCanvas(img, o) {
  */
 async function decodeRawBlob(blob, name) {
   const buffer = await blob.arrayBuffer();
+  // キヤノン・ニコン・ソニーなどは LibRaw で RAW データから現像する（編集中は半分の大きさ。書き出しで元の大きさに）。
+  // 現像できないとき（対応していない機種・メモリ不足など）は、これまでどおりカメラが入れた JPEG を使う
+  if (LIBRAW_RE.test(name || '')) {
+    try {
+      const r = await decodeLibRaw(buffer, { half: true });
+      r.lin.gain = autoGain(r.lin.data, r.lin.width, r.lin.height);
+      return { image: developToCanvas(r.lin, S.defaultState().raw), lin: r.lin, info: { kind: 'libraw', format: (name.match(/\.([^.]+)$/)?.[1] || '').toUpperCase(), model: r.model, fullW: r.fullW, fullH: r.fullH } };
+    } catch (e) { console.warn('LibRaw で現像できなかったので、カメラの JPEG を使います', e); }
+  }
   let r;
   let worker = null;
   try { worker = new Worker(new URL('./raw-worker.js', import.meta.url), { type: 'module' }); } catch { worker = null; }
@@ -139,10 +150,10 @@ async function importFiles(files) {
     try {
       const raw = isRawName(f.name);
       if (raw) toast(`${f.name} を読み込んでいます（RAW）…`);
-      const { image: bmp, info } = await decodeAny(f, f.name);
+      const { image: bmp, info } = await decodeAny(f, f.name); // RAW（LibRaw）は半分の大きさで現像したもの
       const id = uid();
       const exif = raw ? readTiffExif(await f.slice(0, 4 * 1024 * 1024).arrayBuffer()) : /jpe?g$/i.test(f.type) || /\.jpe?g$/i.test(f.name) ? readExif(await f.slice(0, 512 * 1024).arrayBuffer()) : null;
-      await db.addProject({ id, name: (f.name || '写真').replace(/\.[^.]+$/, '').slice(0, 80) || '写真', fileName: (f.name || '').slice(0, 200), raw: info, created: Date.now(), updated: Date.now(), w: bmp.width, h: bmp.height, size: f.size, type: f.type || (raw ? 'image/x-raw' : ''), exif, state: S.defaultState(), thumb: await thumbBlob(bmp) }, f);
+      await db.addProject({ id, name: (f.name || '写真').replace(/\.[^.]+$/, '').slice(0, 80) || '写真', fileName: (f.name || '').slice(0, 200), raw: info, created: Date.now(), updated: Date.now(), w: info?.fullW || bmp.width, h: info?.fullH || bmp.height, size: f.size, type: f.type || (raw ? 'image/x-raw' : ''), exif, state: S.defaultState(), thumb: await thumbBlob(bmp) }, f);
       bmp.close?.();
       first ??= id; ok++;
     } catch {
@@ -155,7 +166,10 @@ async function importFiles(files) {
 
 /** 写真と編集内容から、描画に必要なもの（元画像・修復後の画像・マスク）を用意する */
 async function prepare(proj, blob, maxTex, { keepFull = false } = {}) {
-  const { image: bmp } = await decodeAny(blob, proj.fileName, proj);
+  const d = await decodeAny(blob, proj.fileName, proj);
+  let bmp = d.image;
+  // RAW（LibRaw）: 保存してある「RAW の露出」で現像し直す。16bit のデータは、露出を変えたときのために残す
+  if (d.lin) bmp = developToCanvas(d.lin, S.validateState(proj.state).raw, d.lin.gain, bmp);
   const ws = workSize(bmp.width, bmp.height, maxTex);
   let base = bmp;
   if (ws.w !== bmp.width || ws.h !== bmp.height) {
@@ -164,7 +178,7 @@ async function prepare(proj, blob, maxTex, { keepFull = false } = {}) {
     if (!keepFull) bmp.close?.();
   }
   // keepFull: 元の大きさで書き出すために、縮める前の写真も返す
-  return { base, W: ws.w, H: ws.h, scaled: ws.scaled, origW: proj.w, origH: proj.h, full: keepFull ? bmp : null };
+  return { base, W: ws.w, H: ws.h, scaled: ws.scaled || !!d.lin, origW: proj.w, origH: proj.h, lin: d.lin && ws.w === bmp.width ? d.lin : null, full: keepFull && !d.lin ? bmp : null };
 }
 
 /** 修復・モザイクと美肌を元写真の画素に当てる（美肌が先。あとから足す修復は、美肌の後の画素にそのまま重ねられる） */
@@ -340,19 +354,26 @@ async function openEditor(id) {
   const state = S.validateState(proj.state);
   E = {
     id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: prefs.get('tool', 'looks'),
-    base: p.base, W: p.W, H: p.H, scaled: p.scaled, src: null, srcData: null, maskCache: new Map(), skinCache: {},
+    base: p.base, W: p.W, H: p.H, scaled: p.scaled, rawLin: p.lin, src: null, srcData: null, maskCache: new Map(), skinCache: {},
     sel: null, selOverlay: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
   buildEditor();
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
   requestRender();
-  if (p.scaled) toast(`写真が大きいので、編集中は ${p.W}×${p.H} に縮めて表示します。書き出しは元の大きさ（${p.origW}×${p.origH}）のままできます`, 5000);
+  if (p.lin) toast(`RAW データから現像しました。編集中は ${p.W}×${p.H} で表示し、書き出しで元の大きさ（${p.origW}×${p.origH}）に現像し直します`, 5000);
+  else if (p.scaled) toast(`写真が大きいので、編集中は ${p.W}×${p.H} に縮めて表示します。書き出しは元の大きさ（${p.origW}×${p.origH}）のままできます`, 5000);
 }
 
-const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait]);
+const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait, st.raw]);
 function rebuildSource() {
   const ops = E.state.retouch;
+  // RAW の露出が変わったら、16bit のデータから現像し直す
+  const rk = JSON.stringify(E.state.raw);
+  if (E.rawLin && rk !== E.rawKey) {
+    if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.rawLin.gain, E.base); E.baseData = null; E.skinCache = {}; }
+    E.rawKey = rk;
+  }
   if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
   else { const r = retouchCanvas(E.base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
   E.retouchKey = sourceKey(E.state);
@@ -603,7 +624,14 @@ const PANELS = {
     drawPresets();
     return [grid, amt.el, presets];
   },
-  light() { return [histo(), ...adjSliders('light')]; },
+  light() {
+    // RAW（LibRaw）: 16bit のデータから現像し直す露出。白飛び・黒つぶれした所の階調が戻る
+    const raw = E.rawLin ? [slider({ label: 'RAW の露出（白飛び・黒つぶれを戻す）', min: -3, max: 3, step: 0.1, value: E.state.raw.exposure / 100, def: 0, format: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`, onChange: (v) => {
+      E.state.raw.exposure = Math.round(v * 100); E.stageEl.classList.add('busy');
+      requestAnimationFrame(() => setTimeout(() => { if (!E) return; try { rebuildSource(); } finally { E.stageEl.classList.remove('busy'); } commit(); requestRender(); }, 0));
+    } }).el, hint('RAW の露出は、RAW データから現像し直すので、下の「露光量」より画質が落ちません。白飛びした空や、暗く沈んだ髪の階調を戻したいときに。')] : [];
+    return [histo(), ...raw, ...adjSliders('light')];
+  },
   color() {
     const pickBtn = btn(E.wbPick ? '写真の白・グレーの場所をタップ…' : '⊙ スポイトで白を合わせる', () => { E.wbPick = !E.wbPick; buildPanel(); }, E.wbPick ? 'active' : '');
     return [row(pickBtn), ...adjSliders('color'), hint('スポイト: 本来は白やグレーの場所（壁・紙・雲など）をタップすると、色かぶりを自動で直します。')];
@@ -969,7 +997,8 @@ function infoPanel() {
   const name = h('input', { id: 'proj-name', maxlength: 80, value: p.name });
   name.addEventListener('change', () => { E.proj.name = name.value.trim().slice(0, 80) || '写真'; db.putProject(E.proj); $('.ed-title').textContent = E.proj.name; });
   const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['アプリの版', VERSION], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
-    ...(p.raw ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
+    ...(p.raw?.kind === 'libraw' ? [['RAWの読み込み', `RAW データから現像（LibRaw・16bit）${p.raw.model ? `・${p.raw.model}` : ''}。編集中は半分の大きさ、書き出しは元の大きさで現像し直します`]] : []),
+    ...(p.raw && p.raw.kind !== 'libraw' ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
     ['書き出す大きさ（元の大きさのとき）', (() => {
       if (E.scaled && p.w) { const o = outputSize(E.state.geo, p.w, p.h); const L0 = layout(o.w, o.h, E.state.frame); return `${L0.cw}×${L0.ch}（JPEG・PNG は元の写真から描き直します）`; }
       const o = outputSize(E.state.geo, E.W, E.H); const L0 = layout(o.w, o.h, E.state.frame);
@@ -1329,6 +1358,17 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
   }
   return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality, space);
 }
+/**
+ * 書き出し用に、元の大きさの写真を読み込む。RAW（LibRaw）は元の大きさで現像し直す（時間がかかる）。
+ * gain: 編集中と同じ明るさになるよう、編集中の現像で決めた倍率を使う
+ */
+async function loadFull(proj, blob, state, gain) {
+  if (proj.raw?.kind === 'libraw') {
+    const r = await decodeLibRaw(await blob.arrayBuffer(), { half: false });
+    return pixelSource(r.lin, state.raw, gain ?? autoGain(r.lin.data, r.lin.width, r.lin.height));
+  }
+  return (await decodeAny(blob, proj.fileName, proj)).image;
+}
 /** 元の写真から描き直すか（編集用に縮めていて、それより大きく書き出すとき。WebP は帯ごとに作れないので縮めたまま） */
 function useFull(src, format, maxSide) {
   return !!src.full && format !== 'image/webp' && (src.full.width > src.W || src.full.height > src.H) && (!maxSide || maxSide > Math.max(src.W, src.H));
@@ -1368,8 +1408,8 @@ function openExport({ batch }) {
     status.textContent = '書き出しています…';
     let full = null;
     if (useFull({ full: { width: E.proj.w || 0, height: E.proj.h || 0 }, W: E.W, H: E.H }, opt.format, opt.maxSide)) {
-      status.textContent = '元の大きさの写真を読み込んでいます…';
-      try { full = (await decodeAny(await db.getBlob(E.id), E.proj.fileName, E.proj)).image; } catch { full = null; }
+      status.textContent = E.rawLin ? 'RAW を元の大きさで現像しています…（しばらくかかります）' : '元の大きさの写真を読み込んでいます…';
+      try { full = await loadFull(E.proj, await db.getBlob(E.id), st, E.rawLin?.gain); } catch (e) { console.warn('元の大きさの写真を読み込めませんでした', e); full = null; }
     }
     const progress = (t) => { status.textContent = `書き出しています… ${Math.round(t * 100)}%`; };
     let r;
@@ -1386,6 +1426,10 @@ function openExport({ batch }) {
         for (const p of batch) {
           status.textContent = `書き出しています… ${++i}/${batch.length}`;
           const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
+          if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
+            status.textContent = `RAW を元の大きさで現像しています… ${i}/${batch.length}`;
+            try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
+          }
           let r;
           try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
           download(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
