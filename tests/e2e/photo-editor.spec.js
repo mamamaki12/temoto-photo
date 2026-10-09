@@ -446,7 +446,7 @@ test('枠と余白をつけても、書き出しは端末の上限（約1,670万
   await page.getByRole('button', { name: '編集をコピー' }).click();
   expect(await page.locator('.menu').evaluate((m) => m.open)).toBe(false);
   await page.locator('.menu summary').click();
-  await page.locator('canvas.view').click({ position: { x: 4, y: 4 } }); // メニューの外（写真の左上）を押す
+  await page.locator('.stage').click({ position: { x: 4, y: 4 } }); // メニューの外（写真の場所の左上）を押す
   expect(await page.locator('.menu').evaluate((m) => m.open)).toBe(false);
 });
 
@@ -565,4 +565,58 @@ test('画面の色: 自動は端末の設定に合わせ、ライト・ダーク
   await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ライト' }).click();
   expect(await theme()).toBe('light');
   await expect(page.locator('.editor')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+});
+
+test.describe('はじめて使う端末', () => {
+  test.use({ storageState: { cookies: [], origins: [] } }); // 設定なし
+  test('調整・切り抜き・部分補正は最初は隠してあり、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
+    await openWith(page);
+    const rail = page.locator('.rail [role=tab]');
+    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    // 「ライト」を出す
+    await page.locator('.menu summary').click();
+    await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
+    const dlg = page.getByRole('dialog', { name: '表示する道具を選ぶ' });
+    await dlg.getByLabel('ライト').check();
+    await dlg.getByRole('button', { name: '決定' }).click();
+    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await rail.filter({ hasText: '調整' }).click();
+    await expect(page.locator('.subtabs')).toHaveCount(0); // 中の道具が1つだけならタブは出さない
+    await setSlider(page, '露光量', 40);
+    // また隠しても、編集は写真に残る
+    await page.locator('.menu summary').click();
+    await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
+    await dlg.getByLabel('ライト').uncheck();
+    await dlg.getByRole('button', { name: '決定' }).click();
+    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
+    // 全部隠そうとすると止める
+    await page.locator('.menu summary').click();
+    await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
+    for (const b of await dlg.getByRole('checkbox').all()) await b.uncheck();
+    await dlg.getByRole('button', { name: '決定' }).click();
+    await expect(page.locator('.toast').last()).toContainText('1つは表示');
+    await dlg.getByRole('button', { name: 'すべて表示' }).click();
+    await dlg.getByRole('button', { name: '決定' }).click();
+    await expect(rail).toHaveCount(7);
+  });
+
+  test('スペシャリストモードをオンにすると、隠した道具も全部出る（オフで元に戻る・覚えている）', async ({ page }) => {
+    await openWith(page);
+    const rail = page.locator('.rail [role=tab]');
+    await expect(rail).toHaveCount(4);
+    await page.locator('.menu summary').click();
+    await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').check();
+    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '⌗切り抜き', '◎部分補正', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await rail.filter({ hasText: '調整' }).click();
+    await expect(page.locator('.subtabs [role=tab]')).toHaveCount(7);
+    // 再読み込みしても続く
+    await page.reload(); await page.locator('.lib-open').first().click(); await page.waitForFunction(() => window.__temoto.editor?.L);
+    await expect(rail).toHaveCount(7);
+    // オフにすると隠した道具は消え、開いていた道具（調整）からフィルターに戻る
+    await page.locator('.menu summary').click();
+    await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').uncheck();
+    await expect(rail).toHaveCount(4);
+    await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
+  });
 });

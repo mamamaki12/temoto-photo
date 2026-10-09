@@ -158,7 +158,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .menu { position: static; } /* メニューは見出しの右端にそろえる（画面の外にはみ出さない） */
 .menu summary { list-style: none; width: clamp(40px, 2.5rem, 52px); height: clamp(40px, 2.5rem, 52px); display: grid; place-items: center; border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-size: 1.2rem; line-height: 1; }
 .menu summary::-webkit-details-marker { display: none; }
-.menu-list { position: absolute; right: 10px; top: calc(100% + 4px); z-index: 30; display: grid; gap: 4px; padding: 8px; min-width: min(max(230px, 14rem), calc(100vw - 20px)); max-width: calc(100vw - 20px); background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 12px 40px var(--shadow); }
+.menu-list { max-height: calc(100dvh - 90px); overflow-y: auto; position: absolute; right: 10px; top: calc(100% + 4px); z-index: 30; display: grid; gap: 4px; padding: 8px; min-width: min(max(230px, 14rem), calc(100vw - 20px)); max-width: calc(100vw - 20px); background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 12px 40px var(--shadow); }
 .menu-list button { justify-content: flex-start; border-radius: 8px; background: transparent; color: var(--text); }
 .ed-head .menu-list button { background: transparent; color: var(--text); }
 .ed-head .menu-list button:hover:not(:disabled) { background: var(--surface); }
@@ -315,3 +315,10 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .grid-layout span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .grid-layout[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); font-weight: 700; }
 .stage[data-tool="grid"] { cursor: grab; }
+/* 表示する道具を選ぶ */
+.tp-groups { display: grid; gap: 8px; }
+.tp-group { border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px 8px; margin: 0; min-width: 0; }
+.tp-group legend { font-weight: 700; padding: 0 4px; font-size: .92rem; }
+.tp-tools { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.menu-mode { padding: 4px 10px; border-bottom: 1px solid var(--line); }
+.ed-head .menu-mode .tg { color: var(--text); font-weight: 600; }
