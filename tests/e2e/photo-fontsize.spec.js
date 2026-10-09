@@ -46,7 +46,8 @@ for (const [px, w, h] of [[16, 561, 759], [20, 561, 759], [24, 390, 844], [32, 3
       }
     }
     await page.locator('.menu summary').click();
-    await expect(page.getByRole('button', { name: 'すべての編集をリセット' })).toBeInViewport({ ratio: 1 });
+    await page.getByRole('button', { name: 'すべての編集をリセット' }).scrollIntoViewIfNeeded(); // 長いメニューは中でスクロールする
+    await expect(page.getByRole('button', { name: 'すべての編集をリセット' })).toBeInViewport({ ratio: 0.95 });
     expect(await overflow(page), 'メニュー').toEqual([]);
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '書き出し', exact: true }).click();

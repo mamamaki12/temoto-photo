@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.8.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.9.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -39,6 +39,17 @@ const GROUPS = [
 const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
+/** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
+const DEFAULT_HIDDEN = ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects', 'crop', 'local'];
+const hiddenTools = () => { const v = prefs.get('hiddenTools', DEFAULT_HIDDEN); return Array.isArray(v) ? v : DEFAULT_HIDDEN; };
+/** スペシャリストモード: 隠した道具も全部出す */
+const specialist = () => prefs.get('specialist', false) === true;
+/** 今見せる道具（RAW は RAW を開いたときだけ）。全部隠されていたら、フィルターだけは見せる */
+function shownTools(raw) {
+  const hid = specialist() ? [] : hiddenTools(); const list = TOOLS.filter((t) => !hid.includes(t) && (t !== 'raw' || raw));
+  return list.length ? list : ['looks'];
+}
+const shownGroups = (raw) => { const sh = shownTools(raw); return GROUPS.map(([g, icon, label, tools]) => [g, icon, label, tools.filter((t) => sh.includes(t))]).filter((x) => x[3].length); };
 const prefs = {
   get(k, d) { try { const v = localStorage.getItem(`temoto:${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(`temoto:${k}`, JSON.stringify(v)); } catch { /* 保存できない環境 */ } },
@@ -380,7 +391,7 @@ async function openEditor(id) {
   try { p = await prepare(proj, blob, engine.maxSize); } catch { engine.dispose(); toast('写真を開けませんでした'); showLibrary(); return; }
   const state = S.validateState(proj.state);
   E = {
-    id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: ((t) => (TOOLS.includes(t) && (t !== 'raw' || p.lin) ? t : 'looks'))(prefs.get('tool', 'looks')), // 前に選んでいたタブ（なくなったタブ・RAW 以外での RAW タブはフィルターに）
+    id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: ((t) => (shownTools(!!p.lin).includes(t) ? t : shownTools(!!p.lin)[0]))(prefs.get('tool', 'looks')), // 前に選んでいたタブ（なくなった・隠したタブ、RAW 以外での RAW タブは、見せている最初の道具に）
     base: p.base, W: p.W, H: p.H, scaled: p.scaled, rawLin: p.lin, src: null, srcData: null, maskCache: new Map(), skinCache: {},
     sel: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
@@ -571,6 +582,11 @@ function buildEditor() {
       h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'),
       h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'),
       h('button', { type: 'button', onclick: async () => { const blob = await db.getBlob(E.id); const id = uid(); await db.addProject({ ...E.proj, id, name: `${E.proj.name}（コピー）`, created: Date.now(), updated: Date.now(), state: S.clone(E.committed) }, blob); toast('複製しました'); openEditor(id); } }, '複製して別の編集を作る'),
+      h('div', { class: 'menu-mode' }, toggle('スペシャリストモード（隠した道具も全部出す）', specialist(), (v) => {
+        prefs.set('specialist', v); menu.open = false; buildRail(); const sh = shownTools(!!E.rawLin); setTool(sh.includes(E.tool) ? E.tool : sh[0], { keepSide: true });
+        toast(v ? 'スペシャリストモード: すべての道具を表示します' : 'スペシャリストモードを終了しました');
+      }).el),
+      h('button', { type: 'button', onclick: openToolPicker }, '表示する道具を選ぶ…'),
       h('div', { class: 'menu-theme' }, h('span', { class: 'muted small' }, '画面の色'), themePicker()),
       h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
   // 項目を選んだら・外側を押したらメニューを閉じる
@@ -580,10 +596,8 @@ function buildEditor() {
   E.panel = h('div', { class: 'panel', role: 'tabpanel', id: 'panel' });
   E.sideHead = h('div', { class: 'side-head' });
   E.side = h('aside', { class: 'side', id: 'side', 'aria-label': '道具の設定' }, E.sideHead, E.panel);
-  E.tabs = h('nav', { class: 'tabs rail', role: 'tablist', 'aria-label': 'ツール', 'aria-orientation': 'vertical' }, GROUPS.filter(([g]) => g !== 'raw' || E.rawLin).map(([g, icon, label]) => h('button', {
-    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1',
-    onclick: () => pickGroup(g), onkeydown: tabKeys,
-  }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
+  E.tabs = h('nav', { class: 'tabs rail', role: 'tablist', 'aria-label': 'ツール', 'aria-orientation': 'vertical' });
+  buildRail();
   // 表示の拡大・縮小（Canva の右下のように）
   E.zoomLabel = h('button', { type: 'button', class: 'zoom-val', title: '画面に合わせる（0 キー）', 'aria-label': '表示の大きさ（押すと画面に合わせる）', onclick: () => setZoom(1) }, '100%');
   const zoomBar = h('div', { class: 'zoom', role: 'group', 'aria-label': '表示の大きさ' },
@@ -609,10 +623,17 @@ function tabKeys(e) {
   if (j == null) return;
   e.preventDefault(); const t = tabs[(j + tabs.length) % tabs.length]; t.focus(); t.click();
 }
+/** 道具の列（見せている道具のグループだけ） */
+function buildRail() {
+  render(E.tabs, shownGroups(!!E.rawLin).map(([g, icon, label]) => h('button', {
+    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1',
+    onclick: () => pickGroup(g), onkeydown: tabKeys,
+  }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
+}
 /** 左の列でグループを選ぶ。選んでいるグループをもう一度押すと、パネルを閉じて写真を広く見せる */
 function pickGroup(g) {
   if (groupOf(E.tool)[0] === g && E.sideOpen) { setSide(false); return; }
-  const tools = GROUPS.find((x) => x[0] === g)[3];
+  const tools = shownGroups(!!E.rawLin).find((x) => x[0] === g)[3];
   setTool(E.lastTool?.[g] && tools.includes(E.lastTool[g]) ? E.lastTool[g] : tools[0]);
 }
 function setSide(open) {
@@ -624,12 +645,34 @@ function setZoom(z) {
   E.zoom = Math.min(8, Math.max(1, z)); if (E.zoom === 1) E.pan = [0, 0];
   requestRender();
 }
+/** 表示する道具を選ぶ（チェックを外した道具は列・タブから隠す。編集はそのまま残る） */
+function openToolPicker() {
+  const hid = new Set(hiddenTools());
+  const boxes = [];
+  const save = () => {
+    const next = TOOLS.filter((t) => hid.has(t));
+    if (TOOLS.filter((t) => t !== 'raw').every((t) => hid.has(t))) { toast('道具を1つは表示してください'); return false; }
+    prefs.set('hiddenTools', next); return true;
+  };
+  const dlg = h('dialog', { class: 'dlg tool-picker', 'aria-labelledby': 'tp-h' },
+    h('h2', { id: 'tp-h' }, '表示する道具を選ぶ'),
+    h('p', { class: 'hint' }, 'チェックを外した道具は、道具の列とタブに出しません。隠しても、写真に当てた編集はそのまま残ります。スペシャリストモードの間は、すべての道具を出します。'),
+    h('div', { class: 'tp-groups' }, GROUPS.map(([g, icon, label, tools]) => h('fieldset', { class: 'tp-group' },
+      h('legend', {}, h('span', { 'aria-hidden': 'true' }, `${icon} `), label, g === 'raw' ? h('span', { class: 'muted small' }, '（RAW を開いたとき）') : null),
+      h('div', { class: 'tp-tools' }, tools.map((t) => { const tg = toggle(TOOL_LABEL[t], !hid.has(t), (v) => { if (v) hid.delete(t); else hid.add(t); }); boxes.push(tg); return tg.el; }))))),
+    h('div', { class: 'dlg-actions' },
+      h('button', { type: 'button', class: 'ghost', onclick: () => { hid.clear(); for (const b of boxes) b.input.checked = true; } }, 'すべて表示'),
+      h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'やめる'),
+      h('button', { type: 'button', class: 'primary', onclick: () => { if (!save()) return; dlg.close(); if (!E) return; buildRail(); setTool(shownTools(!!E.rawLin).includes(E.tool) ? E.tool : shownTools(!!E.rawLin)[0], { keepSide: true }); } }, '決定')));
+  dlg.addEventListener('close', () => dlg.remove());
+  document.body.append(dlg); dlg.showModal();
+}
 function syncHistoryButtons() { if (!E) return; E.undoBtn.disabled = !E.undo.length && S.sameState(E.state, E.committed); E.redoBtn.disabled = !E.redo.length; }
 function setTool(k, { keepSide = false } = {}) {
   if (E.tool === 'crop' && k !== 'crop') commit();
   if (E.tool === 'skin' && k !== 'skin' && E.showSkin) { E.showSkin = false; rebuildSource(); }
   E.tool = k; prefs.set('tool', k);
-  const [g, , glabel, tools] = groupOf(k);
+  const [g, , glabel] = groupOf(k); const tools = shownGroups(!!E.rawLin).find((x) => x[0] === g)?.[3] || [k];
   (E.lastTool ||= {})[g] = k;
   for (const b of E.tabs.children) { const on = b.id === `tab-${g}`; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
   // パネルの見出し（グループ名・中の道具のタブ・閉じるボタン）
