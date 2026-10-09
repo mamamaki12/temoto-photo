@@ -69,7 +69,9 @@ export function defaultState() {
     locals: [],
     retouch: [],
     portrait: { smooth: 0, even: 0, bright: 0, tol: 50, seeds: [] }, // seeds: 肌として選んだ場所（元写真の 0〜1）
-    raw: { exposure: 0 }, // RAW の現像（exposure: RAW の露出、EV×100）。RAW 以外の写真では使わない
+    // RAW の現像（RAW 以外の写真では使わない）。exposure: RAW の露出（EV×100）、nr: ノイズ除去、sharpen: シャープ、
+    // ca: 色にじみの自動補正、vignette: 周辺の暗さの補正、distortion: ゆがみの補正（＋で樽型・－で糸巻き型を直す）
+    raw: { exposure: 0, nr: 50, sharpen: 50, ca: true, vignette: 0, distortion: 0 },
     overlays: [],
     frame: { width: 0, color: '#ffffff', radius: 0, pad: 'none', padFill: 'blur', padColor: '#ffffff' },
   };
@@ -164,6 +166,8 @@ export function validateState(s) {
   for (const k of ['smooth', 'even', 'bright']) d.portrait[k] = int(s.portrait?.[k], 0, 100);
   d.portrait.tol = int(s.portrait?.tol, 0, 100, 50);
   d.raw.exposure = int(s.raw?.exposure, -300, 300);
+  d.raw.nr = int(s.raw?.nr, 0, 100, 50); d.raw.sharpen = int(s.raw?.sharpen, 0, 100, 50); d.raw.ca = s.raw?.ca !== false;
+  d.raw.vignette = int(s.raw?.vignette, -100, 100); d.raw.distortion = int(s.raw?.distortion, -100, 100);
   d.portrait.seeds = arr(s.portrait?.seeds, MAX_SKIN_SEEDS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, 0, 1), num(y, 0, 1)]);
   d.overlays = arr(s.overlays, MAX_OVERLAYS).map(validOverlay).filter(Boolean);
   const f = s.frame || {};

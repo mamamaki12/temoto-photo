@@ -94,11 +94,27 @@ test('キヤノンなどの RAW は LibRaw で RAW データから現像し、�
   expect(Math.max(...gray) - Math.min(...gray)).toBeLessThan(12);
   // RAW の露出を下げると暗くなる（16bit のデータから現像し直す）
   const before = lum(gray);
-  await page.getByRole('tab', { name: 'ライト' }).click();
+  await page.getByRole('tab', { name: 'RAW' }).click();
   await page.getByLabel('RAW の露出（白飛び・黒つぶれを戻す）').evaluate((el) => { el.value = -1; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
   await page.waitForFunction(() => window.__temoto.state.raw.exposure === -100);
   await page.waitForFunction(() => !document.querySelector('.stage.busy'));
   await expect.poll(async () => lum(await viewMean(page, [0.6, 0.6, 0.9, 0.9]))).toBeLessThan(before - 20);
+  // 周辺の暗さの補正: すみが明るくなり、真ん中はほとんど変わらない
+  const setRaw = async (label, v, key, want) => {
+    await page.getByLabel(label).evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, v);
+    await page.waitForFunction(([k, w]) => window.__temoto.state.raw[k] === w, [key, want]);
+    await page.waitForFunction(() => !document.querySelector('.stage.busy'));
+  };
+  const corner0 = lum(await viewMean(page, [0.0, 0.0, 0.08, 0.08])); const center0 = lum(await viewMean(page, [0.45, 0.45, 0.55, 0.55]));
+  await setRaw('周辺の暗さを明るく', 100, 'vignette', 100);
+  await expect.poll(async () => lum(await viewMean(page, [0.0, 0.0, 0.08, 0.08]))).toBeGreaterThan(corner0 + 15);
+  expect(Math.abs(lum(await viewMean(page, [0.45, 0.45, 0.55, 0.55])) - center0)).toBeLessThan(6);
+  await setRaw('周辺の暗さを明るく', 0, 'vignette', 0);
+  // ノイズ除去・シャープ・ゆがみも動かせる（保存される）
+  await setRaw('ノイズ除去', 80, 'nr', 80);
+  await setRaw('シャープ（くっきり）', 20, 'sharpen', 20);
+  await setRaw('ゆがみ（＋で樽型・−で糸巻き型を直す）', 40, 'distortion', 40);
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.raw)).toEqual({ exposure: -100, nr: 80, sharpen: 20, ca: true, vignette: 0, distortion: 40 });
   // 元の大きさで書き出す（元の大きさで現像し直す）
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
   const dlg = page.getByRole('dialog');
@@ -118,4 +134,6 @@ test('LibRaw で読めない RAW（画像データのない CR3 など）は、�
   await page.getByRole('tab', { name: '情報' }).click();
   await expect(page.locator('.info')).toContainText('プレビュー画像（900×600）');
   await expect(page.locator('.info')).not.toContainText('LibRaw');
+  // RAW データから現像していないので、RAW の現像のタブは出さない
+  await expect(page.getByRole('tab', { name: 'RAW' })).toHaveCount(0);
 });

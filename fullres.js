@@ -58,9 +58,15 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     // ① 元の写真を GPU に
     eng.allocSource(FW, FH);
     if (src.region) {
-      // RAW を現像した画素（Canvas に入りきらない大きさ）: 帯ごとに現像して GPU に送る
+      // RAW を現像した画素（Canvas に入りきらない大きさ）: 帯ごとに現像して GPU に送る。8bit に丸めた残りも送って、16bit の細かさで描く
       const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
-      for (let y = 0; y < FH; y += band) { const bh = Math.min(band, FH - y); eng.putSourcePixels(0, y, FW, bh, src.region(0, y, FW, bh)); onProgress(0.02 * (y / FH)); await later(); }
+      if (src.regionHi) eng.allocResidual(FW, FH);
+      for (let y = 0; y < FH; y += band) {
+        const bh = Math.min(band, FH - y);
+        if (src.regionHi) { const r = src.regionHi(0, y, FW, bh); eng.putSourcePixels(0, y, FW, bh, r.px); eng.putResidualPixels(0, y, FW, bh, r.res); }
+        else eng.putSourcePixels(0, y, FW, bh, src.region(0, y, FW, bh));
+        onProgress(0.02 * (y / FH)); await later();
+      }
     } else eng.putSource(0, 0, src);
     if (portraitActive(state.portrait)) await portraitFull(eng, src, work, state.portrait, FW, FH, (t) => onProgress(0.02 + t * 0.3));
     for (const op of state.retouch) await retouchFull(eng, op, FW, FH);

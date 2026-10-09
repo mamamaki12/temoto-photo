@@ -17,17 +17,17 @@ import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull } from './fullres.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
-import { autoGain } from './rawdev.js';
+import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.5.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.6.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
 const TOOLS = [
-  ['auto', '✦', '自動'], ['looks', '◐', 'フィルター'], ['light', '☀', 'ライト'], ['color', '◒', 'カラー'], ['hsl', '◍', 'HSL'], ['curves', '∿', 'カーブ'],
+  ['raw', '◈', 'RAW'], ['auto', '✦', '自動'], ['looks', '◐', 'フィルター'], ['light', '☀', 'ライト'], ['color', '◒', 'カラー'], ['hsl', '◍', 'HSL'], ['curves', '∿', 'カーブ'],
   ['grade', '◑', 'グレーディング'], ['detail', '◇', 'ディテール'], ['effects', '✧', '効果'], ['crop', '⌗', '切り抜き'], ['local', '◎', '部分補正'],
   ['skin', '❀', '美肌'], ['heal', '✚', '修復'], ['hide', '▦', 'モザイク'], ['text', 'A', '文字'], ['sticker', '☺', 'スタンプ'], ['draw', '✎', '描画'], ['frame', '▢', 'フレーム'], ['info', 'ⓘ', '情報'],
 ];
@@ -104,7 +104,7 @@ async function decodeRawBlob(blob, name) {
   if (LIBRAW_RE.test(name || '')) {
     try {
       const r = await decodeLibRaw(buffer, { half: true });
-      r.lin.gain = autoGain(r.lin.data, r.lin.width, r.lin.height);
+      prepareLin(r.lin, r.fullW);
       return { image: developToCanvas(r.lin, S.defaultState().raw), lin: r.lin, info: { kind: 'libraw', format: (name.match(/\.([^.]+)$/)?.[1] || '').toUpperCase(), model: r.model, fullW: r.fullW, fullH: r.fullH } };
     } catch (e) { console.warn('LibRaw で現像できなかったので、カメラの JPEG を使います', e); }
   }
@@ -169,7 +169,7 @@ async function prepare(proj, blob, maxTex, { keepFull = false } = {}) {
   const d = await decodeAny(blob, proj.fileName, proj);
   let bmp = d.image;
   // RAW（LibRaw）: 保存してある「RAW の露出」で現像し直す。16bit のデータは、露出を変えたときのために残す
-  if (d.lin) bmp = developToCanvas(d.lin, S.validateState(proj.state).raw, d.lin.gain, bmp);
+  if (d.lin) bmp = developToCanvas(d.lin, S.validateState(proj.state).raw, bmp);
   const ws = workSize(bmp.width, bmp.height, maxTex);
   let base = bmp;
   if (ws.w !== bmp.width || ws.h !== bmp.height) {
@@ -353,7 +353,7 @@ async function openEditor(id) {
   try { p = await prepare(proj, blob, engine.maxSize); } catch { engine.dispose(); toast('写真を開けませんでした'); showLibrary(); return; }
   const state = S.validateState(proj.state);
   E = {
-    id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: prefs.get('tool', 'looks'),
+    id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: ((t) => (t === 'raw' && !p.lin ? 'looks' : t))(prefs.get('tool', 'looks')),
     base: p.base, W: p.W, H: p.H, scaled: p.scaled, rawLin: p.lin, src: null, srcData: null, maskCache: new Map(), skinCache: {},
     sel: null, selOverlay: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
@@ -369,13 +369,14 @@ const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait, st.raw]);
 function rebuildSource() {
   const ops = E.state.retouch;
   // RAW の露出が変わったら、16bit のデータから現像し直す
-  const rk = JSON.stringify(E.state.raw);
+  const rk = JSON.stringify({ ...E.state.raw, ca: null }); // 色にじみの補正は書き出しのときだけ
   if (E.rawLin && rk !== E.rawKey) {
-    if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.rawLin.gain, E.base); E.baseData = null; E.skinCache = {}; }
+    if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.base); E.baseData = null; E.skinCache = {}; }
     E.rawKey = rk;
   }
   if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
   else { const r = retouchCanvas(E.base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
+  E.engine.setResidual(E.base.residual || null); // RAW は 16bit の細かさで
   E.retouchKey = sourceKey(E.state);
   if (E.showSkin && E.tool === 'skin') E.engine.setSource(skinOverlaySource(), E.W, E.H);
   E.small = null; E.thumbsKey = null;
@@ -548,7 +549,7 @@ function buildEditor() {
   E.closeMenu = (e) => { if (menu.open && !menu.contains(e.target)) menu.open = false; };
   document.addEventListener('pointerdown', E.closeMenu);
   E.panel = h('div', { class: 'panel', role: 'tabpanel', id: 'panel' });
-  E.tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'ツール' }, TOOLS.map(([k, icon, label]) => h('button', {
+  E.tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'ツール' }, TOOLS.filter(([k]) => k !== 'raw' || E.rawLin).map(([k, icon, label]) => h('button', {
     type: 'button', role: 'tab', id: `tab-${k}`, 'aria-controls': 'panel', 'aria-selected': String(E.tool === k), tabindex: E.tool === k ? '0' : '-1',
     onclick: () => setTool(k), onkeydown: tabKeys,
   }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', {}, label))));
@@ -624,13 +625,32 @@ const PANELS = {
     drawPresets();
     return [grid, amt.el, presets];
   },
-  light() {
-    // RAW（LibRaw）: 16bit のデータから現像し直す露出。白飛び・黒つぶれした所の階調が戻る
-    const raw = E.rawLin ? [slider({ label: 'RAW の露出（白飛び・黒つぶれを戻す）', min: -3, max: 3, step: 0.1, value: E.state.raw.exposure / 100, def: 0, format: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`, onChange: (v) => {
-      E.state.raw.exposure = Math.round(v * 100); E.stageEl.classList.add('busy');
+  raw() {
+    // RAW（LibRaw）の現像。どれも 16bit のデータから現像し直す（少し時間がかかる）
+    if (!E.rawLin) return [hint('RAW ファイルを開いたときに使えます。')];
+    const redevelop = () => {
+      E.stageEl.classList.add('busy');
       requestAnimationFrame(() => setTimeout(() => { if (!E) return; try { rebuildSource(); } finally { E.stageEl.classList.remove('busy'); } commit(); requestRender(); }, 0));
-    } }).el, hint('RAW の露出は、RAW データから現像し直すので、下の「露光量」より画質が落ちません。白飛びした空や、暗く沈んだ髪の階調を戻したいときに。')] : [];
-    return [histo(), ...raw, ...adjSliders('light')];
+    };
+    const sl = (k, label, o = {}) => slider({ label, value: E.state.raw[k], def: S.defaultState().raw[k], ...o, onChange: (v) => { E.state.raw[k] = o.toState ? o.toState(v) : v; redevelop(); } }).el;
+    const signed = (v) => `${v > 0 ? '+' : ''}${v}`;
+    return [
+      histo(),
+      sl('exposure', 'RAW の露出（白飛び・黒つぶれを戻す）', { min: -3, max: 3, step: 0.1, value: E.state.raw.exposure / 100, def: 0, format: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`, toState: (v) => Math.round(v * 100) }),
+      hint('RAW データから現像し直すので、「ライト」の露光量より画質が落ちません。白飛びした空や、暗く沈んだ髪の階調を戻したいときに。'),
+      h('p', { class: 'sub-head' }, h('b', {}, 'ノイズとシャープ')),
+      sl('nr', 'ノイズ除去', { min: 0, max: 100 }),
+      sl('sharpen', 'シャープ（くっきり）', { min: 0, max: 100 }),
+      hint('ノイズは写真ごとに量を測って、平らな所だけをならします（肌のきめ・髪・布の模様は残します）。暗い所は強めに。'),
+      h('p', { class: 'sub-head' }, h('b', {}, 'レンズの補正')),
+      toggle('色にじみを自動で直す（書き出しのとき）', E.state.raw.ca, (v) => { E.state.raw.ca = v; commit(); }).el,
+      sl('vignette', '周辺の暗さを明るく', { min: -100, max: 100, format: signed }),
+      sl('distortion', 'ゆがみ（＋で樽型・−で糸巻き型を直す）', { min: -100, max: 100, format: signed }),
+      hint('色にじみ（輪郭の赤・青・紫の縁）は、元の大きさで書き出すときに写真から測って直します。広角で撮った建物の線がふくらむときは「ゆがみ」を＋に。'),
+    ];
+  },
+  light() {
+    return [histo(), ...adjSliders('light')];
   },
   color() {
     const pickBtn = btn(E.wbPick ? '写真の白・グレーの場所をタップ…' : '⊙ スポイトで白を合わせる', () => { E.wbPick = !E.wbPick; buildPanel(); }, E.wbPick ? 'active' : '');
@@ -1365,7 +1385,7 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
 async function loadFull(proj, blob, state, gain) {
   if (proj.raw?.kind === 'libraw') {
     const r = await decodeLibRaw(await blob.arrayBuffer(), { half: false });
-    return pixelSource(r.lin, state.raw, gain ?? autoGain(r.lin.data, r.lin.width, r.lin.height));
+    return pixelSource(prepareLin(r.lin, r.fullW, gain), state.raw);
   }
   return (await decodeAny(blob, proj.fileName, proj)).image;
 }
