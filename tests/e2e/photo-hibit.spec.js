@@ -10,7 +10,7 @@ async function banding(page, { residual }) {
     const { Engine } = await import('/engine.js'); const { developToCanvas } = await import('/rawlib.js'); const { defaultState } = await import('/state.js');
     const W = 512; const H = 64; const data = new Uint16Array(W * H * 3);
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const v = Math.round((0.012 + (x / (W - 1)) * 0.018) * 65535); data.set([v, v, v], (y * W + x) * 3); }
-    const base = developToCanvas({ data, width: W, height: H }, { exposure: 0 }, 1);
+    const base = developToCanvas({ data, width: W, height: H, gain: 1 }, { exposure: 0, nr: 0, sharpen: 0 });
     const eng = new Engine(document.createElement('canvas'));
     eng.setSource(base, W, H); eng.setResidual(residual ? base.residual : null);
     const st = defaultState(); st.curves.rgb = [[0, 0], [0.08, 0.05], [0.16, 0.95], [1, 1]];

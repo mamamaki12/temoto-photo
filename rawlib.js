@@ -1,7 +1,7 @@
 // キヤノン（CR3・CR2）・ニコン・ソニー・富士フイルムなどの RAW を、LibRaw（WebAssembly）で RAW データから現像する。
 // LibRaw は別スレッド（Worker）で動き、端末の外には何も送らない（読み込むのは同じサイトの vendor/libraw だけ）。
 // 出力は 16bit・リニア・Rec.2020（広い色域）。見た目への仕上げ（rawdev.js）はこのアプリで行う。
-import { autoGain, developParams, developRegion } from './rawdev.js';
+import { developParams, developRegion } from './rawdev.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 
 /** LibRaw で現像する RAW（DNG はこれまでどおり raw.js で現像する） */
@@ -35,13 +35,13 @@ export async function decodeLibRaw(buffer, { half = false } = {}) {
 }
 
 /**
- * 現像して Canvas にする（編集中の写真）。gain: 明るさをそろえる倍率（なければ画素から決める）。
+ * 現像して Canvas にする（編集中の写真）。lin は prepareLin したもの。
  * 8bit に丸めた残りを canvas.residual に入れておく（GPU で足し戻して、16bit 相当の細かさで編集する）
  */
-export function developToCanvas(lin, rawState, gain = lin.gain ?? autoGain(lin.data, lin.width, lin.height), canvas = document.createElement('canvas')) {
+export function developToCanvas(lin, rawState, canvas = document.createElement('canvas')) {
   canvas.width = lin.width; canvas.height = lin.height;
   const res = new Uint8Array(lin.width * lin.height * 4);
-  const px = developRegion(lin, 0, 0, lin.width, lin.height, developParams(rawState, gain, COLOR_SPACE), res);
+  const px = developRegion(lin, 0, 0, lin.width, lin.height, developParams(rawState, lin, COLOR_SPACE), res);
   ctx2d(canvas).putImageData(imageData(px, lin.width, lin.height), 0, 0);
   canvas.residual = { width: lin.width, height: lin.height, data: res };
   return canvas;
@@ -51,8 +51,8 @@ export function developToCanvas(lin, rawState, gain = lin.gain ?? autoGain(lin.d
  * 元の大きさで書き出すための「画素の入れ物」。Canvas に入りきらない大きさでも、一部ずつ現像して渡せる（fullres.js が使う）
  * 値は書き出す色空間（COLOR_SPACE）のまま
  */
-export function pixelSource(lin, rawState, gain) {
-  const p = developParams(rawState, gain, COLOR_SPACE);
+export function pixelSource(lin, rawState) {
+  const p = developParams(rawState, lin, COLOR_SPACE);
   return {
     width: lin.width, height: lin.height,
     region: (x, y, w, h) => developRegion(lin, x, y, w, h, p),
