@@ -376,6 +376,7 @@ function rebuildSource() {
   }
   if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
   else { const r = retouchCanvas(E.base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
+  E.engine.setResidual(E.base.residual || null); // RAW は 16bit の細かさで
   E.retouchKey = sourceKey(E.state);
   if (E.showSkin && E.tool === 'skin') E.engine.setSource(skinOverlaySource(), E.W, E.H);
   E.small = null; E.thumbsKey = null;

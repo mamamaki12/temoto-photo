@@ -2,6 +2,9 @@
 // 1. 幾何パス: 元写真 → 切り抜き・回転・傾き・遠近補正した画像
 // 2. ぼかしパス: 小さく縮めてぼかす（明瞭度・ハイライト/シャドウ・かすみ除去・ブルーム用。画像の大きさに比例するので、プレビューと書き出しで見た目が同じ）
 // 3. 色パス: 明るさ・色・カーブ・HSL・カラーグレーディング・部分補正・効果
+// 途中の画像は 16bit（半精度の浮動小数点）で持ち、最後に 8bit にするときは細かいディザ（ごく弱いノイズ）を混ぜる。
+// 強く編集しても、空や背景・肌のなめらかなグラデーションに縞（トーンジャンプ）が出ない。
+// RAW は 8bit に丸めた残り（residual）も GPU に送り、幾何パスで足し戻す（16bit の現像の細かさのまま編集する）
 import { geoParams } from './geometry.js';
 import { curvesLut } from './curves.js';
 import { HSL_BANDS, LOCAL_TYPES } from './state.js';
@@ -30,13 +33,16 @@ vec2 outToSrc(vec2 o) {
 
 const GEO_FRAG = `#version 300 es
 precision highp float;
-in vec2 vUv; out vec4 outColor; uniform sampler2D uSrc; uniform vec4 uRegion;
+in vec2 vUv; out vec4 outColor; uniform sampler2D uSrc, uRes; uniform vec4 uRegion; uniform int uUseRes;
 ${GEO_FN}
 void main() {
   // uRegion: 出力全体のうち、描く範囲（帯ごとに描くとき）。画面の上が y=0 になるように反転
   vec2 g = uRegion.xy + vUv * uRegion.zw;
-  vec2 s = outToSrc(vec2(g.x, 1.0 - g.y));
-  outColor = vec4(texture(uSrc, clamp(s, 0.0, 1.0)).rgb, 1.0);
+  vec2 s = clamp(outToSrc(vec2(g.x, 1.0 - g.y)), 0.0, 1.0);
+  vec3 c = texture(uSrc, s).rgb;
+  // 8bit に丸めた残り（0〜1 に入れてある -0.5〜0.5）を足して、元の細かさに戻す
+  if (uUseRes == 1) c += (texture(uRes, s).rgb - 0.5) / 255.0;
+  outColor = vec4(c, 1.0);
 }`;
 
 const BLUR_FRAG = `#version 300 es
@@ -68,7 +74,7 @@ uniform float uVignette, uVignetteMid, uGrain, uGrainSize, uFade, uBloom, uHalat
 uniform int uUseLut; uniform vec3 uHsl[8]; uniform float uHslHue[8];
 uniform vec3 uGradeSh, uGradeMid, uGradeHi; uniform float uGradeBal;
 uniform int uLocalCount; uniform vec4 uLocA[8]; uniform vec4 uLocB[8]; uniform vec4 uLocAdj0[8]; uniform vec4 uLocAdj1[8]; uniform vec4 uLocAdj2[8];
-uniform int uBypass; uniform int uShowMask; uniform int uUseNbr; uniform int uUseHsl;
+uniform int uBypass; uniform int uShowMask; uniform int uUseNbr; uniform int uUseHsl; uniform int uDither;
 uniform vec4 uRegion, uGeoRegion; // 帯ごとに描くとき: 出力全体のうちこの帯の範囲と、幾何パスの画像（少し上下に広い）の範囲
 ${GEO_FN}
 
@@ -90,6 +96,11 @@ float hueDist(float a, float b) { float d = abs(a - b); return min(d, 1.0 - d); 
 vec3 wbGain(float temp, float tint) { return vec3(1.0 + temp * 0.18, 1.0 - tint * 0.12, 1.0 - temp * 0.22) * vec3(1.0 + tint * 0.05, 1.0, 1.0 + tint * 0.05); }
 // 明るさだけを変えて色を保つ
 vec3 setLuma(vec3 c, float l0, float l1) { return l0 > 1e-4 ? c * (l1 / l0) : vec3(l1); }
+// ディザ用の乱数（画素の位置で決まる。帯ごとに描いても同じ）
+float dither(vec2 p) {
+  uvec2 v = uvec2(p); uint h = v.x * 1664525u + v.y * 1013904223u; h ^= h >> 16; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+  return float(h) / 4294967295.0 - 0.5;
+}
 float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float vnoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -239,6 +250,8 @@ void main() {
     c += n * uGrain * 0.28 * lw;
   }
   c = mix(c, vec3(1.0, 0.15, 0.2), shown * 0.55);
+  // 8bit にするときの縞を防ぐ（±0.5 段階のディザ）
+  if (uDither == 1) c += dither(G * uOutSize) / 255.0;
   outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
 
@@ -260,12 +273,14 @@ export class Engine {
     if (!gl) throw new Error('webgl2');
     glColorSpace(gl); // Display P3 の写真を、くすませずに読み込み・描く
     this.gl = gl;
+    // 途中の画像を 16bit（半精度）で持てるか（ほとんどの端末で使える。使えなければ 8bit）
+    this.hi = !!gl.getExtension('EXT_color_buffer_float');
     this.maxSize = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     this.progs = { geo: this.program(GEO_FRAG), blur: this.program(BLUR_FRAG), copy: this.program(COPY_FRAG), main: this.program(MAIN_FRAG) };
-    this.src = this.texture(); this.lut = this.texture(); this.mask = this.texture();
+    this.src = this.texture(); this.res = this.texture(); this.lut = this.texture(); this.mask = this.texture(); this.useRes = false;
     gl.bindTexture(gl.TEXTURE_2D, this.mask);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
     this.fbs = {};
@@ -293,12 +308,14 @@ export class Engine {
     return t;
   }
 
-  fb(name, w, h) {
+  /** 描き込み先。bytes: 8bit（画素を読み出すもの）。それ以外は 16bit で持つ */
+  fb(name, w, h, bytes = false) {
     const gl = this.gl; let f = this.fbs[name];
     if (f && f.w === w && f.h === h) return f;
     if (f) { gl.deleteTexture(f.tex); gl.deleteFramebuffer(f.fb); }
     const tex = this.texture();
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    if (this.hi && !bytes) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     f = { tex, fb, w, h }; this.fbs[name] = f;
@@ -315,6 +332,19 @@ export class Engine {
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     this.srcW = w; this.srcH = h;
+  }
+
+  /**
+   * RAW の 8bit に丸めた残り { width, height, data: Uint8Array（RGBA。0〜255 が -0.5〜0.5） }。null なら使わない。
+   * 元写真（setSource）と同じ大きさ。修復・美肌をしても、残りはそのまま足してよい（±0.5 段階より小さいので）
+   */
+  setResidual(res) {
+    const gl = this.gl;
+    this.useRes = !!res;
+    if (!res) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.res); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, res.width, res.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, res.data);
+    gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   }
 
   /** ブラシの部分補正のマスク { width, height, data: Uint8Array }（RGBA の各チャンネルが1つのブラシ。元写真の座標） */
@@ -361,7 +391,8 @@ export class Engine {
   /** 1. 幾何（region: 出力全体のうち描く範囲。GL の座標で [x, y, 幅, 高さ]） */
   drawGeo(state, target, w, h, region) {
     const gl = this.gl; const pg = this.progs.geo; gl.useProgram(pg.p);
-    this.bindTex(pg, 'uSrc', this.src, 0); this.setGeo(pg, state.geo); gl.uniform4f(pg.loc.uRegion, ...region);
+    this.bindTex(pg, 'uSrc', this.src, 0); this.bindTex(pg, 'uRes', this.res, 1); gl.uniform1i(pg.loc.uUseRes, this.useRes ? 1 : 0);
+    this.setGeo(pg, state.geo); gl.uniform4f(pg.loc.uRegion, ...region);
     this.draw(pg, target, w, h);
   }
 
@@ -404,7 +435,7 @@ export class Engine {
     }
     this.bindTex(pm, 'uLut', this.lut, 2); this.bindTex(pm, 'uMask', this.mask, 3);
     gl.uniform1i(L.uUseLut, key === '{"rgb":[[0,0],[1,1]],"r":[[0,0],[1,1]],"g":[[0,0],[1,1]],"b":[[0,0],[1,1]]}' ? 0 : 1);
-    gl.uniform1i(L.uBypass, bypass ? 1 : 0); gl.uniform1i(L.uShowMask, showMask);
+    gl.uniform1i(L.uBypass, bypass ? 1 : 0); gl.uniform1i(L.uShowMask, showMask); gl.uniform1i(L.uDither, 1);
     gl.uniform1i(L.uUseNbr, state.adj.sharpen > 0 || state.adj.noise > 0 ? 1 : 0);
     gl.uniform1i(L.uUseHsl, HSL_BANDS.some(([k]) => state.hsl[k].h || state.hsl[k].s || state.hsl[k].l) ? 1 : 0);
     gl.uniform2f(L.uTexel, ...texel); gl.uniform1f(L.uDetailStep, detailStep(outW, outH));
@@ -459,7 +490,7 @@ export class Engine {
     const gy0 = Math.max(0, y0 - m); const gy1 = Math.min(outH, y0 + rows + m); const gh = gy1 - gy0;
     const geoRegion = [0, 1 - gy1 / outH, 1, gh / outH];
     const geo = this.fb('sgeo', outW, gh); this.drawGeo(state, geo, outW, gh, geoRegion);
-    const out = this.fb('sout', outW, rows);
+    const out = this.fb('sout', outW, rows, true);
     this.drawMain(state, out, outW, outH, { geo, blurs, region: [0, 1 - (y0 + rows) / outH, 1, rows / outH], geoRegion, texel: [1 / outW, 1 / gh], w: outW, h: rows });
     const px = new Uint8Array(outW * rows * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, out.fb); gl.readPixels(0, 0, outW, rows, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -499,7 +530,7 @@ export class Engine {
   }
   /** 置いた画像の一部を、縮めて読み出す（大きなぼかしは縮めた画像の上で計算する） */
   readSourceScaled(x, y, w, h, sw, sh) {
-    const gl = this.gl; const pc = this.progs.copy; const f = this.fb('tmpA', sw, sh);
+    const gl = this.gl; const pc = this.progs.copy; const f = this.fb('tmpA', sw, sh, true);
     gl.useProgram(pc.p); this.bindTex(pc, 'uTex', this.src, 0); gl.uniform4f(pc.loc.uRect, x / this.srcW, y / this.srcH, w / this.srcW, h / this.srcH); this.draw(pc, f, sw, sh);
     const px = new Uint8ClampedArray(sw * sh * 4); gl.readPixels(0, 0, sw, sh, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(px.buffer));
     return px;
@@ -514,9 +545,21 @@ export class Engine {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.srcFb); gl.viewport(x, y, w, h);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
+  /** RAW の丸めた残りも、分けて送る（allocResidual → putResidualPixels… → finishSource） */
+  allocResidual(w, h) {
+    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.res);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    this.useRes = true;
+  }
+  putResidualPixels(x, y, w, h, data) {
+    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.res); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  }
   finishSource() {
-    const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.src);
-    gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    const gl = this.gl;
+    for (const t of this.useRes ? [this.src, this.res] : [this.src]) {
+      gl.bindTexture(gl.TEXTURE_2D, t); gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    }
   }
 
   /** 表示中の画像を小さく読み出す（ヒストグラム用） */
@@ -532,7 +575,7 @@ export class Engine {
   dispose() {
     const gl = this.gl;
     for (const f of Object.values(this.fbs)) { gl.deleteTexture(f.tex); gl.deleteFramebuffer(f.fb); }
-    for (const t of [this.src, this.lut, this.mask, this.tmpTex]) if (t) gl.deleteTexture(t);
+    for (const t of [this.src, this.res, this.lut, this.mask, this.tmpTex]) if (t) gl.deleteTexture(t);
     if (this.srcFb) gl.deleteFramebuffer(this.srcFb);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
   }

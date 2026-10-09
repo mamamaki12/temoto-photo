@@ -34,11 +34,16 @@ export async function decodeLibRaw(buffer, { half = false } = {}) {
   } finally { raw.dispose(); }
 }
 
-/** 現像して Canvas にする（編集中の写真）。gain: 明るさをそろえる倍率（なければ画素から決める） */
+/**
+ * 現像して Canvas にする（編集中の写真）。gain: 明るさをそろえる倍率（なければ画素から決める）。
+ * 8bit に丸めた残りを canvas.residual に入れておく（GPU で足し戻して、16bit 相当の細かさで編集する）
+ */
 export function developToCanvas(lin, rawState, gain = lin.gain ?? autoGain(lin.data, lin.width, lin.height), canvas = document.createElement('canvas')) {
   canvas.width = lin.width; canvas.height = lin.height;
-  const px = developRegion(lin, 0, 0, lin.width, lin.height, developParams(rawState, gain, COLOR_SPACE));
+  const res = new Uint8Array(lin.width * lin.height * 4);
+  const px = developRegion(lin, 0, 0, lin.width, lin.height, developParams(rawState, gain, COLOR_SPACE), res);
   ctx2d(canvas).putImageData(imageData(px, lin.width, lin.height), 0, 0);
+  canvas.residual = { width: lin.width, height: lin.height, data: res };
   return canvas;
 }
 
@@ -48,5 +53,11 @@ export function developToCanvas(lin, rawState, gain = lin.gain ?? autoGain(lin.d
  */
 export function pixelSource(lin, rawState, gain) {
   const p = developParams(rawState, gain, COLOR_SPACE);
-  return { width: lin.width, height: lin.height, region: (x, y, w, h) => developRegion(lin, x, y, w, h, p), close() { lin.data = null; } };
+  return {
+    width: lin.width, height: lin.height,
+    region: (x, y, w, h) => developRegion(lin, x, y, w, h, p),
+    /** 8bit の画素と、丸めた残り */
+    regionHi: (x, y, w, h) => { const res = new Uint8Array(w * h * 4); return { px: developRegion(lin, x, y, w, h, p, res), res }; },
+    close() { lin.data = null; },
+  };
 }

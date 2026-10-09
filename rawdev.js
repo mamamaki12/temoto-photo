@@ -37,18 +37,30 @@ const KNEE = 0.8;
 const shoulder = (x) => (x <= KNEE ? x : KNEE + (1 - KNEE) * (1 - Math.exp(-(x - KNEE) / (1 - KNEE))));
 
 /**
- * 0〜1 のリニア → 8bit（sRGB・Display P3 は同じ曲線）の表。
+ * 0〜1 のリニア → 0〜255（小数つき。sRGB・Display P3 は同じ曲線）の表。間は直線でつなぐ（暗い所も 8bit より細かく）。
  * カメラの JPEG に近い見た目になるよう、ゆるい S 字のトーンカーブ（中間の明暗差を少し強く）も一緒に入れる
  */
 const CONTRAST = 0.3;
+const ENC_N = 16384;
 const ENC = (() => {
-  const t = new Uint8Array(4097);
-  for (let i = 0; i <= 4096; i++) {
-    const x = i / 4096; const e = x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055;
-    const sc = e * e * (3 - 2 * e); t[i] = Math.round((e + (sc - e) * CONTRAST) * 255);
+  const t = new Float32Array(ENC_N + 2);
+  for (let i = 0; i <= ENC_N; i++) {
+    const x = i / ENC_N; const e = x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055;
+    const sc = e * e * (3 - 2 * e); t[i] = (e + (sc - e) * CONTRAST) * 255;
   }
+  t[ENC_N + 1] = t[ENC_N];
   return t;
 })();
+// 暗い所は曲線が急なので、いちばん暗い区間だけ細かい表を別に持つ（リニアで 1/2^20 きざみ）
+const ENC_LO = (() => { const n = 1024; const t = new Float32Array(n + 2); for (let i = 0; i <= n; i++) { const x = (i / n) * (16 / ENC_N); const e = x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055; t[i] = (e + (e * e * (3 - 2 * e) - e) * CONTRAST) * 255; } t[n + 1] = t[n]; return t; })();
+function enc(x) {
+  if (x >= 1) return ENC[ENC_N];
+  if (x < 16 / ENC_N) { const f = x * (ENC_N / 16) * 1024; const i = f | 0; return ENC_LO[i] + (ENC_LO[i + 1] - ENC_LO[i]) * (f - i); }
+  const f = x * ENC_N; const i = f | 0; return ENC[i] + (ENC[i + 1] - ENC[i]) * (f - i);
+}
+/** 0〜255 の小数 → 8bit に丸めた値と、丸めた残り（-0.5〜0.5 を 0〜255 に）。残りは GPU で足し戻す（16bit 相当の細かさ） */
+const RES = (v, q) => { const r = Math.round((v - q + 0.5) * 255); return r < 0 ? 0 : r > 255 ? 255 : r; };
+
 /** 彩度（リニアで、明るさを保ったまま）。実写真でカメラの JPEG と比べると、そのままで同じくらいの鮮やかさ */
 const SAT = 1.0;
 /** 暗部のつま先の強さ（リニアの明るさ。これより十分明るい所はほとんど変わらない） */
@@ -63,11 +75,11 @@ export function developParams({ exposure = 0 } = {}, gain0, space) {
 }
 
 /**
- * 一部（x, y から w×h）を現像して RGBA を返す。lin: { data: Uint16Array（RGB、リニア Rec.2020）, width, height }
+ * 一部（x, y から w×h）を現像して RGBA を返す。res（w×h×4 の配列）を渡すと、8bit に丸めた残りも入れる。lin: { data: Uint16Array（RGB、リニア Rec.2020）, width, height }
  * 暗い所に出る色のノイズ（赤・緑・青の粒）は、色の成分だけを少しぼかして消す（明るさの成分はぼかさないので、細部は残る）。
  * ぼかしの届く範囲だけ広く読むので、一部ずつ現像しても、全体をまとめて現像したのと同じになる
  */
-export function developRegion(lin, x, y, w, h, { M, gain }) {
+export function developRegion(lin, x, y, w, h, { M, gain }, res = null) {
   const { data, width: W, height: H } = lin; const out = new Uint8ClampedArray(w * h * 4);
   const r = Math.max(1, Math.round(Math.min(W, H) / 1500)); // 色ノイズのぼかしの半径（写真の大きさに比例）
   const m = r * 2; // 2回ぼかすので
@@ -98,7 +110,9 @@ export function developRegion(lin, x, y, w, h, { M, gain }) {
       }
       const mx = R > G ? (R > B ? R : B) : G > B ? G : B;
       if (mx > KNEE) { const f = shoulder(mx) / mx; R *= f; G *= f; B *= f; }
-      out[o] = ENC[(R >= 1 ? 4096 : (R * 4096) | 0)]; out[o + 1] = ENC[(G >= 1 ? 4096 : (G * 4096) | 0)]; out[o + 2] = ENC[(B >= 1 ? 4096 : (B * 4096) | 0)]; out[o + 3] = 255;
+      const er = enc(R); const eg = enc(G); const eb = enc(B); const qr = Math.round(er); const qg = Math.round(eg); const qb = Math.round(eb);
+      out[o] = qr; out[o + 1] = qg; out[o + 2] = qb; out[o + 3] = 255;
+      if (res) { res[o] = RES(er, qr); res[o + 1] = RES(eg, qg); res[o + 2] = RES(eb, qb); res[o + 3] = 255; }
     }
   }
   return out;
