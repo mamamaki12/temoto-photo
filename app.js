@@ -10,7 +10,7 @@ import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { compose, hitOverlay, overlayBox, layout } from './compose.js';
+import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
 import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
@@ -22,14 +22,13 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.6.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.7.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
-const STICKERS = ['😀', '😂', '🥰', '😎', '🥺', '😭', '😡', '🤔', '👍', '👏', '🙏', '💪', '❤️', '💖', '💯', '✨', '⭐', '🌟', '🔥', '🎉', '🎂', '🎁', '🌸', '🌈', '☀️', '🌙', '⚡', '❄️', '🍀', '🍓', '🍰', '☕', '🍜', '🐶', '🐱', '🐻', '🐰', '🦄', '📷', '🎵', '🎤', '✈️', '🚗', '🏠', '📍', '✅', '❗', '❓'];
 const TOOLS = [
   ['raw', '◈', 'RAW'], ['auto', '✦', '自動'], ['looks', '◐', 'フィルター'], ['light', '☀', 'ライト'], ['color', '◒', 'カラー'], ['hsl', '◍', 'HSL'], ['curves', '∿', 'カーブ'],
   ['grade', '◑', 'グレーディング'], ['detail', '◇', 'ディテール'], ['effects', '✧', '効果'], ['crop', '⌗', '切り抜き'], ['local', '◎', '部分補正'],
-  ['skin', '❀', '美肌'], ['heal', '✚', '修復'], ['hide', '▦', 'モザイク'], ['text', 'A', '文字'], ['sticker', '☺', 'スタンプ'], ['draw', '✎', '描画'], ['frame', '▢', 'フレーム'], ['info', 'ⓘ', '情報'],
+  ['skin', '❀', '美肌'], ['heal', '✚', '修復'], ['hide', '▦', 'モザイク'], ['frame', '▢', 'フレーム'], ['info', 'ⓘ', '情報'],
 ];
 const prefs = {
   get(k, d) { try { const v = localStorage.getItem(`temoto:${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -304,7 +303,7 @@ async function showLibrary() {
           '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
           '切り抜き・傾き補正・遠近補正・反転',
           'スポット修復、顔やナンバーを隠すモザイク・ぼかし',
-          '文字入れ（縦書きも）・スタンプ・手描き・フレーム',
+          'フレーム・余白（SNS の比率に合わせる）',
           '編集はいつでもやり直せる（元の写真はそのまま）',
           '書き出すと位置情報などのメタデータは消える',
         ].map((t) => h('li', {}, t)))),
@@ -355,7 +354,7 @@ async function openEditor(id) {
   E = {
     id, proj, engine, glCanvas, state, committed: S.clone(state), undo: [], redo: [], tool: ((t) => (t === 'raw' && !p.lin ? 'looks' : t))(prefs.get('tool', 'looks')),
     base: p.base, W: p.W, H: p.H, scaled: p.scaled, rawLin: p.lin, src: null, srcData: null, maskCache: new Map(), skinCache: {},
-    sel: null, selOverlay: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
+    sel: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
   buildEditor();
   rebuildSource(); rebuildMask();
@@ -430,7 +429,6 @@ function replaceState() {
   if (sourceKey(E.state) !== E.retouchKey) rebuildSource();
   if (maskKey() !== E.maskKey) { E.maskCache.clear(); rebuildMask(); }
   if (E.sel && !E.state.locals.some((l) => l.id === E.sel)) E.sel = null;
-  if (E.selOverlay && !E.state.overlays.some((o) => o.id === E.selOverlay)) E.selOverlay = null;
   syncHistoryButtons(); buildPanel(); requestRender(); scheduleSave();
 }
 let saveTimer = 0; let thumbTimer = 0;
@@ -455,7 +453,7 @@ async function saveThumb() {
 // ── 描画 ──
 function previewState() {
   const st = E.state;
-  if (E.tool === 'crop') return { ...st, geo: { ...st.geo, crop: { x: 0, y: 0, w: 1, h: 1 } }, frame: S.defaultState().frame, overlays: [] };
+  if (E.tool === 'crop') return { ...st, geo: { ...st.geo, crop: { x: 0, y: 0, w: 1, h: 1 } }, frame: S.defaultState().frame };
   return st;
 }
 /** 拡大・移動の見た目だけを変える（写真の描き直しはしない） */
@@ -490,7 +488,7 @@ function renderNow() {
   const showMask = E.tool === 'local' && E.showMask && E.sel ? st.locals.findIndex((l) => l.id === E.sel) : -1;
   if (E.maskDirty) { E.mask = buildMask(E.state, E.W, E.H, E.maskCache); E.engine.setMask(E.mask); E.maskDirty = false; }
   E.engine.render(eff, pw, ph, { bypass: orig, showMask });
-  E.L = compose(E.view, E.glCanvas, st, {});
+  E.L = compose(E.view, E.glCanvas, st);
   E.view.style.width = `${E.view.width / dpr / k}px`; E.view.style.height = `${E.view.height / dpr / k}px`;
   applyZoom();
   E.origBadge.hidden = !orig;
@@ -543,7 +541,7 @@ function buildEditor() {
       h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'),
       h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'),
       h('button', { type: 'button', onclick: async () => { const blob = await db.getBlob(E.id); const id = uid(); await db.addProject({ ...E.proj, id, name: `${E.proj.name}（コピー）`, created: Date.now(), updated: Date.now(), state: S.clone(E.committed) }, blob); toast('複製しました'); openEditor(id); } }, '複製して別の編集を作る'),
-      h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; E.selOverlay = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
+      h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
   // 項目を選んだら・外側を押したらメニューを閉じる
   menu.addEventListener('click', (e) => { if (e.target.closest('.menu-list button')) menu.open = false; });
   E.closeMenu = (e) => { if (menu.open && !menu.contains(e.target)) menu.open = false; };
@@ -695,16 +693,6 @@ const PANELS = {
       chips([['mosaic', 'モザイク'], ['blur', 'ぼかし']], mode, (v) => prefs.set('hideMode', v), { label: '隠し方' }).el,
       slider({ label: '強さ', min: 4, max: 60, value: prefs.get('hideSize', 20), def: 20, onChange: (v) => prefs.set('hideSize', v) }).el,
       h('p', { class: 'muted small' }, `修復・モザイク: ${E.state.retouch.length}か所`)];
-  },
-  text() { return overlayPanel('text'); },
-  sticker() { return overlayPanel('sticker'); },
-  draw() {
-    const d = prefs.get('draw', { color: '#ff3b30', width: 1, mode: 'pen' });
-    const save = () => prefs.set('draw', d);
-    return [hint('写真の上を指でなぞって描きます。消すときは「元に戻す」。'),
-      chips([['pen', 'ペン'], ['marker', 'マーカー'], ['neon', 'ネオン']], d.mode, (v) => { d.mode = v; save(); }, { label: '描き方' }).el,
-      colorPicker({ label: '色', value: d.color, onPick: (v) => { d.color = v; save(); } }).el,
-      slider({ label: '太さ', min: 1, max: 10, value: d.width, def: 1, onChange: (v) => { d.width = v; save(); } }).el];
   },
   frame() {
     const f = E.state.frame;
@@ -969,48 +957,6 @@ function localPanel() {
   ];
 }
 
-// ── 文字・スタンプ ──
-function overlayPanel(kind) {
-  const o = E.state.overlays.find((x) => x.id === E.selOverlay && x.type === kind);
-  const addOverlay = (extra) => {
-    if (E.state.overlays.length >= S.MAX_OVERLAYS) { toast('文字・スタンプ・描画は60個までです'); return; }
-    const v = S.validateState({ overlays: [{ type: kind, id: uid(), x: 0.5, y: 0.5, ...extra }] }).overlays[0];
-    E.state.overlays.push(v); E.selOverlay = v.id; commit(); buildPanel(); requestRender();
-  };
-  const top = [];
-  if (kind === 'text') top.push(row(btn('＋ 文字を追加', () => addOverlay({ text: 'テキスト', size: 0.08, color: '#ffffff', shadow: true }), 'primary')));
-  else top.push(h('div', { class: 'stickers', role: 'group', 'aria-label': 'スタンプを追加' }, STICKERS.map((s) => h('button', { type: 'button', 'aria-label': `${s} を追加`, onclick: () => addOverlay({ emoji: s }) }, s))));
-  if (!o) return [...top, hint(kind === 'text' ? '追加した文字はドラッグで動かせます。タップで選ぶと編集できます。' : 'スタンプはドラッグで動かせます。タップで選ぶと大きさや向きを変えられます。')];
-  const set = (k) => live((v) => { o[k] = v; });
-  const common = [
-    slider({ label: '大きさ', min: kind === 'text' ? 1 : 2, max: kind === 'text' ? 40 : 60, value: Math.round(o.size * 100), def: kind === 'text' ? 8 : 15, onInput: live((v) => { o.size = v / 100; }), onChange: commit }).el,
-    slider({ label: '回転', min: -180, max: 180, value: Math.round(o.rot), def: 0, unit: '°', onInput: set('rot'), onChange: commit }).el,
-    slider({ label: '不透明度', min: 5, max: 100, value: Math.round(o.opacity * 100), def: 100, unit: '%', onInput: live((v) => { o.opacity = v / 100; }), onChange: commit }).el,
-    row(btn('前面へ', () => { E.state.overlays = [...E.state.overlays.filter((x) => x !== o), o]; commit(); requestRender(); }, 'small'),
-      btn('複製', () => { const c = { ...S.clone(o), id: uid(), x: Math.min(1, o.x + 0.05), y: Math.min(1, o.y + 0.05) }; E.state.overlays.push(c); E.selOverlay = c.id; commit(); buildPanel(); requestRender(); }, 'small'),
-      btn('削除', () => { E.state.overlays = E.state.overlays.filter((x) => x !== o); E.selOverlay = null; commit(); buildPanel(); requestRender(); }, 'small danger'),
-      btn('選択をやめる', () => { E.selOverlay = null; buildPanel(); requestRender(); }, 'small ghost')),
-  ];
-  if (kind === 'sticker') return [...top, ...common];
-  const ta = h('textarea', { id: 'ov-text', rows: 2, maxlength: 500, value: o.text });
-  ta.addEventListener('input', () => { o.text = ta.value || ' '; requestRender(); });
-  ta.addEventListener('change', commit);
-  return [...top,
-    h('div', { class: 'field' }, h('label', { for: 'ov-text' }, '文字（改行できます）'), ta),
-    chips(Object.entries(S.FONTS), o.font, (v) => { o.font = v; commit(); requestRender(); }, { label: '書体' }).el,
-    colorPicker({ label: '文字の色', value: o.color, onPick: (v) => { o.color = v; commit(); requestRender(); } }).el,
-    h('div', { class: 'local-opts' },
-      toggle('太字', o.bold, (v) => { o.bold = v; commit(); requestRender(); }).el,
-      toggle('縦書き', o.vertical, (v) => { o.vertical = v; commit(); requestRender(); }).el,
-      toggle('影', o.shadow, (v) => { o.shadow = v; commit(); requestRender(); }).el,
-      toggle('背景', o.bg, (v) => { o.bg = v; commit(); requestRender(); }).el),
-    chips([['left', '左寄せ'], ['center', '中央'], ['right', '右寄せ']], o.align, (v) => { o.align = v; commit(); requestRender(); }, { label: '揃え' }).el,
-    slider({ label: '縁取り', min: 0, max: 30, value: Math.round(o.stroke * 100), def: 0, onInput: live((v) => { o.stroke = v / 100; }), onChange: commit }).el,
-    colorPicker({ label: '縁取りの色', value: o.strokeColor, onPick: (v) => { o.strokeColor = v; commit(); requestRender(); } }).el,
-    colorPicker({ label: '背景の色', value: o.bgColor, onPick: (v) => { o.bgColor = v; commit(); requestRender(); } }).el,
-    ...common];
-}
-
 // ── 情報 ──
 function infoPanel() {
   const p = E.proj; const x = p.exif;
@@ -1038,7 +984,7 @@ function infoPanel() {
       : h('p', { class: 'ok-note' }, '✓ 書き出した画像には、位置情報・カメラ情報などのメタデータは入りません。'),
     h('dl', { class: 'info' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
     histo(),
-    h('details', { class: 'keys' }, h('summary', {}, 'キーボードショートカット'), h('ul', {}, [['Ctrl/⌘ + Z', '元に戻す'], ['Ctrl/⌘ + Shift + Z / Ctrl + Y', 'やり直す'], ['\\（押している間）', '編集前を表示'], ['Delete', '選んだ文字・スタンプを削除'], ['Esc', '選択をやめる'], ['0', '表示を画面に合わせる']].map(([k, v]) => h('li', {}, h('kbd', {}, k), ` ${v}`)))),
+    h('details', { class: 'keys' }, h('summary', {}, 'キーボードショートカット'), h('ul', {}, [['Ctrl/⌘ + Z', '元に戻す'], ['Ctrl/⌘ + Shift + Z / Ctrl + Y', 'やり直す'], ['\\（押している間）', '編集前を表示'], ['Esc', '選択をやめる'], ['0', '表示を画面に合わせる']].map(([k, v]) => h('li', {}, h('kbd', {}, k), ` ${v}`)))),
   ];
 }
 
@@ -1086,7 +1032,7 @@ function setupPointer(stage) {
     E.pan = z === 1 ? [0, 0] : [cx - (cx - E.pan[0]) * (z / E.zoom), cy - (cy - E.pan[1]) * (z / E.zoom)];
     E.zoom = z; interacting(); requestRender();
   }, { passive: false });
-  stage.addEventListener('dblclick', () => { if (!E || ['crop', 'local', 'heal', 'hide', 'draw'].includes(E.tool)) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
+  stage.addEventListener('dblclick', () => { if (!E || ['crop', 'local', 'heal', 'hide'].includes(E.tool)) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
 }
 
 function hoverCursor(e) {
@@ -1114,8 +1060,6 @@ function startAction(e) {
   if (tool === 'heal') return healAction(c, o, p);
   if (tool === 'skin') return skinAction(e, o, p);
   if (tool === 'hide') return hideAction(c, o, p);
-  if (tool === 'draw') return drawAction(o);
-  if (tool === 'text' || tool === 'sticker') return overlayAction(c, o, tool);
   if (E.zoom > 1) { const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; return { move: (ev) => { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); } }; }
   return null;
 }
@@ -1233,30 +1177,6 @@ function hideAction(c, o, p) {
   };
 }
 
-function drawAction(o) {
-  if (E.state.overlays.length >= S.MAX_OVERLAYS) { toast('文字・スタンプ・描画は60個までです'); return null; }
-  const d = prefs.get('draw', { color: '#ff3b30', width: 1, mode: 'pen' });
-  const ov = S.validateState({ overlays: [{ type: 'draw', id: uid(), color: d.color, width: d.width / 200, mode: d.mode, pts: [o] }] }).overlays[0];
-  E.state.overlays.push(ov); requestRender();
-  return {
-    move: (e) => { const q = toOut(canvasPoint(e)); const l = ov.pts.at(-1); if (Math.hypot(q[0] - l[0], q[1] - l[1]) > 0.003 && ov.pts.length < 4000) { ov.pts.push(q); requestRender(); } },
-    end: commit,
-    cancel: () => { E.state.overlays = E.state.overlays.filter((x) => x !== ov); requestRender(); },
-  };
-}
-
-function overlayAction(c, o, tool) {
-  const kind = tool === 'text' ? 'text' : 'sticker';
-  const hit = hitOverlay(ctx2d(E.view), E.state.overlays.filter((x) => x.type === kind), c[0], c[1], E.L);
-  if (!hit) { if (E.selOverlay) { E.selOverlay = null; buildPanel(); drawHandles(); } return null; }
-  if (E.selOverlay !== hit.id) { E.selOverlay = hit.id; buildPanel(); }
-  const start = o; const p0 = [hit.x, hit.y];
-  return {
-    move: (e) => { const q = toOut(canvasPoint(e)); hit.x = Math.min(1.2, Math.max(-0.2, p0[0] + q[0] - start[0])); hit.y = Math.min(1.2, Math.max(-0.2, p0[1] + q[1] - start[1])); requestRender(); },
-    end: commit,
-  };
-}
-
 /** 切り抜き枠・操作点・選択枠などを SVG で重ねて描く */
 function drawHandles() {
   if (!E?.L) return;
@@ -1302,14 +1222,6 @@ function drawHandles() {
     const r = E.tool === 'heal' ? prefs.get('healSize', 3) / 100 * 0.6 * Math.min(L.iw, L.ih) : (prefs.get('brush', { size: 8 }).size / 200) * Math.min(L.iw, L.ih) / outputScaleToSrc();
     el('circle', { cx: E.cursor[0], cy: E.cursor[1], r, class: 'cursor', 'stroke-width': 1.5 * k });
   }
-  if ((E.tool === 'text' || E.tool === 'sticker') && E.selOverlay) {
-    const o = E.state.overlays.find((x) => x.id === E.selOverlay);
-    if (o && o.type !== 'draw') {
-      const b = overlayBox(ctx2d(E.view), o, L); const w = b.w; const hh = b.h; const fs = b.fs;
-      const [cx, cy] = outToCanvas([o.x, o.y]); const pad = fs * 0.3;
-      el('rect', { x: cx - w / 2 - pad, y: cy - hh / 2 - pad, width: w + pad * 2, height: hh + pad * 2, transform: `rotate(${o.rot} ${cx} ${cy})`, class: 'sel-box', 'stroke-width': 2 * k });
-    }
-  }
 }
 
 // ───────────────────────── キーボード ─────────────────────────
@@ -1321,8 +1233,7 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === 'y' && !typing) { e.preventDefault(); redo(); return; }
   if (typing) return;
   if (e.key === '\\') { E.setOrig(true); return; }
-  if (e.key === 'Escape') { E.selOverlay = null; E.wbPick = false; E.colorPick = false; buildPanel(); requestRender(); }
-  if ((e.key === 'Delete' || e.key === 'Backspace') && E.selOverlay) { E.state.overlays = E.state.overlays.filter((o) => o.id !== E.selOverlay); E.selOverlay = null; commit(); buildPanel(); requestRender(); }
+  if (e.key === 'Escape') { E.wbPick = false; E.colorPick = false; buildPanel(); requestRender(); }
   if (e.key === '0') { E.zoom = 1; E.pan = [0, 0]; requestRender(); }
 }
 function onKeyUp(e) { if (E && e.key === '\\') E.setOrig(false); }

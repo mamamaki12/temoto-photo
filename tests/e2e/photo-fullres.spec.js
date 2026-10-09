@@ -58,7 +58,6 @@ test('大きな写真（2,400万画素）を、編集を全部のせて元の大
     s.portrait = { smooth: 50, even: 40, bright: 18, tol: 50, seeds: [[0.3, 0.6]] };
     s.retouch.push({ type: 'heal', x: 0.62, y: 0.25, r: 0.01, sx: 0.66, sy: 0.25 }, { type: 'mosaic', x: 0.05, y: 0.7, w: 0.1, h: 0.1, size: 20 });
     s.frame = { width: 3, color: '#ffffff', radius: 10, pad: '4:5', padFill: 'blur', padColor: '#ffffff' };
-    s.overlays.push({ id: 't1', type: 'text', text: '成人式 2027', x: 0.5, y: 0.15, rot: -5, opacity: 1, size: 0.08, font: 'mincho', bold: true, color: '#ffffff', align: 'center', stroke: 0.05, strokeColor: '#000000', shadow: true, bg: false, bgColor: '#000000', vertical: false });
   });
   await page.getByRole('tab', { name: '情報' }).click();
   await expect(page.locator('.info')).toContainText('6240×7800（JPEG・PNG は元の写真から描き直します）');
