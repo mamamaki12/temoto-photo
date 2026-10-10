@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.10.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.11.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -109,10 +109,17 @@ function shrink(src, w, hgt) {
   } while (cw !== w || ch !== hgt);
   return cur;
 }
-async function thumbBlob(src, side = 360) {
-  const s = Math.min(1, side / Math.max(src.width, src.height));
-  const c = toCanvas(src, Math.max(1, Math.round(src.width * s)), Math.max(1, Math.round(src.height * s)));
-  return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.8));
+/**
+ * 写真一覧の見本。一覧は正方形に切り取って大きく（スマホの 1 列なら画面の幅いっぱい）出すので、
+ * 短い辺を 1080px にして、高解像度の画面でもぼやけないように
+ */
+const THUMB_SHORT = 1080; const THUMB_LONG = 2160; const THUMB_V = 2;
+const thumbScale = (w, hgt) => Math.min(1, THUMB_SHORT / Math.min(w, hgt), THUMB_LONG / Math.max(w, hgt));
+async function thumbBlob(src) {
+  const s = thumbScale(src.width, src.height);
+  const w = Math.max(1, Math.round(src.width * s)); const hgt = Math.max(1, Math.round(src.height * s));
+  const c = s < 1 ? shrink(src, w, hgt) : toCanvas(src, w, hgt);
+  return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
 }
 const isImage = (f) => f && (f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|avif|heic|heif|bmp)$/i.test(f.name || '') || isRawName(f.name));
 const ACCEPT = 'image/*,.dng,.cr2,.cr3,.crw,.nef,.nrw,.arw,.srf,.sr2,.raf,.orf,.rw2,.pef,.srw,.3fr,.fff,.iiq,.erf,.mef,.mos,.kdc,.dcr,.x3f,.tif,.tiff';
@@ -190,7 +197,7 @@ async function importFiles(files) {
       const { image: bmp, info } = await decodeAny(f, f.name); // RAW（LibRaw）は半分の大きさで現像したもの
       const id = uid();
       const exif = raw ? readTiffExif(await f.slice(0, 4 * 1024 * 1024).arrayBuffer()) : /jpe?g$/i.test(f.type) || /\.jpe?g$/i.test(f.name) ? readExif(await f.slice(0, 512 * 1024).arrayBuffer()) : null;
-      await db.addProject({ id, name: (f.name || '写真').replace(/\.[^.]+$/, '').slice(0, 80) || '写真', fileName: (f.name || '').slice(0, 200), raw: info, created: Date.now(), updated: Date.now(), w: info?.fullW || bmp.width, h: info?.fullH || bmp.height, size: f.size, type: f.type || (raw ? 'image/x-raw' : ''), exif, state: S.defaultState(), thumb: await thumbBlob(bmp) }, f);
+      await db.addProject({ id, name: (f.name || '写真').replace(/\.[^.]+$/, '').slice(0, 80) || '写真', fileName: (f.name || '').slice(0, 200), raw: info, created: Date.now(), updated: Date.now(), w: info?.fullW || bmp.width, h: info?.fullH || bmp.height, size: f.size, type: f.type || (raw ? 'image/x-raw' : ''), exif, state: S.defaultState(), thumb: await thumbBlob(bmp), thumbV: THUMB_V }, f);
       bmp.close?.();
       first ??= id; ok++;
     } catch {
@@ -286,12 +293,14 @@ function paintStroke(ctx, st, mw, mh, from = 0) {
 // ───────────────────────── 写真一覧 ─────────────────────────
 let libUrls = [];
 let selecting = new Set();
+let libGen = 0; // 一覧を作り直すたびに増やす（裏の見本の作り直しを止める目印）
 async function showLibrary() {
   closeEditor();
   document.title = 'てもとフォト';
   libUrls.forEach((u) => URL.revokeObjectURL(u)); libUrls = [];
   const projects = await db.listProjects().catch(() => []);
   const fileIn = h('input', { type: 'file', accept: ACCEPT, multiple: true, class: 'vh', id: 'open-file', onchange: () => { importFiles(fileIn.files); fileIn.value = ''; } });
+  const gen = ++libGen; const thumbImgs = new Map();
   const sel = () => projects.filter((p) => selecting.has(p.id));
   const bar = h('div', { class: 'lib-actions', role: 'toolbar', 'aria-label': '選んだ写真の操作' });
   const drawBar = () => {
@@ -306,11 +315,12 @@ async function showLibrary() {
   drawBar();
   const grid = h('ul', { class: 'lib-grid' }, projects.map((p) => {
     const url = p.thumb ? URL.createObjectURL(p.thumb) : ''; if (url) libUrls.push(url);
+    const img = url ? h('img', { src: url, alt: '', loading: 'lazy' }) : null; if (img) thumbImgs.set(p.id, img);
     const edited = S.isEdited(S.validateState(p.state));
     const check = h('input', { type: 'checkbox', class: 'lib-check', checked: selecting.has(p.id), 'aria-label': `${p.name}を選択`, onchange: (e) => { if (e.target.checked) selecting.add(p.id); else selecting.delete(p.id); drawBar(); grid.classList.toggle('selecting', selecting.size > 0); } });
     return h('li', { class: 'lib-item' },
       h('button', { type: 'button', class: 'lib-open', onclick: () => (selecting.size ? check.click() : openEditor(p.id)), 'aria-label': `${p.name}を編集` },
-        url ? h('img', { src: url, alt: '', loading: 'lazy' }) : h('span', { class: 'lib-noimg' }, '?'),
+        img || h('span', { class: 'lib-noimg' }, '?'),
         edited ? h('span', { class: 'lib-badge' }, '編集済み') : null,
         p.raw ? h('span', { class: 'lib-badge raw' }, 'RAW') : null),
       h('div', { class: 'lib-meta' }, check, h('span', { class: 'lib-name' }, p.name), h('span', { class: 'muted small' }, `${p.w}×${p.h}`)));
@@ -357,6 +367,28 @@ async function showLibrary() {
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
   for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
   drop.addEventListener('drop', (e) => { e.preventDefault(); importFiles(e.dataTransfer.files); });
+  upgradeThumbs(projects.filter((p) => (p.thumbV || 1) < THUMB_V), thumbImgs, gen);
+}
+/** 前の版で作った小さい見本を、編集を当てたまま高画質に作り直す（一覧を開いている間に、1 枚ずつ裏で） */
+async function upgradeThumbs(list, imgs, gen) {
+  for (const p of list) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (gen !== libGen || E || GR) return; // 一覧を離れたらやめる
+    try {
+      const blob = await db.getBlob(p.id); if (!blob) continue;
+      const prep = await prepare(p, blob, THUMB_LONG);
+      if (gen !== libGen || E || GR) { prep.base.close?.(); return; }
+      const state = S.validateState(p.state);
+      const c = renderToCanvas({ base: prep.base, W: prep.W, H: prep.H, state }, { maxSide: 0 });
+      prep.base.close?.();
+      const thumb = await thumbBlob(c); c.width = 0; c.height = 0;
+      if (!thumb) continue;
+      const cur = await db.getProject(p.id); if (!cur) continue;
+      await db.putProject({ ...cur, thumb, thumbV: THUMB_V });
+      const img = imgs.get(p.id);
+      if (img && gen === libGen) { const url = URL.createObjectURL(thumb); libUrls.push(url); img.src = url; }
+    } catch (e) { console.warn('見本を作り直せませんでした', p.name, e); }
+  }
 }
 
 function confirmBox(msg, okLabel, onOk) {
@@ -486,9 +518,10 @@ function flushSave() {
 }
 async function saveThumb() {
   if (!E) return;
+  if (E.showOriginal) { clearTimeout(thumbTimer); thumbTimer = setTimeout(saveThumb, 2500); return; } // 編集前を表示中は、編集後に戻ってから
   const t = await thumbBlob(E.view);
   if (!E || !t) return;
-  E.proj = { ...E.proj, thumb: t, state: S.clone(E.committed), updated: Date.now() };
+  E.proj = { ...E.proj, thumb: t, thumbV: THUMB_V, state: S.clone(E.committed), updated: Date.now() };
   db.putProject(E.proj).catch(() => {});
 }
 
@@ -720,9 +753,9 @@ const PANELS = {
       histo(),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
-        Object.assign(E.state.adj, autoAdjust(histogram(d))); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
+        Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
       }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); requestRender(); })),
-      hint('写真の明るさの分布から、露光・白黒レベル・ホワイトバランスを整えます。気に入らなければ「元に戻す」で戻せます。'),
+      hint('写真の明るさの分布と、白・灰色らしい所の色から、露光・白黒レベル・ホワイトバランスを整えます（電球の部屋の暖かさは残します）。気に入らなければ「元に戻す」で戻せます。'),
     ];
   },
   looks() {
@@ -983,7 +1016,7 @@ function skinPanel() {
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
       const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
-      Object.assign(E.state.adj, autoAdjust(histogram(d)));
+      Object.assign(E.state.adj, autoAdjust(histogram(d), d));
       E.state.look = { id: 'studio-clear', amount: 60 };
       if (n) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
       else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }
@@ -1714,7 +1747,7 @@ function openGridExport() {
       h('button', { type: 'button', onclick: async () => {
         try {
           const r = await make(); const id = uid(); const bmp = await createImageBitmap(r.blob);
-          await db.addProject({ id, name: name.value.trim().slice(0, 80) || 'グリッド', fileName: fileName(), created: Date.now(), updated: Date.now(), w: r.w, h: r.h, size: r.blob.size, type: opt.format, exif: null, state: S.defaultState(), thumb: await thumbBlob(bmp) }, r.blob);
+          await db.addProject({ id, name: name.value.trim().slice(0, 80) || 'グリッド', fileName: fileName(), created: Date.now(), updated: Date.now(), w: r.w, h: r.h, size: r.blob.size, type: opt.format, exif: null, state: S.defaultState(), thumb: await thumbBlob(bmp), thumbV: THUMB_V }, r.blob);
           bmp.close?.(); status.textContent = '写真一覧に保存しました。文字やフレームを足すなど、続けて編集できます。'; toast('写真一覧に保存しました');
         } catch { status.textContent = '保存できませんでした'; }
       } }, '写真一覧に保存'),

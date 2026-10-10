@@ -34,3 +34,20 @@ test('RAW は 16bit の細かさで編集する: 暗い所を強く持ち上げ�
   expect(r8.jump).toBeGreaterThan(8);
   expect(r16.jump).toBeLessThan(1.6);
 });
+
+test('シャドウで暗い紺を持ち上げても、鮮やかな青にならない（色の濃さは明るさほど増やさない）', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { Engine } = await import('/engine.js'); const { defaultState } = await import('/state.js');
+    const c = document.createElement('canvas'); c.width = 64; c.height = 64; const x = c.getContext('2d'); x.fillStyle = 'rgb(22,26,52)'; x.fillRect(0, 0, 64, 64);
+    const eng = new Engine(document.createElement('canvas')); eng.setSource(c, 64, 64);
+    const read = (st) => { eng.render(st, 64, 64); const px = new Uint8Array(4); eng.gl.readPixels(32, 32, 1, 1, eng.gl.RGBA, eng.gl.UNSIGNED_BYTE, px); return [...px.slice(0, 3)]; };
+    const before = read(defaultState()); const st = defaultState(); st.adj.shadows = 60; const after = read(st);
+    eng.dispose(); return { before, after };
+  });
+  const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b; const chroma = (p) => Math.max(...p) - Math.min(...p);
+  const lr = luma(r.after) / luma(r.before);
+  expect(lr).toBeGreaterThan(1.5); // ちゃんと明るくなる
+  expect(chroma(r.after) / chroma(r.before)).toBeLessThan(lr * 0.8); // 色の濃さは明るさほど増えない
+  expect(r.after[2]).toBeGreaterThan(r.after[0]); // 紺（青み）のまま
+});

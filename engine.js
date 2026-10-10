@@ -96,6 +96,12 @@ float hueDist(float a, float b) { float d = abs(a - b); return min(d, 1.0 - d); 
 vec3 wbGain(float temp, float tint) { return vec3(1.0 + temp * 0.18, 1.0 - tint * 0.12, 1.0 - temp * 0.22) * vec3(1.0 + tint * 0.05, 1.0, 1.0 + tint * 0.05); }
 // 明るさだけを変えて色を保つ
 vec3 setLuma(vec3 c, float l0, float l1) { return l0 > 1e-4 ? c * (l1 / l0) : vec3(l1); }
+// 明るくするとき用: 色の濃さは明るさの比の平方根だけ増やす（暗い紺を持ち上げても、鮮やかな青にならない）。暗くするときは今までどおり
+vec3 liftLuma(vec3 c, float l0, float l1) {
+  if (l0 <= 1e-4) return vec3(l1);
+  float r = l1 / l0; float k = r > 1.0 ? sqrt(r) : r;
+  return vec3(l1) + (c - vec3(l0)) * k;
+}
 // ディザ用の乱数（画素の位置で決まる。帯ごとに描いても同じ）
 float dither(vec2 p) {
   uvec2 v = uvec2(p); uint h = v.x * 1664525u + v.y * 1013904223u; h ^= h >> 16; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
@@ -122,7 +128,7 @@ vec3 tone(vec3 c, float lb, float lm, float hl, float sh, float contrast, float 
   // 明瞭度: 中くらいの半径の細部を強める。大きな差（輪郭）は弱めてハローを防ぐ
   float d = l - lm; d = d / (1.0 + abs(d) * 20.0);
   l1 += d * clarity * (clarity > 0.0 ? 2.2 : 1.0) * (1.0 - pow(2.0 * l - 1.0, 2.0));
-  c = setLuma(c, l, max(l1, 0.0));
+  c = liftLuma(c, l, max(l1, 0.0));
   if (dehaze > 0.0) { float t = dehaze * 0.35 * lb; c = (c - t * 0.85) / max(1.0 - t * 0.85, 0.2); float g = luma(c); c = mix(vec3(g), c, 1.0 + dehaze * 0.25); }
   else if (dehaze < 0.0) { c = mix(c, vec3(0.85), -dehaze * 0.35); }
   return c;
@@ -174,7 +180,7 @@ void main() {
   float bp = -uBlacks * 0.12; float wp = 1.0 - uWhites * 0.15;
   float l0 = luma(c); float l1 = clamp((l0 - bp) / max(wp - bp, 0.05), 0.0, 1.5);
   l1 = pow(max(l1, 0.0), exp2(-uBrightness * 0.9));
-  c = setLuma(c, l0, l1); lb = clamp((lb - bp) / max(wp - bp, 0.05), 0.0, 1.5);
+  c = liftLuma(c, l0, l1); lb = clamp((lb - bp) / max(wp - bp, 0.05), 0.0, 1.5);
 
   float lm = clamp((luma(toSrgb(toLin(blurMid) * gain)) - bp) / max(wp - bp, 0.05), 0.0, 1.5);
   c = tone(c, lb, lm, uHighlights, uShadows, uContrast, uClarity, uDehaze);
