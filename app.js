@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.10.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.11.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -753,9 +753,9 @@ const PANELS = {
       histo(),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
-        Object.assign(E.state.adj, autoAdjust(histogram(d))); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
+        Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
       }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); requestRender(); })),
-      hint('写真の明るさの分布から、露光・白黒レベル・ホワイトバランスを整えます。気に入らなければ「元に戻す」で戻せます。'),
+      hint('写真の明るさの分布と、白・灰色らしい所の色から、露光・白黒レベル・ホワイトバランスを整えます（電球の部屋の暖かさは残します）。気に入らなければ「元に戻す」で戻せます。'),
     ];
   },
   looks() {
@@ -1016,7 +1016,7 @@ function skinPanel() {
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
       const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
-      Object.assign(E.state.adj, autoAdjust(histogram(d)));
+      Object.assign(E.state.adj, autoAdjust(histogram(d), d));
       E.state.look = { id: 'studio-clear', amount: 60 };
       if (n) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
       else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }

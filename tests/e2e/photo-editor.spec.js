@@ -140,7 +140,7 @@ test('フィルター（モノクロ）と強さ、自動補正', async ({ page 
   await page.getByRole('button', { name: '✦ 自動補正' }).click();
   await page.waitForTimeout(150);
   const st = await page.evaluate(() => window.__temoto.state.adj);
-  expect(st.vibrance).toBe(15);
+  expect(st.vibrance).toBe(8); // 自動補正が当たった
 });
 
 test('HSL・カーブ・カラーグレーディング・効果', async ({ page }) => {
