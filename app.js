@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.11.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.12.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -113,7 +113,7 @@ function shrink(src, w, hgt) {
  * 写真一覧の見本。一覧は正方形に切り取って大きく（スマホの 1 列なら画面の幅いっぱい）出すので、
  * 短い辺を 1080px にして、高解像度の画面でもぼやけないように
  */
-const THUMB_SHORT = 1080; const THUMB_LONG = 2160; const THUMB_V = 2;
+const THUMB_SHORT = 720; const THUMB_LONG = 1440; const THUMB_V = 2;
 const thumbScale = (w, hgt) => Math.min(1, THUMB_SHORT / Math.min(w, hgt), THUMB_LONG / Math.max(w, hgt));
 async function thumbBlob(src) {
   const s = thumbScale(src.width, src.height);
@@ -317,13 +317,17 @@ async function showLibrary() {
     const url = p.thumb ? URL.createObjectURL(p.thumb) : ''; if (url) libUrls.push(url);
     const img = url ? h('img', { src: url, alt: '', loading: 'lazy' }) : null; if (img) thumbImgs.set(p.id, img);
     const edited = S.isEdited(S.validateState(p.state));
-    const check = h('input', { type: 'checkbox', class: 'lib-check', checked: selecting.has(p.id), 'aria-label': `${p.name}を選択`, onchange: (e) => { if (e.target.checked) selecting.add(p.id); else selecting.delete(p.id); drawBar(); grid.classList.toggle('selecting', selecting.size > 0); } });
-    return h('li', { class: 'lib-item' },
+    let li;
+    const check = h('input', { type: 'checkbox', class: 'lib-check', checked: selecting.has(p.id), 'aria-label': `${p.name}を選択`, onchange: (e) => { if (e.target.checked) selecting.add(p.id); else selecting.delete(p.id); li.classList.toggle('selected', e.target.checked); drawBar(); grid.classList.toggle('selecting', selecting.size > 0); } });
+    // 写真を小さく敷き詰める。選ぶ丸は写真の右上（写真の中で選べる）。名前と大きさは、長押しの説明と読み上げに
+    li = h('li', { class: `lib-item${selecting.has(p.id) ? ' selected' : ''}`, title: `${p.name}（${p.w}×${p.h}）` },
       h('button', { type: 'button', class: 'lib-open', onclick: () => (selecting.size ? check.click() : openEditor(p.id)), 'aria-label': `${p.name}を編集` },
         img || h('span', { class: 'lib-noimg' }, '?'),
-        edited ? h('span', { class: 'lib-badge' }, '編集済み') : null,
-        p.raw ? h('span', { class: 'lib-badge raw' }, 'RAW') : null),
-      h('div', { class: 'lib-meta' }, check, h('span', { class: 'lib-name' }, p.name), h('span', { class: 'muted small' }, `${p.w}×${p.h}`)));
+        edited ? h('span', { class: 'lib-badge', title: '編集済み' }, h('span', { 'aria-hidden': 'true' }, '✎'), h('span', { class: 'vh' }, '編集済み')) : null,
+        p.raw ? h('span', { class: 'lib-badge raw' }, 'RAW') : null,
+        h('span', { class: 'lib-name vh' }, p.name)),
+      h('label', { class: 'lib-pick' }, check));
+    return li;
   }));
   if (selecting.size) grid.classList.add('selecting');
   const usage = h('p', { class: 'muted small' });
