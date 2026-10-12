@@ -561,26 +561,41 @@ test('Canva のような画面: グループを押すとパネルが開き、も
   await expect(page.locator('.zoom-val')).toHaveText('100%');
 });
 
-test('画面の色: 自動は端末の設定に合わせ、ライト・ダークを選ぶと覚える（一覧・編集のメニュー）', async ({ page }) => {
+test('画面の色: 右上のアイコンを押すたびに 自動 → ライト → ダーク → 自動 と切り替わり、覚える（一覧・編集のメニュー）', async ({ page }) => {
   const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto(URL0);
   expect(await theme()).toBe('dark'); // 自動: 端末がダーク
   await page.emulateMedia({ colorScheme: 'light' });
   await expect.poll(theme).toBe('light'); // 端末の設定を変えると、すぐ変わる
-  // 一覧で「ダーク」を選ぶと、端末の設定によらずダーク。再読み込みしても覚えている
-  await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ダーク' }).click();
+  // アイコンは見出しの右上
+  const btn = page.getByRole('button', { name: /^画面の色: 自動/ });
+  const hb = await page.locator('.lib-head').boundingBox(); const bb = await btn.boundingBox();
+  expect(bb.x + bb.width).toBeGreaterThan(hb.x + hb.width - 30); expect(bb.y).toBeLessThan(hb.y + 30);
+  // 自動 → ライト
+  await btn.click();
+  await expect(page.locator('.lib-head .theme-cycle')).toHaveAttribute('data-theme', 'light');
+  expect(await theme()).toBe('light');
+  // ライト → ダーク（端末の設定によらずダーク）。再読み込みしても覚えている
+  await page.getByRole('button', { name: /^画面の色: ライト/ }).click();
   expect(await theme()).toBe('dark');
   expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(21, 22, 25)');
   await page.reload();
   expect(await theme()).toBe('dark');
-  // 編集画面のメニューからも選べる
+  await expect(page.getByRole('button', { name: /^画面の色: ダーク（押すと自動に）/ })).toBeVisible();
+  // ダーク → 自動（端末はライト）
+  await page.getByRole('button', { name: /^画面の色: ダーク/ }).click();
+  expect(await theme()).toBe('light');
+  // 編集画面のメニューからも同じように切り替えられる（自動 → ライト → ダーク）
   await page.locator('#open-file').setInputFiles(await makePhoto(page));
   await page.waitForFunction(() => window.__temoto.editor?.L);
   await page.locator('.menu summary').click();
-  await page.getByRole('group', { name: '画面の色' }).getByRole('button', { name: 'ライト' }).click();
+  await page.getByRole('button', { name: /^画面の色: 自動/ }).click();
   expect(await theme()).toBe('light');
-  await expect(page.locator('.editor')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  if (!(await page.locator('.menu').evaluate((m) => m.open))) await page.locator('.menu summary').click();
+  await page.getByRole('button', { name: /^画面の色: ライト/ }).click();
+  expect(await theme()).toBe('dark');
+  await expect(page.locator('.editor')).not.toHaveCSS('background-color', 'rgb(255, 255, 255)');
 });
 
 test.describe('はじめて使う端末', () => {

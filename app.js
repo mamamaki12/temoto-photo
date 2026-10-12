@@ -22,7 +22,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.12.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.12.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -70,8 +70,30 @@ function setTheme(t) {
   if (E) { buildPanel(); requestRender(); } else if (GR) gridPanel();
 }
 darkMQ.addEventListener?.('change', () => { if (prefs.get('theme', 'auto') === 'auto') setTheme('auto'); });
-/** 画面の色を選ぶチップ */
-const themePicker = () => chips(THEMES, prefs.get('theme', 'auto'), setTheme, { label: '画面の色', cls: 'theme-chips' }).el;
+/** 画面の色のアイコン（押すたびに 自動 → ライト → ダーク → 自動 … と切り替える） */
+// アイコンは絵で描く（文字の記号は端末によって小さかったり絵文字になったりする）
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const THEME_SVG = {
+  auto: [['circle', { cx: 12, cy: 12, r: 8, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }], ['path', { d: 'M12 4a8 8 0 0 1 0 16z', fill: 'currentColor' }]],
+  light: [['circle', { cx: 12, cy: 12, r: 4, fill: 'currentColor' }], ['path', { d: 'M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round' }]],
+  dark: [['path', { d: 'M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z', fill: 'currentColor' }]],
+};
+function themeSvg(t) {
+  const svg = document.createElementNS(SVG_NS, 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', 'theme-svg');
+  for (const [tag, attrs] of THEME_SVG[t]) { const e = document.createElementNS(SVG_NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); svg.append(e); }
+  return svg;
+}
+const themeName = (t) => THEMES.find(([k]) => k === t)[1];
+const nextTheme = (t) => THEMES[(THEMES.findIndex(([k]) => k === t) + 1) % THEMES.length][0];
+function themeButton({ withLabel = false } = {}) {
+  const icon = h('span', { class: 'theme-icon', 'aria-hidden': 'true' }); const label = h('span', { class: 'theme-label' });
+  const b = h('button', { type: 'button', class: withLabel ? 'theme-cycle labeled' : 'theme-cycle', onclick: () => { const t = nextTheme(prefs.get('theme', 'auto')); setTheme(t); sync(); toast(`画面の色: ${themeName(t)}${t === 'auto' ? '（端末の設定に合わせる）' : ''}`); } }, icon, withLabel ? label : null);
+  function sync() {
+    const t = prefs.get('theme', 'auto'); icon.replaceChildren(themeSvg(t)); label.textContent = `画面の色: ${themeName(t)}`;
+    const tip = `画面の色: ${themeName(t)}（押すと${themeName(nextTheme(t))}に）`; b.setAttribute('aria-label', tip); b.title = tip; b.dataset.theme = t;
+  }
+  sync(); return b;
+}
 
 let E = null; // 編集中の写真
 
@@ -336,7 +358,7 @@ async function showLibrary() {
     h('header', { class: `lib-head${projects.length ? ' compact' : ''}` },
       h('h1', {}, h('span', { class: 'logo', 'aria-hidden': 'true' }), 'てもとフォト'),
       h('p', { class: 'lib-lead' }, '写真を端末の外に出さずに編集。アップロードもアカウントも不要で、オフラインでも動きます。'),
-      h('div', { class: 'lib-theme' }, h('span', {}, '画面の色'), themePicker())),
+      themeButton()),
     h('main', { class: 'lib-main' },
       h('label', { class: `drop${projects.length ? ' compact' : ''}`, for: 'open-file', id: 'drop' },
         h('span', { class: 'drop-icon', 'aria-hidden': 'true' }, '＋'),
@@ -631,7 +653,7 @@ function buildEditor() {
         toast(v ? 'スペシャリストモード: すべての道具を表示します' : 'スペシャリストモードを終了しました');
       }).el),
       h('button', { type: 'button', onclick: openToolPicker }, '表示する道具を選ぶ…'),
-      h('div', { class: 'menu-theme' }, h('span', { class: 'muted small' }, '画面の色'), themePicker()),
+      themeButton({ withLabel: true }),
       h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
   // 項目を選んだら・外側を押したらメニューを閉じる
   menu.addEventListener('click', (e) => { if (e.target.closest('.menu-list button')) menu.open = false; });
