@@ -133,7 +133,7 @@ test('自動補正: 電球の部屋（暖かい壁）+ 紺の服 → 少しだ�
   // 壁（クリーム色）50%・紺の服 35%・木の階段 15%
   const d = pixels([[0.5, [225, 195, 160]], [0.35, [22, 26, 48]], [0.15, [150, 90, 45]]]);
   const a = autoAdjust(histogram(d), d);
-  assert.ok(a.temp < 0 && a.temp >= -15, `temp ${a.temp}`); // 暖かい雰囲気は残す
+  assert.ok(a.temp < 0 && a.temp >= -8, `temp ${a.temp}`); // 暖かい雰囲気は残す（冷やすのはほんの少し）
   assert.ok(a.shadows <= 20, `shadows ${a.shadows}`);
   assert.ok(a.vibrance <= 10, `vibrance ${a.vibrance}`);
 });

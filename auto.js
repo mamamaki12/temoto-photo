@@ -49,7 +49,7 @@ export function autoAdjust(hist, data) {
     // 電球の部屋の暖かい雰囲気は残したいので、暖かすぎる（赤い）方は控えめに、青白い方はしっかり直す
     const want = Math.log(b / Math.max(r, 1e-4)); // 正 = 青い（暖かくする）
     let t = 0; for (let k = 0; k < 30; k++) { const f = Math.log(wbR(t) / wbB(t)) + Math.log(r / b); t -= f / (0.18 / wbR(t) + 0.22 / wbB(t)); t = Math.max(-1, Math.min(1, t)); }
-    temp = clamp(t * 100 * (want > 0 ? 0.6 : 0.35), -15, 20);
+    temp = clamp(t * 100 * (want > 0 ? 0.6 : 0.18), -8, 20);
     const gm = g / Math.max((r + b) / 2, 1e-4);
     tint = clamp((gm - 1) * 60, -10, 10); // 緑かぶり → マゼンタ側へ（緑が強いと tint は正）
   } else {
