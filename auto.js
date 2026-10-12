@@ -10,6 +10,7 @@ const mean = (h) => { let s = 0; let n = 0; for (let i = 0; i < 256; i++) { s +=
 const clamp = (v, a, b) => Math.round(Math.min(b, Math.max(a, v)));
 const toLin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
 const LIN = Array.from({ length: 256 }, (_, i) => toLin(i));
+const toSrgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
 
 /**
  * 白・灰色らしい画素（色が薄く、暗すぎず白飛びしていない所）の平均の色（リニア）。
@@ -35,11 +36,16 @@ export function autoAdjust(hist, data) {
   const lo = percentile(hist.l, 0.005); const hi = percentile(hist.l, 0.995); const m = mean(hist.l);
   const med = percentile(hist.l, 0.5);
   // 平均と真ん中の明るさの間を 0.46 付近に（露光は 1 段 = 25）。暗い服などが多くても上げすぎない
-  const ev = Math.log2(0.46 / Math.max(0.02, (m + med) / 2));
-  const exposure = clamp(ev * 25 * 0.6, -50, 50);
-  // 白・黒を広げる（すでに広がっていれば動かさない）
+  let ev = Math.log2(0.46 / Math.max(0.02, (m + med) / 2)) * 0.6;
+  // 明るい所（顔など）が白飛びしない所までにする。黒い背景のスタジオ写真で、背景に合わせて顔まで明るくしない
+  const p99 = percentile(hist.l, 0.99);
+  const evMax = Math.max(0, Math.log2(LIN[242] / Math.max(LIN[Math.round(p99 * 255)], 1e-4)));
+  const capped = ev > evMax; if (capped) ev = evMax;
+  const exposure = clamp(ev * 25, -50, 50);
+  // 白・黒を広げる（すでに広がっていれば動かさない）。露光で明るくしたぶんを差し引いて決める
+  const hiAfter = exposure > 0 ? Math.min(1, toSrgb(LIN[Math.round(hi * 255)] * 2 ** (exposure / 25))) : hi;
   const blacks = clamp(-(lo * 250), -30, 0);
-  const whites = clamp((1 - hi) * 200, 0, 30);
+  const whites = capped ? 0 : clamp((1 - hiAfter) * 200, 0, 30); // 白飛びの手前まで明るくしたときは、白レベルでさらに明るくしない
   // ホワイトバランス
   let temp = 0; let tint = 0;
   const cast = data ? neutralCast(data, Math.max(1, Math.floor(data.length / 4 / 60000))) : null;
@@ -49,7 +55,7 @@ export function autoAdjust(hist, data) {
     // 電球の部屋の暖かい雰囲気は残したいので、暖かすぎる（赤い）方は控えめに、青白い方はしっかり直す
     const want = Math.log(b / Math.max(r, 1e-4)); // 正 = 青い（暖かくする）
     let t = 0; for (let k = 0; k < 30; k++) { const f = Math.log(wbR(t) / wbB(t)) + Math.log(r / b); t -= f / (0.18 / wbR(t) + 0.22 / wbB(t)); t = Math.max(-1, Math.min(1, t)); }
-    temp = clamp(t * 100 * (want > 0 ? 0.6 : 0.18), -8, 20);
+    temp = clamp(t * 100 * (want > 0 ? 0.5 : 0.18), -8, 12); // 夕暮れ・夜の青さも少しは残す
     const gm = g / Math.max((r + b) / 2, 1e-4);
     tint = clamp((gm - 1) * 60, -10, 10); // 緑かぶり → マゼンタ側へ（緑が強いと tint は正）
   } else {

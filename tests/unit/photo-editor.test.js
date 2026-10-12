@@ -146,6 +146,20 @@ test('自動補正: 青白い（蛍光灯・日陰）写真は、白い所が灰
   assert.ok(a.temp >= 8, `temp ${a.temp}`);
 });
 
+test('自動補正: 黒い背景のポートレートは、背景に合わせて顔まで明るくしない（白飛びさせない）', () => {
+  // 黒い背景 75%・明るい顔 25%
+  const d = pixels([[0.75, [8, 8, 10]], [0.25, [225, 185, 160]]]);
+  const a = autoAdjust(histogram(d), d);
+  // 顔（明るさ約 0.75）が、露光をかけても白飛び（0.95 超）しない
+  const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const srgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
+  const face = (0.2126 * 225 + 0.7152 * 185 + 0.0722 * 160) / 255;
+  assert.ok(srgb(lin(face) * 2 ** (a.exposure / 25)) <= 0.96, `exposure ${a.exposure}`);
+  assert.ok(a.whites <= 10, `whites ${a.whites}`);
+  // 背景に合わせた露光（ふつうなら +40 以上）にはならない
+  assert.ok(a.exposure < 25, `exposure ${a.exposure}`);
+});
+
 test('自動補正: 灰色の所がない写真（色の濃いものばかり）は、ホワイトバランスをほとんど動かさない', () => {
   const d = pixels([[0.5, [200, 40, 40]], [0.5, [40, 60, 200]]]);
   assert.equal(neutralCast(d), null);
