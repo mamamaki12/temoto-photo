@@ -362,7 +362,7 @@ test('保存して再読み込みしても編集が残る・プリセット・�
   await expect.poll(() => savedExposures(page), { timeout: 15000 }).toContain(40);
   await page.reload();
   await expect(page.locator('.lib-item')).toHaveCount(1);
-  await expect(page.locator('.lib-badge')).toHaveText('編集済み');
+  await expect(page.locator('.lib-badge')).toContainText('編集済み');
   // 2枚目を追加して、コピーした編集を貼り付け
   await page.locator('#open-file').setInputFiles(await makePhoto(page, { w: 600, h: 900 }));
   await expect(page.locator('canvas.view')).toBeVisible({ timeout: 20000 });
@@ -683,7 +683,7 @@ test('スマホ: 長いダイアログでも決定のボタンが見え、写真
   await expect(bar.getByRole('button', { name: '選択をやめる' })).toBeVisible();
 });
 
-test('写真一覧の見本は高画質（短い辺 1080px）。前の版の小さい見本は、一覧を開くと編集を当てたまま作り直す', async ({ page }) => {
+test('写真一覧の見本は高画質（短い辺 720px）。前の版の小さい見本は、一覧を開くと編集を当てたまま作り直す', async ({ page }) => {
   await page.goto(URL0);
   await page.locator('#open-file').setInputFiles(await makePhoto(page, { w: 2400, h: 1800 }));
   await page.waitForFunction(() => window.__temoto.editor?.L, null, { timeout: 30000 });
@@ -694,7 +694,7 @@ test('写真一覧の見本は高画質（短い辺 1080px）。前の版の小�
     const b = await createImageBitmap(p.thumb); return { w: b.width, h: b.height, v: p.thumbV, updated: p.updated };
   });
   const t1 = await size();
-  expect(Math.min(t1.w, t1.h)).toBe(1080); expect(t1.v).toBe(2);
+  expect(Math.min(t1.w, t1.h)).toBe(720); expect(t1.v).toBe(2);
   // 前の版の見本（長い辺 360px・目印なし）にして、モノクロの編集を入れておく
   await page.evaluate(async () => {
     const db = await import('/db.js'); const [p] = await db.listProjects();
@@ -706,13 +706,37 @@ test('写真一覧の見本は高画質（短い辺 1080px）。前の版の小�
   await page.reload();
   await expect.poll(async () => (await size()).v, { timeout: 20000 }).toBe(2);
   const t2 = await size();
-  expect(Math.min(t2.w, t2.h)).toBe(1080);
+  expect(Math.min(t2.w, t2.h)).toBe(720);
   expect(t2.updated).toBe(t1.updated); // 並び順（更新日時）は変えない
   // 画面の見本も新しくなり、編集（モノクロ）が当たっている
-  await expect.poll(() => page.locator('.lib-open img').evaluate((img) => img.naturalWidth), { timeout: 10000 }).toBe(1440);
+  await expect.poll(() => page.locator('.lib-open img').evaluate((img) => img.naturalWidth), { timeout: 10000 }).toBe(960);
   const [r, g, b] = await page.locator('.lib-open img').evaluate((img) => {
     const c = document.createElement('canvas'); c.width = 40; c.height = 30; const x = c.getContext('2d'); x.drawImage(img, 0, 0, 40, 30);
     const d = x.getImageData(0, 0, 40, 10).data; let r = 0; let g = 0; let b = 0; for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; } return [r, g, b];
   });
   expect(Math.abs(b - r) / (b + r)).toBeLessThan(0.03); // 空が青くない（モノクロ）
+});
+
+test('写真一覧: スマホでは写真を 3 列に小さく敷き詰め、写真の右上の丸で選べる', async ({ page }) => {
+  await page.goto(URL0);
+  const files = []; for (let i = 0; i < 4; i++) files.push({ ...await makePhoto(page, { w: 600, h: 400 }), name: `p${i}.jpg` });
+  await page.locator('#open-file').setInputFiles(files);
+  await expect(page.locator('.lib-item')).toHaveCount(4, { timeout: 20000 });
+  const boxes = await page.locator('.lib-open').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+  expect(new Set(boxes.slice(0, 3).map((b) => Math.round(b.top))).size).toBe(1); // 1 行目に 3 枚
+  expect(boxes[3].top).toBeGreaterThan(boxes[0].bottom - 1); // 4 枚目は次の行
+  expect(boxes[0].width).toBeLessThan(140);
+  // 選ぶ丸は写真の中（右上）
+  const pick = await page.locator('.lib-check').first().boundingBox();
+  const b0 = boxes[0];
+  expect(pick.x).toBeGreaterThan(b0.left); expect(pick.x + pick.width).toBeLessThanOrEqual(b0.right + 1);
+  expect(pick.y).toBeGreaterThanOrEqual(b0.top - 1); expect(pick.y + pick.height).toBeLessThan(b0.top + b0.height / 2);
+  // 丸を押すと選ばれ、選んでいる間は写真を押しても選ぶ・外す
+  await page.mouse.click(pick.x + pick.width / 2, pick.y + pick.height / 2);
+  await expect(page.locator('.lib-item').first()).toHaveClass(/selected/);
+  await page.locator('.lib-open').nth(1).click();
+  await expect(page.locator('.lib-item').nth(1)).toHaveClass(/selected/);
+  await expect(page.getByText('2枚を選択中')).toBeVisible();
+  await page.locator('.lib-open').first().click();
+  await expect(page.locator('.lib-item').first()).not.toHaveClass(/selected/);
 });
