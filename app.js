@@ -9,6 +9,7 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
+import { warpSegment } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
@@ -22,7 +23,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.12.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.13.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -32,11 +33,11 @@ const GROUPS = [
   ['adjust', '☀', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
   ['crop', '⌗', '切り抜き', ['crop']],
   ['local', '◎', '部分補正', ['local']],
-  ['retouch', '❀', 'レタッチ', ['skin', 'heal', 'hide']],
+  ['retouch', '❀', 'レタッチ', ['skin', 'shape', 'eyes', 'dodge', 'wrinkle', 'heal', 'hide']],
   ['frame', '▢', 'フレーム', ['frame']],
   ['info', 'ⓘ', '情報', ['info']],
 ];
-const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '目元・歯', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
 /** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
@@ -862,6 +863,10 @@ const PANELS = {
   crop() { return cropPanel(); },
   local() { return localPanel(); },
   skin() { return skinPanel(); },
+  shape() { return fxPanel('shape'); },
+  eyes() { return fxPanel('eyes'); },
+  dodge() { return fxPanel('dodge'); },
+  wrinkle() { return fxPanel('wrinkle'); },
   heal() {
     const size = prefs.get('healSize', 3);
     return [hint('消したいもの（ほこり・ニキビ・電線など）をタップするか、なぞってください。まわりの似た場所で自然に埋めます。'),
@@ -1213,11 +1218,11 @@ function setupPointer(stage) {
     E.pan = z === 1 ? [0, 0] : [cx - (cx - E.pan[0]) * (z / E.zoom), cy - (cy - E.pan[1]) * (z / E.zoom)];
     E.zoom = z; interacting(); requestRender();
   }, { passive: false });
-  stage.addEventListener('dblclick', () => { if (!E || ['crop', 'local', 'heal', 'hide'].includes(E.tool)) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
+  stage.addEventListener('dblclick', () => { if (!E || ['crop', 'local', 'heal', 'hide'].includes(E.tool) || FX[E.tool]) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
 }
 
 function hoverCursor(e) {
-  const brush = (E.tool === 'heal') || (E.tool === 'local' && E.state.locals.find((l) => l.id === E.sel)?.type === 'brush');
+  const brush = (E.tool === 'heal') || !!FX[E.tool] || (E.tool === 'local' && E.state.locals.find((l) => l.id === E.sel)?.type === 'brush');
   if (!brush || !E.L) { if (E.cursor) { E.cursor = null; drawHandles(); } return; }
   E.cursor = canvasPoint(e); drawHandles();
 }
@@ -1239,6 +1244,7 @@ function startAction(e) {
   if (tool === 'crop') return cropAction(c);
   if (tool === 'local') return localAction(e, c, o, p);
   if (tool === 'heal') return healAction(c, o, p);
+  if (FX[tool]) return fxAction(tool, c, p);
   if (tool === 'skin') return skinAction(e, o, p);
   if (tool === 'hide') return hideAction(c, o, p);
   if (E.zoom > 1) { const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; return { move: (ev) => { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); } }; }
@@ -1321,6 +1327,81 @@ function localHandles(l) {
   return [];
 }
 
+// ── 写真館の仕上げのブラシ（形を整える・目元と歯・明るく／暗く・しわ取り） ──
+// size: ブラシの半径（写真の短い辺に対する %）、amt: 強さ（%）。mode: 道具の中の種類
+const FX = {
+  shape: { modes: null, type: () => 'warp', size: 15, amt: 50,
+    hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは顔の半分くらいの大きめにして、少しずつ何回かに分けると自然です（小さいブラシだと、へこみができます）。' },
+  eyes: { modes: [['eyes', '目元'], ['teeth', '歯']], type: (m) => m, size: 3, amt: 60,
+    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をなぞってください。黄ばみだけを取って白くします（唇・歯ぐきの赤はほとんど変えません）。' } },
+  dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, size: 8, amt: 25,
+    hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
+  wrinkle: { modes: null, type: () => 'wrinkle', size: 6, amt: 70,
+    hint: '着物・服のしわや、ほうれい線などをなぞってください。布目・肌のきめは残して、しわの陰だけをならします。' },
+};
+const fxPrefs = (tool) => { const d = FX[tool]; const v = prefs.get(`fx:${tool}`, {}); return { size: v.size ?? d.size, amt: v.amt ?? d.amt, mode: v.mode ?? d.modes?.[0][0] }; };
+const setFxPrefs = (tool, patch) => prefs.set(`fx:${tool}`, { ...fxPrefs(tool), ...patch });
+/** ブラシの半径（画面の Canvas の画素） */
+function fxRadiusCanvas(tool) { return fxPrefs(tool).size / 100 * Math.min(E.L.iw, E.L.ih); }
+function fxPanel(tool) {
+  const d = FX[tool]; const f = fxPrefs(tool);
+  const types = d.modes ? d.modes.map(([m]) => d.type(m)) : [d.type()];
+  const n = E.state.retouch.filter((o) => types.includes(o.type)).length;
+  return [
+    hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
+    d.modes ? chips(d.modes, f.mode, (v) => { setFxPrefs(tool, { mode: v }); buildPanel(); }, { label: '種類' }).el : null,
+    slider({ label: 'ブラシの大きさ', min: 1, max: 30, value: f.size, def: d.size, onChange: (v) => { setFxPrefs(tool, { size: v }); drawHandles(); } }).el,
+    slider({ label: '強さ', min: 5, max: 100, value: f.amt, def: d.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
+    h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
+    n ? row(btn(`${TOOL_LABEL[tool]}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small')) : null,
+    hint('うまくいかなかったら「元に戻す」で 1 回ずつ戻せます。2 本指で広げると、拡大して細かい所をなぞれます。'),
+  ];
+}
+/** なぞる操作。形を整えるは、なぞりながらその場で動かす。ほかは指を離したときに当てる */
+function fxAction(tool, c, p) {
+  const f = fxPrefs(tool); const type = FX[tool].type(f.mode);
+  const r = Math.min(0.3, Math.max(0.002, f.size / 100 * outputScaleToSrc())); // 元写真の短い辺に対する割合
+  const amt = f.amt / 100;
+  const toSrc = (q) => outToSrc(...toOut(q), p);
+  const pts = [toSrc(c)]; const path = [c];
+  if (E.state.retouch.length >= S.MAX_RETOUCH) { toast('修復・仕上げは300回までです'); return null; }
+  const step = r * Math.min(E.W, E.H) * (type === 'warp' ? 0.15 : 0.3); // 点の間隔（元写真の画素）
+  const far = (a, b) => Math.hypot((a[0] - b[0]) * E.W, (a[1] - b[1]) * E.H) >= step;
+  let live = null; let raf = 0;
+  if (type === 'warp') {
+    // なぞりながら動かす: 編集用の画素に 1 区間ずつ当てて、画面に反映する
+    if (!E.src) { const rr = retouchCanvas(E.base, E.state.retouch, E.state.portrait, E.skinCache); E.src = rr.canvas; E.srcData = rr.data; }
+    const ctx = ctx2d(E.src, { willReadFrequently: true });
+    if (!E.srcData) E.srcData = ctx.getImageData(0, 0, E.W, E.H);
+    live = { ctx, dirty: null };
+  }
+  const flush = () => { raf = 0; if (!live?.dirty) return; const [x, y, w, hh] = live.dirty; live.ctx.putImageData(E.srcData, 0, 0, x, y, w, hh); live.dirty = null; E.engine.setSource(E.src, E.W, E.H); requestRender(); };
+  return {
+    move: (e) => {
+      const q = canvasPoint(e); const s = toSrc(q);
+      if (!far(s, pts.at(-1)) || pts.length >= S.MAX_BRUSH_POINTS) return;
+      const prev = pts.at(-1); pts.push(s); path.push(q);
+      if (live) {
+        const S0 = Math.min(E.W, E.H);
+        const box = warpSegment(E.srcData, [prev[0] * E.W, prev[1] * E.H], [s[0] * E.W, s[1] * E.H], Math.max(1.5, r * S0), amt);
+        if (box) { const d = live.dirty; live.dirty = d ? [Math.min(d[0], box[0]), Math.min(d[1], box[1]), Math.max(d[0] + d[2], box[0] + box[2]) - Math.min(d[0], box[0]), Math.max(d[1] + d[3], box[1] + box[3]) - Math.min(d[1], box[1])] : box; }
+        if (!raf) raf = requestAnimationFrame(flush);
+        E.cursor = q; drawHandles();
+      } else { E.fxPath = path; drawHandles(); }
+    },
+    end: () => {
+      E.fxPath = null; if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      const op = { type, pts, r, amt };
+      if (live) {
+        if (pts.length < 2) { drawHandles(); return; }
+        flush(); E.state.retouch.push(op); E.retouchKey = sourceKey(E.state); E.small = null;
+      } else addRetouch(op);
+      commit(); buildPanel(); requestRender();
+    },
+    cancel: () => { E.fxPath = null; if (raf) cancelAnimationFrame(raf); if (live && pts.length > 1) { E.state.retouch.push({ type, pts, r, amt }); E.retouchKey = sourceKey(E.state); rebuildSource(); } drawHandles(); },
+  };
+}
+
 function healAction(c, o, p) {
   const size = prefs.get('healSize', 3) / 100 * 0.6; // 短い辺に対する半径の割合
   const path = [c];
@@ -1399,6 +1480,8 @@ function drawHandles() {
   }
   if (E.healPath) el('polyline', { points: E.healPath.map((q) => q.join(',')).join(' '), class: 'heal-path', 'stroke-width': prefs.get('healSize', 3) / 100 * 0.6 * Math.min(L.iw, L.ih) * 2 });
   if (E.rect) { const [a, b] = E.rect; el('rect', { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), width: Math.abs(a[0] - b[0]), height: Math.abs(a[1] - b[1]), class: 'sel-rect', 'stroke-width': 2 * k }); }
+  if (E.fxPath) el('polyline', { points: E.fxPath.map((q) => q.join(',')).join(' '), class: 'heal-path', 'stroke-width': fxRadiusCanvas(E.tool) * 2 });
+  if (E.cursor && FX[E.tool]) el('circle', { cx: E.cursor[0], cy: E.cursor[1], r: fxRadiusCanvas(E.tool), class: 'cursor', 'stroke-width': 1.5 * k });
   if (E.cursor && (E.tool === 'heal' || E.tool === 'local')) {
     const r = E.tool === 'heal' ? prefs.get('healSize', 3) / 100 * 0.6 * Math.min(L.iw, L.ih) : (prefs.get('brush', { size: 8 }).size / 200) * Math.min(L.iw, L.ih) / outputScaleToSrc();
     el('circle', { cx: E.cursor[0], cy: E.cursor[1], r, class: 'cursor', 'stroke-width': 1.5 * k });

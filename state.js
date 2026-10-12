@@ -1,5 +1,6 @@
 // 編集内容（非破壊）の形。写真そのものは変えず、この「レシピ」だけを保存する。
 // 読み込んだプロジェクト・プリセットのファイルは信用せず、validateState() で型と範囲を直してから使う。
+import { BRUSH_TYPES } from './brushfx.js';
 
 /** 調整スライダーの定義: [キー, 表示名, 最小, 最大, グループ] */
 export const ADJ = [
@@ -37,6 +38,7 @@ export const MAX_LOCALS = 8;
 export const MAX_BRUSH_LOCALS = 4;
 export const MAX_STROKES = 400;
 export const MAX_RETOUCH = 300;
+export const MAX_BRUSH_POINTS = 600; // なぞった線 1 本の点の数
 export const MAX_SKIN_SEEDS = 12;
 export const ASPECTS = { free: '自由', original: '元の比率', '1:1': '1:1', '4:5': '4:5', '3:4': '3:4', '2:3': '2:3', '9:16': '9:16', '16:9': '16:9', '3:2': '3:2', '4:3': '4:3', 'print-L': 'L判', 'print-2L': '2L判', 'print-6': '六つ切り', 'print-A4': 'A4' };
 /** プリントの大きさ（短い辺:長い辺）。写真の向き（縦・横）に合わせて使う */
@@ -116,6 +118,11 @@ function validRetouch(r) {
     // sx/sy（コピー元）は省略可。省略時は周りから自動で選ぶ
     const auto = !Number.isFinite(Number(r.sx)) || !Number.isFinite(Number(r.sy));
     return { type: 'heal', x: num(r.x, 0, 1), y: num(r.y, 0, 1), r: num(r.r, 0.002, 0.2, 0.02), sx: auto ? null : num(r.sx, 0, 1), sy: auto ? null : num(r.sy, 0, 1) };
+  }
+  if (BRUSH_TYPES.includes(r.type)) {
+    // 写真館の仕上げのブラシ: なぞった線（0〜1）・半径（短い辺に対する割合）・強さ（0〜1）
+    const pts = arr(r.pts, MAX_BRUSH_POINTS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]);
+    return pts.length ? { type: r.type, pts, r: num(r.r, 0.002, 0.3, 0.03), amt: num(r.amt, 0, 1, 0.5) } : null;
   }
   if (r.type === 'mosaic' || r.type === 'blur') return { type: r.type, x: num(r.x, 0, 1), y: num(r.y, 0, 1), w: num(r.w, 0.001, 1, 0.1), h: num(r.h, 0.001, 1, 0.1), size: int(r.size, 2, 100, 20) };
   return null;
