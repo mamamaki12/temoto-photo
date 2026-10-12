@@ -116,3 +116,27 @@ test('ブラシの大きさ: スライダーを動かすと写真の上に丸が
   await openTool(page, '目元・歯');
   await expect(size).toHaveValue('1.5');
 });
+
+test('形を整える: 押した所の背景（縞模様）はゆがまず、人物の側だけが縮む。なぞりながら見えたものと、保存から作り直したものが同じ', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { applyBrush } = await import('/brushfx.js');
+    // 左半分は肌色の人物、右半分は縦縞の背景（壁の柱の代わり）。境目は x=300
+    const W = 600; const H = 400; const base = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const k = (y * W + x) * 4; const skin = x < 300;
+      const stripe = Math.floor(x / 12) % 2 ? 200 : 150;
+      base.set(skin ? [225, 180, 150, 255] : [stripe, stripe, stripe + 10, 255], k);
+    }
+    const op = { type: 'warp', pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1 };
+    const run = (o) => { const im = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(im, o); return im.data; };
+    const kept = run(op); const old = run({ ...op, keepBg: false });
+    // 背景（境目より 20px 以上右）の変化と、境目の移動
+    const bgDiff = (d) => { let m = 0; for (let y = 150; y < 250; y++) for (let x = 320; x < 420; x++) { const k = (y * W + x) * 4; m = Math.max(m, Math.abs(d[k] - base[k])); } return m; };
+    const edge = (d) => { for (let x = 200; x < 400; x++) { const k = (200 * W + x) * 4; if (Math.abs(d[k] - 225) > 20) return x; } return -1; };
+    return { bgKept: bgDiff(kept), bgOld: bgDiff(old), edgeKept: edge(kept), edgeOld: edge(old) };
+  });
+  expect(r.bgOld).toBeGreaterThan(40); // 今までは背景の縞が曲がっていた
+  expect(r.bgKept).toBeLessThan(6); // 背景は（ほぼ）そのまま
+  expect(r.edgeKept).toBeLessThan(296); // 人物の側は縮む（境目が左へ）
+});
