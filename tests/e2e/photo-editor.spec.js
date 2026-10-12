@@ -83,7 +83,6 @@ test('露光・彩度で画素が変わり、元に戻す／やり直す／編�
   await tab(page, 'ライト');
   await setSlider(page, '露光量', 60);
   await expect.poll(async () => lum(await viewMean(page)), { timeout: 5000 }).toBeGreaterThan(lum(before) + 20); // 描き直しを待つ
-  const bright = await viewMean(page);
   await tab(page, 'カラー');
   await setSlider(page, '彩度', -100);
   const [r, g, b] = await viewMean(page, SKY);
