@@ -9,7 +9,7 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpSegment } from './brushfx.js';
+import { warpSegment, warpGuard } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
@@ -23,7 +23,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.13.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.13.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -1397,7 +1397,9 @@ function fxAction(tool, c, p) {
       const prev = pts.at(-1); pts.push(s); path.push(q);
       if (live) {
         const S0 = Math.min(E.W, E.H);
-        const box = warpSegment(E.srcData, [prev[0] * E.W, prev[1] * E.H], [s[0] * E.W, s[1] * E.H], Math.max(1.5, r * S0), amt);
+        const a0 = [prev[0] * E.W, prev[1] * E.H]; const a1 = [s[0] * E.W, s[1] * E.H]; const rp = Math.max(1.5, r * S0);
+        if (live.guard === undefined) live.guard = warpGuard(E.srcData, a0, a1, rp); // 背景（動かさない所）は、なぞり始めに決める（保存した線から作り直すときと同じ）
+        const box = warpSegment(E.srcData, a0, a1, rp, amt, live.guard);
         if (box) { const d = live.dirty; live.dirty = d ? [Math.min(d[0], box[0]), Math.min(d[1], box[1]), Math.max(d[0] + d[2], box[0] + box[2]) - Math.min(d[0], box[0]), Math.max(d[1] + d[3], box[1] + box[3]) - Math.min(d[1], box[1])] : box; }
         if (!raf) raf = requestAnimationFrame(flush);
         E.cursor = q; drawHandles();

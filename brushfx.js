@@ -191,10 +191,83 @@ function sample(src, W, H, x, y, out) {
 }
 
 /**
- * 形を整える（ゆがみ・押し出し）: ブラシの中の画素を、なぞった向きに少し動かす。線の 1 区間ごとに順に当てる
- * （だから、なぞっている途中に 1 区間ずつ当てても、最後にまとめて当てても同じになる）
+ * 形を整えるとき、背景をゆがませないための「動かさない色」を決める（なぞり始めの 1 区間から）。
+ * ブラシの中の色を 2 つに分け、指の後ろ側（押す向きと反対側）に多い方を「背景」とする。
+ * あごの外側から内側へ押すと、背景は動かさずに、顔の側だけが縮み、空いた所に背景が入る。
+ * 2 つの色が近すぎる（境目がない）ときは null（ふつうにゆがませる）
  */
-export function warpSegment(img, p0, p1, rad, amt) {
+/** 色の見分け用の特徴: 明るさより色み（肌の赤み・壁の無彩色など）を重く見る */
+const feat = (r, g, b) => [(r + g + b) / 6, (r - g) * 1.5, (b - (r + g) / 2) * 1.5];
+export function warpGuard(img, p0, p1, rad) {
+  const dx = p1[0] - p0[0]; const dy = p1[1] - p0[1]; const len = Math.hypot(dx, dy); if (!len) return null;
+  const ux = dx / len; const uy = dy / len; const W = img.width; const H = img.height; const d = img.data;
+  const step = Math.max(1, Math.round(rad / 24)); const px = []; const proj = [];
+  for (let y = Math.max(0, Math.floor(p0[1] - rad)); y < Math.min(H, Math.ceil(p0[1] + rad)); y += step) {
+    for (let x = Math.max(0, Math.floor(p0[0] - rad)); x < Math.min(W, Math.ceil(p0[0] + rad)); x += step) {
+      const ox = x - p0[0]; const oy = y - p0[1]; if (ox * ox + oy * oy > rad * rad) continue;
+      const k = (y * W + x) * 4; px.push(feat(d[k], d[k + 1], d[k + 2])); proj.push(ox * ux + oy * uy);
+    }
+  }
+  if (px.length < 8) return null;
+  // 2 つに分ける（はじめは指の後ろ側と前側の平均から）
+  const mean = (sel) => { const m = [0, 0, 0]; let n = 0; px.forEach((c, i) => { if (sel(i)) { m[0] += c[0]; m[1] += c[1]; m[2] += c[2]; n++; } }); return n ? m.map((v) => v / n) : null; };
+  let a = mean((i) => proj[i] < 0); let b = mean((i) => proj[i] >= 0); if (!a || !b) return null;
+  const dist = (c, m) => Math.hypot(c[0] - m[0], c[1] - m[1], c[2] - m[2]);
+  let lab = [];
+  for (let it = 0; it < 8; it++) {
+    lab = px.map((c) => (dist(c, a) <= dist(c, b) ? 0 : 1));
+    const na = mean((i) => lab[i] === 0); const nb = mean((i) => lab[i] === 1); if (!na || !nb) return null; a = na; b = nb;
+  }
+  const gap = dist(a, b); if (gap < 28) return null;
+  // より指の後ろ側にある方（位置の平均が、押す向きと反対側）が、動かさない色
+  let pa = 0; let na = 0; let pb = 0; let nb = 0; lab.forEach((l, i) => { if (l === 0) { pa += proj[i]; na++; } else { pb += proj[i]; nb++; } });
+  const keepA = pa / na <= pb / nb;
+  const u = keepA ? a : b; const v = keepA ? b : a; const t = gap * 0.2;
+  // 動かさない所の地図: なぞり始めのまわり（半径の 2.5 倍の四角）で、背景の色に近く、
+  // しかも指の後ろ側の背景とつながっている所だけ（髪・ひげの暗い所が背景と同じ色でも、離れていれば動かす）
+  const R = rad * 2.5; const mx0 = Math.max(0, Math.floor(p0[0] - R)); const my0 = Math.max(0, Math.floor(p0[1] - R));
+  const mw = Math.min(W, Math.ceil(p0[0] + R)) - mx0; const mh = Math.min(H, Math.ceil(p0[1] + R)) - my0;
+  if (mw <= 0 || mh <= 0) return null;
+  const mem = new Float32Array(mw * mh);
+  for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+    const k = ((my0 + y) * W + mx0 + x) * 4; const c = feat(d[k], d[k + 1], d[k + 2]);
+    mem[y * mw + x] = clamp01((dist(c, v) - dist(c, u)) / (2 * t) + 0.5);
+  }
+  const reach = new Uint8Array(mw * mh); const queue = [];
+  for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+    const ox = mx0 + x - p0[0]; const oy = my0 + y - p0[1];
+    if (ox * ox + oy * oy <= rad * rad && ox * ux + oy * uy < -0.3 * rad && mem[y * mw + x] > 0.6) { reach[y * mw + x] = 1; queue.push(y * mw + x); }
+  }
+  for (let qi = 0; qi < queue.length; qi++) {
+    const c = queue[qi]; const x = c % mw; const y = (c / mw) | 0;
+    for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+      if (nx < 0 || ny < 0 || nx >= mw || ny >= mh) continue;
+      const n = ny * mw + nx; if (reach[n] || mem[n] <= 0.5) continue; reach[n] = 1; queue.push(n);
+    }
+  }
+  if (!queue.length) return null;
+  // 押す先（指の前側）にある、動かす物（肌など）と違う色の物（向こう側のリュック・服など）も動かさない。
+  // 動かす物の色の広がりは、なぞり始めのブラシの中で動かす側に分けた色から決める
+  const vd = []; lab.forEach((l, i) => { if ((l === 0) !== keepA) vd.push(dist(px[i], v)); }); vd.sort((p, q) => p - q);
+  const thr1 = vd[Math.floor(vd.length * 0.85)] ?? t; const thr2 = thr1 * 1.6 + 10;
+  let keep = new Float32Array(mw * mh);
+  for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+    const n = y * mw + x;
+    if (reach[n]) { keep[n] = mem[n]; continue; }
+    const ox = mx0 + x - p0[0]; const oy = my0 + y - p0[1]; if (ox * ux + oy * uy < 0) continue;
+    const k = ((my0 + y) * W + mx0 + x) * 4; const dv = dist(feat(d[k], d[k + 1], d[k + 2]), v);
+    keep[n] = clamp01((dv - thr1) / (thr2 - thr1));
+  }
+  keep = blur(keep, mw, mh, 1, Math.max(1, rad * 0.04)); // 境目をなめらかに（ギザギザ・ちぎれを防ぐ）
+  return { keep, x0: mx0, y0: my0, w: mw, h: mh };
+}
+
+/**
+ * 形を整える（ゆがみ・押し出し）: ブラシの中の画素を、なぞった向きに少し動かす。線の 1 区間ごとに順に当てる
+ * （だから、なぞっている途中に 1 区間ずつ当てても、最後にまとめて当てても同じになる）。
+ * guard があれば、その色（背景）の画素は動かさない
+ */
+export function warpSegment(img, p0, p1, rad, amt, guard = null) {
   let dx = (p1[0] - p0[0]) * amt; let dy = (p1[1] - p0[1]) * amt;
   if (!dx && !dy) return null;
   // 1 区間で動かすのは半径の 2 割まで（速くなぞっても、画素がちぎれない）
@@ -213,7 +286,13 @@ export function warpSegment(img, p0, p1, rad, amt) {
     const q = Math.hypot(x - p1[0], y - p1[1]) / rad; if (q >= 1) continue;
     const f = (1 - q * q) ** 2; // 中心ほど大きく動かす（ブラシが大きいほど、なめらかに形が変わる）
     sample(copy, cw, ch, x - dx * f - cx0, y - dy * f - cy0, px);
-    const k = (y * W + x) * 4; d[k] = px[0]; d[k + 1] = px[1]; d[k + 2] = px[2];
+    const k = (y * W + x) * 4;
+    const gx = x - (guard?.x0 ?? 0); const gy = y - (guard?.y0 ?? 0);
+    const keep = guard && gx >= 0 && gy >= 0 && gx < guard.w && gy < guard.h ? guard.keep[gy * guard.w + gx] : 0;
+    if (keep > 0) {
+      // 背景（なぞり始めに決めた、動かさない所）は動かさない。背景のまっすぐな線が曲がらない
+      d[k] = d[k] * keep + px[0] * (1 - keep); d[k + 1] = d[k + 1] * keep + px[1] * (1 - keep); d[k + 2] = d[k + 2] * keep + px[2] * (1 - keep);
+    } else { d[k] = px[0]; d[k + 1] = px[1]; d[k + 2] = px[2]; }
   }
   return [x0, y0, x1 - x0, y1 - y0];
 }
@@ -224,7 +303,9 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
   if (!pts.length) return;
   if (op.type === 'warp') {
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
-    for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt);
+    // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
+    const guard = op.keepBg === false || pts.length < 2 ? null : warpGuard(img, pts[0], pts[1], rad);
+    for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt, guard);
     return;
   }
   const mk = strokeMask(img, pts, rad); if (!mk) return;
@@ -244,7 +325,7 @@ export function brushBounds(op, W, H) {
     if (i) travel = Math.max(travel, Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H));
   });
   // しわ取り・目元のぼかしは、ブラシの外の画素も少し使う（境目が変わらないよう、余白を足す）
-  const pad = rad * (op.type === 'wrinkle' ? 1.5 : op.type === 'eyes' ? 1.3 : op.type === 'warp' ? 1.2 : 1.05) + travel + 4;
+  const pad = rad * (op.type === 'wrinkle' ? 1.5 : op.type === 'eyes' ? 1.3 : op.type === 'warp' ? 2.6 : 1.05) + travel + 4;
   const rx = Math.max(0, Math.floor(x0 - pad)); const ry = Math.max(0, Math.floor(y0 - pad));
   const rx1 = Math.min(W, Math.ceil(x1 + pad)); const ry1 = Math.min(H, Math.ceil(y1 + pad));
   return rx1 > rx && ry1 > ry ? [rx, ry, rx1 - rx, ry1 - ry] : null;
