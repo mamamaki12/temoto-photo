@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { defaultState, validateState, newLocal, presetPart, applyPreset, isEdited, ADJ, MAX_LOCALS } from '../../state.js';
 import { geoParams, outToSrc, srcToOut, outputSize, fitCrop, dragCrop, straightenZoom, aspectValue } from '../../geometry.js';
 import { monotoneSpline, curvesLut } from '../../curves.js';
-import { autoAdjust, histogram } from '../../auto.js';
+import { autoAdjust, histogram, neutralCast } from '../../auto.js';
 import { LOOKS, effective } from '../../presets.js';
 import { readExif } from '../../exif.js';
 import { heal, mosaic, blurRect, applyRetouch, findHealSource } from '../../retouch.js';
@@ -120,6 +120,51 @@ test('photo: 自動補正 — 暗い写真は明るく、青い写真は暖か�
   assert.ok(a.exposure > 20, `exposure ${a.exposure}`);
   assert.ok(a.temp > 0, `temp ${a.temp}`);
   for (const [k, , min, max] of ADJ) if (k in a) assert.ok(a[k] >= min && a[k] <= max, k);
+});
+
+/** 画素を作る: [割合, [r, g, b]] の組を並べる */
+function pixels(parts, n = 4000) {
+  const d = new Uint8ClampedArray(n * 4); let i = 0;
+  for (const [frac, [r, g, b]] of parts) for (let k = 0; k < Math.round(n * frac) && i < n; k++, i++) d.set([r + (k % 7), g + (k % 7), b + (k % 7), 255], i * 4);
+  return d;
+}
+
+test('自動補正: 電球の部屋（暖かい壁）+ 紺の服 → 少しだけ冷やし、紺の服のためにシャドウを上げすぎない', () => {
+  // 壁（クリーム色）50%・紺の服 35%・木の階段 15%
+  const d = pixels([[0.5, [225, 195, 160]], [0.35, [22, 26, 48]], [0.15, [150, 90, 45]]]);
+  const a = autoAdjust(histogram(d), d);
+  assert.ok(a.temp < 0 && a.temp >= -8, `temp ${a.temp}`); // 暖かい雰囲気は残す（冷やすのはほんの少し）
+  assert.ok(a.shadows <= 20, `shadows ${a.shadows}`);
+  assert.ok(a.vibrance <= 10, `vibrance ${a.vibrance}`);
+});
+
+test('自動補正: 青白い（蛍光灯・日陰）写真は、白い所が灰色に近づくよう暖かくする', () => {
+  const d = pixels([[0.6, [190, 205, 235]], [0.4, [90, 100, 120]]]);
+  const cast = neutralCast(d);
+  assert.ok(cast && cast[2] > cast[0]);
+  const a = autoAdjust(histogram(d), d);
+  assert.ok(a.temp >= 8, `temp ${a.temp}`);
+});
+
+test('自動補正: 黒い背景のポートレートは、背景に合わせて顔まで明るくしない（白飛びさせない）', () => {
+  // 黒い背景 75%・明るい顔 25%
+  const d = pixels([[0.75, [8, 8, 10]], [0.25, [225, 185, 160]]]);
+  const a = autoAdjust(histogram(d), d);
+  // 顔（明るさ約 0.75）が、露光をかけても白飛び（0.95 超）しない
+  const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const srgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
+  const face = (0.2126 * 225 + 0.7152 * 185 + 0.0722 * 160) / 255;
+  assert.ok(srgb(lin(face) * 2 ** (a.exposure / 25)) <= 0.96, `exposure ${a.exposure}`);
+  assert.ok(a.whites <= 10, `whites ${a.whites}`);
+  // 背景に合わせた露光（ふつうなら +40 以上）にはならない
+  assert.ok(a.exposure < 25, `exposure ${a.exposure}`);
+});
+
+test('自動補正: 灰色の所がない写真（色の濃いものばかり）は、ホワイトバランスをほとんど動かさない', () => {
+  const d = pixels([[0.5, [200, 40, 40]], [0.5, [40, 60, 200]]]);
+  assert.equal(neutralCast(d), null);
+  const a = autoAdjust(histogram(d), d);
+  assert.ok(Math.abs(a.temp) <= 15, `temp ${a.temp}`);
 });
 
 test('photo: フィルターの強さ（0%なら変わらない・100%で全部効く・範囲を超えない）', () => {

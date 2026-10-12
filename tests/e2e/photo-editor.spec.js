@@ -140,7 +140,7 @@ test('フィルター（モノクロ）と強さ、自動補正', async ({ page 
   await page.getByRole('button', { name: '✦ 自動補正' }).click();
   await page.waitForTimeout(150);
   const st = await page.evaluate(() => window.__temoto.state.adj);
-  expect(st.vibrance).toBe(15);
+  expect(st.vibrance).toBe(8); // 自動補正が当たった
 });
 
 test('HSL・カーブ・カラーグレーディング・効果', async ({ page }) => {
@@ -681,4 +681,38 @@ test('スマホ: 長いダイアログでも決定のボタンが見え、写真
   expect(bb.y + bb.height).toBeGreaterThan(636); // 画面の下にくっついている
   expect(bb.height).toBeLessThan(160);
   await expect(bar.getByRole('button', { name: '選択をやめる' })).toBeVisible();
+});
+
+test('写真一覧の見本は高画質（短い辺 1080px）。前の版の小さい見本は、一覧を開くと編集を当てたまま作り直す', async ({ page }) => {
+  await page.goto(URL0);
+  await page.locator('#open-file').setInputFiles(await makePhoto(page, { w: 2400, h: 1800 }));
+  await page.waitForFunction(() => window.__temoto.editor?.L, null, { timeout: 30000 });
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await expect(page.locator('.lib-item')).toHaveCount(1);
+  const size = () => page.evaluate(async () => {
+    const db = await import('/db.js'); const [p] = await db.listProjects();
+    const b = await createImageBitmap(p.thumb); return { w: b.width, h: b.height, v: p.thumbV, updated: p.updated };
+  });
+  const t1 = await size();
+  expect(Math.min(t1.w, t1.h)).toBe(1080); expect(t1.v).toBe(2);
+  // 前の版の見本（長い辺 360px・目印なし）にして、モノクロの編集を入れておく
+  await page.evaluate(async () => {
+    const db = await import('/db.js'); const [p] = await db.listProjects();
+    const c = document.createElement('canvas'); c.width = 360; c.height = 270; c.getContext('2d').fillRect(0, 0, 360, 270);
+    const thumb = await new Promise((r) => c.toBlob(r, 'image/jpeg'));
+    const { thumbV, ...old } = p; old.state.adj.saturation = -100;
+    await db.putProject({ ...old, thumb });
+  });
+  await page.reload();
+  await expect.poll(async () => (await size()).v, { timeout: 20000 }).toBe(2);
+  const t2 = await size();
+  expect(Math.min(t2.w, t2.h)).toBe(1080);
+  expect(t2.updated).toBe(t1.updated); // 並び順（更新日時）は変えない
+  // 画面の見本も新しくなり、編集（モノクロ）が当たっている
+  await expect.poll(() => page.locator('.lib-open img').evaluate((img) => img.naturalWidth), { timeout: 10000 }).toBe(1440);
+  const [r, g, b] = await page.locator('.lib-open img').evaluate((img) => {
+    const c = document.createElement('canvas'); c.width = 40; c.height = 30; const x = c.getContext('2d'); x.drawImage(img, 0, 0, 40, 30);
+    const d = x.getImageData(0, 0, 40, 10).data; let r = 0; let g = 0; let b = 0; for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; } return [r, g, b];
+  });
+  expect(Math.abs(b - r) / (b + r)).toBeLessThan(0.03); // 空が青くない（モノクロ）
 });
