@@ -61,6 +61,13 @@ npm test                          # セキュリティチェック・単体テ�
 - `tests/unit/`: 編集レシピの検証、座標変換、カーブ、自動補正、Exif、修復、美肌、RAW の現像（DNG・LibRaw の出力の仕上げ）、グリッドの計算
 - `tests/e2e/`: 実際のブラウザで、画素の変化・書き出し（元の大きさ・Display P3）・保存・RAW・グリッド・アクセシビリティを確認
 
+### 自動マージ
+
+PR の CI（`.github/workflows/ci.yml`）が通ると、`.github/workflows/auto-merge.yml` がその PR を main にマージし、公開版（GitHub Pages）を更新します。
+- 下書き（Draft）の PR・フォークからの PR・main 以外へ向けた PR はマージしません
+- テストしたコミットが PR の最新のときだけマージします
+- 自動でマージしたくない PR には `no-auto-merge` ラベルを付けてください
+
 ## 構成
 
 ```
