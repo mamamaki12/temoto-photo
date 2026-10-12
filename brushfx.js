@@ -123,29 +123,61 @@ function eyes(img, mk, amt, rad) {
 }
 
 /**
- * しわ取り: 中くらいの大きさの明暗（布のしわ・ほうれい線など）だけをならし、細かい質感（布目・肌のきめ）と大きな明暗（体の形）は残す。
- * pad: ぼかしの計算に必要な、まわりの余白（画素）
+ * しわ取り: 布のしわ・ほうれい線などの「陰」をならす。
+ * - 明るさを「大まかな明るさ（土台）＋ 細かい質感（布目・肌のきめ）」に分け、土台だけをなめらかにする
+ * - 土台は、同じ素材（色みが近い）の画素だけで平均する（色みで重みをつけたぼかし）。だから深いしわの陰はならすが、
+ *   服と肌・服と背景の境目は混ざらない（にじみ・光の輪ができない）
+ * - 色みはそのままで、明るさだけを変える（柄の色は残る）
  */
 function wrinkle(img, mk, amt, rad) {
   const { m, bx, by, w, h } = mk; const d = img.data; const W = img.width;
-  const big = Math.max(2, rad * 0.35); const small = Math.max(1, big * 0.12);
-  const src = new Float32Array(w * h * 3);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const k = ((by + y) * W + bx + x) * 4; const o = (y * w + x) * 3; src[o] = d[k]; src[o + 1] = d[k + 1]; src[o + 2] = d[k + 2]; }
-  const lo = blur(src, w, h, 3, big); const mid = blur(src, w, h, 3, small);
+  const n = w * h; const L = new Float32Array(n); const ca = new Float32Array(n); const cb = new Float32Array(n);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const a = m[y * w + x] * amt; if (!a) continue;
-    const k = ((by + y) * W + bx + x) * 4; const o = (y * w + x) * 3;
-    // 服と肌の境目のような強い輪郭のそばは、ならさない（色がにじんで、光の輪ができるのを防ぐ）。
-    // しわの陰は明るさの差が小さく、輪郭は大きいので、その差で見分ける
-    const dev = Math.max(Math.abs(mid[o] - lo[o]), Math.abs(mid[o + 1] - lo[o + 1]), Math.abs(mid[o + 2] - lo[o + 2]));
-    const t = Math.min(1, Math.max(0, (dev - 14) / 26)); const keep = 1 - t * t * (3 - 2 * t);
-    if (keep <= 0) continue;
-    const aa = a * keep;
-    for (let c = 0; c < 3; c++) {
-      // 大きな明暗 ＋ 細かい質感 ＝ 中くらいの明暗（しわ）だけを抜いたもの
-      const v = lo[o + c] + (src[o + c] - mid[o + c]);
-      d[k + c] = Math.max(0, Math.min(255, src[o + c] + (v - src[o + c]) * aa));
+    const k = ((by + y) * W + bx + x) * 4; const r = d[k]; const g = d[k + 1]; const b = d[k + 2]; const i = y * w + x;
+    // 色み（明るさで割った値）: しわの暗い所も明るい所も同じ素材なら同じ。黒いひもと紺の服は違う
+    L[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b; ca[i] = (r - g) / (L[i] + 15); cb[i] = (b - (r + g) / 2) / (L[i] + 15);
+  }
+  // 細かい質感（これは残す）
+  const fineR = Math.max(1, rad * 0.04);
+  const Ls = blur(L, w, h, 1, fineR);
+  // 土台: 粗い格子（1 マス f 画素）の上で、色みの近いマスだけを平均する
+  const reach = Math.max(4, rad * 1.2); /* なぞったブラシの大きさくらいのしわまでならす */ const f = Math.max(1, Math.round(reach / 8)); const K = Math.max(2, Math.round(reach / f));
+  const gw = Math.ceil(w / f); const gh = Math.ceil(h / f);
+  const gL = new Float32Array(gw * gh); const gA = new Float32Array(gw * gh); const gB = new Float32Array(gw * gh); const gn = new Float32Array(gw * gh);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; const c = ((y / f) | 0) * gw + ((x / f) | 0); gL[c] += Ls[i]; gA[c] += ca[i]; gB[c] += cb[i]; gn[c]++; }
+  for (let c = 0; c < gw * gh; c++) { gL[c] /= gn[c]; gA[c] /= gn[c]; gB[c] /= gn[c]; }
+  const base = new Float32Array(gw * gh); const sp = 2 * (K / 2) ** 2; const sc = 2 * 0.12 ** 2;
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    const c0 = gy * gw + gx; let sw = 0; let sv = 0;
+    for (let yy = Math.max(0, gy - K); yy <= Math.min(gh - 1, gy + K); yy++) for (let xx = Math.max(0, gx - K); xx <= Math.min(gw - 1, gx + K); xx++) {
+      const c = yy * gw + xx; const dA = gA[c] - gA[c0]; const dB = gB[c] - gB[c0]; const dL = gL[c] - gL[c0];
+      // 明るさの差は、暗い所ほど小さな差でも別の物（黒いひもと紺の服など）とみなす
+      const sL = 0.45 * (gL[c0] + 20);
+      const wgt = Math.exp(-((xx - gx) ** 2 + (yy - gy) ** 2) / sp - (dA * dA + dB * dB) / sc - (dL * dL) / (2 * sL * sL));
+      sw += wgt; sv += wgt * gL[c];
     }
+    base[c0] = sv / sw;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const a = m[i] * amt; if (!a) continue;
+    // 土台を元の大きさに戻す: まわりのマスのうち、この画素と色み・明るさが近いマスだけから取る（境目で別の素材が混ざらない）
+    const fx = (x + 0.5) / f - 0.5; const fy = (y + 0.5) / f - 0.5; const cx0 = Math.floor(fx); const cy0 = Math.floor(fy);
+    const sL = 0.45 * (Ls[i] + 20); let sw = 0; let sv = 0;
+    for (let yy = cy0 - 1; yy <= cy0 + 2; yy++) for (let xx = cx0 - 1; xx <= cx0 + 2; xx++) {
+      if (xx < 0 || yy < 0 || xx >= gw || yy >= gh) continue;
+      const c = yy * gw + xx; const dA = gA[c] - ca[i]; const dB = gB[c] - cb[i]; const dL = gL[c] - Ls[i];
+      const wgt = Math.max(0, 1.5 - Math.abs(xx - fx)) * Math.max(0, 1.5 - Math.abs(yy - fy)) * Math.exp(-(dA * dA + dB * dB) / sc - (dL * dL) / (2 * sL * sL));
+      sw += wgt; sv += wgt * base[c];
+    }
+    if (sw < 0.05) continue; // 近いマスがない（細い別の物）→ ならさない
+    const bse = sv / sw;
+    // 同じ素材の土台からかけ離れた画素（細いひも・髪など）は、ならさない
+    const rel = Math.abs(Ls[i] - bse) / (bse + 15);
+    const keep = 1 - Math.min(1, Math.max(0, (rel - 0.45) / 0.3));
+    // 明るさだけを、R・G・B に同じだけ足して変える（色を濃くしない。ほくろが赤い点になったりしない）
+    const dl = (bse + (L[i] - Ls[i]) - L[i]) * a * keep * Math.min(1, sw);
+    const k = ((by + y) * W + bx + x) * 4;
+    d[k] = Math.max(0, Math.min(255, d[k] + dl)); d[k + 1] = Math.max(0, Math.min(255, d[k + 1] + dl)); d[k + 2] = Math.max(0, Math.min(255, d[k + 2] + dl));
   }
 }
 

@@ -23,7 +23,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.13.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.13.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -1329,32 +1329,45 @@ function localHandles(l) {
 
 // ── 写真館の仕上げのブラシ（形を整える・目元と歯・明るく／暗く・しわ取り） ──
 // size: ブラシの半径（写真の短い辺に対する %）、amt: 強さ（%）。mode: 道具の中の種類
+// 初期値は、前撮りに多い全身・上半身の写真（顔の幅が写真の短い辺の 1〜2 割）に合わせる。種類ごとに覚える
 const FX = {
-  shape: { modes: null, type: () => 'warp', size: 15, amt: 50,
-    hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは顔の半分くらいの大きめにして、少しずつ何回かに分けると自然です（小さいブラシだと、へこみができます）。' },
-  eyes: { modes: [['eyes', '目元'], ['teeth', '歯']], type: (m) => m, size: 3, amt: 60,
+  shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
+    hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは動かしたい所が丸ごと入るくらいにして、少しずつ何回かに分けると自然です（小さすぎると、へこみができます）。' },
+  eyes: { modes: [['eyes', '目元'], ['teeth', '歯']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 } },
     hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をなぞってください。黄ばみだけを取って白くします（唇・歯ぐきの赤はほとんど変えません）。' } },
-  dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, size: 8, amt: 25,
+  dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
     hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
-  wrinkle: { modes: null, type: () => 'wrinkle', size: 6, amt: 70,
-    hint: '着物・服のしわや、ほうれい線などをなぞってください。布目・肌のきめは残して、しわの陰だけをならします。' },
+  wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
+    hint: '着物・服のしわや、ほうれい線などをなぞってください。ブラシはしわの幅くらいに。布目・柄・肌のきめと、服と肌の境目は残して、しわの陰だけをならします。取りきれないときは、もう一度なぞってください。' },
 };
-const fxPrefs = (tool) => { const d = FX[tool]; const v = prefs.get(`fx:${tool}`, {}); return { size: v.size ?? d.size, amt: v.amt ?? d.amt, mode: v.mode ?? d.modes?.[0][0] }; };
-const setFxPrefs = (tool, patch) => prefs.set(`fx:${tool}`, { ...fxPrefs(tool), ...patch });
+const fxMode = (tool) => prefs.get(`fx2:${tool}:mode`, FX[tool].modes?.[0][0] ?? null);
+function fxPrefs(tool) {
+  const d = FX[tool]; const mode = fxMode(tool); const def = mode ? d.def[mode] : d.def;
+  const v = prefs.get(`fx2:${tool}:${mode ?? ''}`, {});
+  return { size: v.size ?? def.size, amt: v.amt ?? def.amt, mode, def };
+}
+const setFxPrefs = (tool, patch) => { const f = fxPrefs(tool); prefs.set(`fx2:${tool}:${f.mode ?? ''}`, { size: patch.size ?? f.size, amt: patch.amt ?? f.amt }); };
 /** ブラシの半径（画面の Canvas の画素） */
 function fxRadiusCanvas(tool) { return fxPrefs(tool).size / 100 * Math.min(E.L.iw, E.L.ih); }
+/** ブラシの大きさを変えたとき、写真の真ん中にブラシの丸を少しの間だけ出す（スマホでは指を置くまで丸が見えないので） */
+let fxPreviewTimer = 0;
+function showBrushPreview() {
+  if (!E?.L) return;
+  E.cursor = [E.L.ix + E.L.iw / 2, E.L.iy + E.L.ih / 2]; drawHandles();
+  clearTimeout(fxPreviewTimer); fxPreviewTimer = setTimeout(() => { if (E) { E.cursor = null; drawHandles(); } }, 1500);
+}
 function fxPanel(tool) {
   const d = FX[tool]; const f = fxPrefs(tool);
   const types = d.modes ? d.modes.map(([m]) => d.type(m)) : [d.type()];
   const n = E.state.retouch.filter((o) => types.includes(o.type)).length;
   return [
     hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
-    d.modes ? chips(d.modes, f.mode, (v) => { setFxPrefs(tool, { mode: v }); buildPanel(); }, { label: '種類' }).el : null,
-    slider({ label: 'ブラシの大きさ', min: 1, max: 30, value: f.size, def: d.size, onChange: (v) => { setFxPrefs(tool, { size: v }); drawHandles(); } }).el,
-    slider({ label: '強さ', min: 5, max: 100, value: f.amt, def: d.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
+    d.modes ? chips(d.modes, f.mode, (v) => { prefs.set(`fx2:${tool}:mode`, v); buildPanel(); }, { label: '種類' }).el : null,
+    slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
+    slider({ label: '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
     h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
     n ? row(btn(`${TOOL_LABEL[tool]}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small')) : null,
-    hint('うまくいかなかったら「元に戻す」で 1 回ずつ戻せます。2 本指で広げると、拡大して細かい所をなぞれます。'),
+    hint('うまくいかなかったら「元に戻す」で 1 回ずつ戻せます。2 本指で広げると、拡大して細かい所をなぞれます（ブラシの大きさは写真に対する大きさなので、拡大しても変わりません）。'),
   ];
 }
 /** なぞる操作。形を整えるは、なぞりながらその場で動かす。ほかは指を離したときに当てる */
@@ -1364,6 +1377,7 @@ function fxAction(tool, c, p) {
   const amt = f.amt / 100;
   const toSrc = (q) => outToSrc(...toOut(q), p);
   const pts = [toSrc(c)]; const path = [c];
+  E.cursor = c; drawHandles(); // 指を置いた所にブラシの丸を出す
   if (E.state.retouch.length >= S.MAX_RETOUCH) { toast('修復・仕上げは300回までです'); return null; }
   const step = r * Math.min(E.W, E.H) * (type === 'warp' ? 0.15 : 0.3); // 点の間隔（元写真の画素）
   const far = (a, b) => Math.hypot((a[0] - b[0]) * E.W, (a[1] - b[1]) * E.H) >= step;
@@ -1387,10 +1401,11 @@ function fxAction(tool, c, p) {
         if (box) { const d = live.dirty; live.dirty = d ? [Math.min(d[0], box[0]), Math.min(d[1], box[1]), Math.max(d[0] + d[2], box[0] + box[2]) - Math.min(d[0], box[0]), Math.max(d[1] + d[3], box[1] + box[3]) - Math.min(d[1], box[1])] : box; }
         if (!raf) raf = requestAnimationFrame(flush);
         E.cursor = q; drawHandles();
-      } else { E.fxPath = path; drawHandles(); }
+      } else { E.fxPath = path; E.cursor = q; drawHandles(); }
     },
-    end: () => {
+    end: (e) => {
       E.fxPath = null; if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      if (e?.pointerType !== 'mouse') E.cursor = null; // 指で描いたときは、離したら丸を消す
       const op = { type, pts, r, amt };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }

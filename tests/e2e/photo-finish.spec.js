@@ -17,6 +17,8 @@ async function stroke(page, pts) {
   for (let i = 1; i < pts.length; i++) await page.mouse.move(...at(pts[i]), { steps: 8 });
   await page.mouse.up(); await page.waitForTimeout(250);
 }
+/** ブラシの大きさのスライダーを動かす */
+const setSize = (page, v) => page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, v);
 const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 const ops = (page) => page.evaluate(() => window.__temoto.state.retouch);
 
@@ -26,13 +28,14 @@ test('明るく・暗く: なぞった所だけ明るく（暗く）なり、元
   const b0 = lum(await viewMean(page, R)); const o0 = lum(await viewMean(page, other));
   await openTool(page, '明暗');
   await expect(page.getByRole('button', { name: '明るく', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el) => { el.value = 15; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await setSize(page, 15);
   await stroke(page, [[0.32, 0.5], [0.68, 0.5]]);
   expect((await ops(page)).map((o) => o.type)).toEqual(['dodge']);
   const b1 = lum(await viewMean(page, R));
   expect(b1).toBeGreaterThan(b0 + 4);
   expect(Math.abs(lum(await viewMean(page, other)) - o0)).toBeLessThan(1); // なぞっていない所は変わらない
   await page.getByRole('button', { name: '暗く', exact: true }).click();
+  await setSize(page, 15); // 大きさは種類ごとに覚える
   await stroke(page, [[0.32, 0.5], [0.68, 0.5]]); await stroke(page, [[0.32, 0.5], [0.68, 0.5]]);
   expect(lum(await viewMean(page, R))).toBeLessThan(b1 - 4);
   await page.locator('body').press('Control+z'); await page.locator('body').press('Control+z'); await page.waitForTimeout(300);
@@ -92,4 +95,24 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
     expect(v.outside, `${type} は読み出す範囲の外を変えない`).toBe(0);
     expect(v.maxDiff, `${type} は一部だけでも同じ`).toBeLessThanOrEqual(2);
   }
+});
+
+test('ブラシの大きさ: スライダーを動かすと写真の上に丸が出て、初期値は全身・上半身の写真向けに小さめ。種類ごとに覚える', async ({ page }) => {
+  await open(page);
+  await openTool(page, '明暗');
+  const size = page.getByLabel('ブラシの大きさ', { exact: true });
+  await expect(size).toHaveValue('3');
+  await setSize(page, 10);
+  await expect(page.locator('.handles circle.cursor')).toHaveCount(1); // 丸が出る
+  const r10 = Number(await page.locator('.handles circle.cursor').getAttribute('r'));
+  await setSize(page, 5);
+  const r5 = Number(await page.locator('.handles circle.cursor').getAttribute('r'));
+  expect(r10 / r5).toBeCloseTo(2, 1);
+  await expect(page.locator('.handles circle.cursor')).toHaveCount(0, { timeout: 3000 }); // しばらくすると消える
+  await page.getByRole('button', { name: '暗く', exact: true }).click();
+  await expect(size).toHaveValue('3'); // 暗くは別に覚える
+  await page.getByRole('button', { name: '明るく', exact: true }).click();
+  await expect(size).toHaveValue('5');
+  await openTool(page, '目元・歯');
+  await expect(size).toHaveValue('1.5');
 });
