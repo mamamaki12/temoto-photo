@@ -11,6 +11,7 @@ import { outputSize } from './geometry.js';
 import { layout, roundRect } from './compose.js';
 import { skinPlan, portraitTile, portraitMargin, portraitActive } from './portrait.js';
 import { heal, mosaic, blurRect } from './retouch.js';
+import { applyBrush, brushBounds, BRUSH_TYPES } from './brushfx.js';
 import { jpegEncoder, pngEncoder, readJpegIcc } from './encode.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 
@@ -196,6 +197,13 @@ async function retouchFull(eng, op, W, H) {
       mosaic(img, 0, 0, rw, bh, block); eng.putSourcePixels(rx, ry + y, rw, bh, img.data);
       await later();
     }
+  } else if (BRUSH_TYPES.includes(op.type)) {
+    // 写真館の仕上げのブラシ: なぞった所のまわりだけを読み出して当てる
+    const g = brushBounds(op, W, H); if (!g) return;
+    const [rx, ry, rw, rh] = g; const img = { width: rw, height: rh, data: eng.readSource(rx, ry, rw, rh) };
+    applyBrush(img, op, { W, H, ox: rx, oy: ry });
+    eng.putSourcePixels(rx, ry, rw, rh, img.data);
+    await later();
   } else if (op.type === 'blur') {
     const g = region(op.x * W, op.y * H, (op.x + op.w) * W, (op.y + op.h) * H); if (!g) return;
     const [rx, ry, rw, rh] = g; const radius = Math.max(1, (op.size / 600) * Math.max(W, H));

@@ -1,6 +1,8 @@
 // 修復（スポット修復）・モザイク・ぼかし。元写真の画素（ImageData）を直接書き換える。
 // 編集内容としては操作の一覧（state.retouch）だけを保存し、開くたびに元写真から再現する（非破壊）。
 
+import { applyBrush, BRUSH_TYPES } from './brushfx.js';
+
 const idx = (img, x, y) => (y * img.width + x) * 4;
 const clampI = (v, a, b) => Math.max(a, Math.min(b, v | 0));
 
@@ -108,6 +110,8 @@ export function applyRetouch(img, ops) {
       mosaic(img, op.x * W, op.y * H, op.w * W, op.h * H, Math.max(2, (op.size / 400) * Math.max(W, H)));
     } else if (op.type === 'blur') {
       blurRect(img, op.x * W, op.y * H, op.w * W, op.h * H, Math.max(1, (op.size / 600) * Math.max(W, H)));
+    } else if (BRUSH_TYPES.includes(op.type)) {
+      applyBrush(img, op);
     }
   }
 }
