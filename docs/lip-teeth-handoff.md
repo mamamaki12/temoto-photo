@@ -31,5 +31,5 @@
   - IMG_9490: (784, 2169, 290) 屋外・笑顔
   - IMG_9497: (1455, 2097, 149) 口を閉じている
   - IMG_9516: (753, 1667, 156) 強い日差し・小さな顔（残り 2）
-- `brushfx.js` の `mouthMasks(img, polys, at)` で唇・歯の範囲（0〜1）を取り出せる。範囲の境目を元の写真に線で重ね、2 倍に拡大して目で確かめた（評価用のスクリプトは project files の `lip-teeth-eval/`）。
+- `brushfx.js` の `mouthMasks(img, polys, at)` で唇・歯の範囲（0〜1）を取り出せる。範囲の境目を元の写真に線で重ね、2 倍に拡大して目で確かめた（評価用のスクリプトは project files の `harness.mjs`・`contour.mjs`・`evalmouth.mjs`、口の位置は `mouths.json`。パスは Windows 向けなので読み替える）。
 - 画面のテストは、別の作業のサーバー（4173）と混ざらないよう、ポートを変えた設定で流した。
