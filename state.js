@@ -122,7 +122,15 @@ function validRetouch(r) {
   if (BRUSH_TYPES.includes(r.type)) {
     // 写真館の仕上げのブラシ: なぞった線（0〜1）・半径（短い辺に対する割合）・強さ（0〜1）
     const pts = arr(r.pts, MAX_BRUSH_POINTS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]);
-    return pts.length ? { type: r.type, pts, r: num(r.r, 0.002, 0.3, 0.03), amt: num(r.amt, 0, 1, 0.5) } : null;
+    if (!pts.length) return null;
+    const op = { type: r.type, pts, r: num(r.r, 0.002, 0.3, 0.03), amt: num(r.amt, 0, 1, 0.5) };
+    if (r.type === 'lip') {
+      op.col = Array.isArray(r.col) && r.col.length === 3 ? r.col.map((v) => int(v, 0, 255)) : [214, 92, 120]; // リップの色
+      // AI で見つけた唇の輪郭（顔ごとに外側・内側 20 点ずつ）。あればその中だけに色をのせる
+      const poly = (q) => (Array.isArray(q) ? q.slice(0, 40).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
+      op.lips = arr(r.lips, 6).map((l) => ({ outer: poly(l?.outer), inner: poly(l?.inner) })).filter((l) => l.outer.length >= 3);
+    }
+    return op;
   }
   if (r.type === 'mosaic' || r.type === 'blur') return { type: r.type, x: num(r.x, 0, 1), y: num(r.y, 0, 1), w: num(r.w, 0.001, 1, 0.1), h: num(r.h, 0.001, 1, 0.1), size: int(r.size, 2, 100, 20) };
   return null;

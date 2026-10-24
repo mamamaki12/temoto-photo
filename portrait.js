@@ -8,6 +8,8 @@
 
 export const PORTRAIT = [['smooth', 'なめらかに'], ['even', '色むら・赤みを整える'], ['bright', '肌を明るく']];
 
+import { skinSegFor, segAt } from './skinseg.js';
+
 const clamp255 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
 /** 横方向の箱型ぼかし（端はくり返し）。src/dst は1チャンネルの配列 */
@@ -111,7 +113,34 @@ export function skinWeights(img, p) {
 export function skinPlan(img, p) {
   const seeds = p?.seeds || [];
   const { width: W, height: H, data: d } = img; const N = W * H; const S = Math.min(W, H);
-  // ① 基準にする肌の色（Cb・Cr）。選んだ場所があればそのまわり、なければ写真から推定する
+  const color = skinPlanColor(img, p, seeds, S);
+  // AI で見分けた肌の地図があれば、それを主に使う（髪・服・肌に似た色の背景を外す。タップしていない首・腕も入る）
+  // ただし、タップした所（タップがなければ写真のどこか）を AI が肌と見ていなければ（人物でない・横顔など）、色の判定にする
+  const seg = skinSegFor(img);
+  if (seg && segCovers(seg, seeds)) {
+    const plan = { refs: color.refs, texRef: color.texRef, gate: null, seg };
+    return finishPlan(img, segWeights(img, p, plan, S, 0, 0, W, H), plan);
+  }
+  if (!color.refs) return color.empty ? finishPlan(img, new Float32Array(N), null) : finishPlan(img, skinMask(img), { generic: true });
+  const plan = { refs: color.refs, texRef: color.texRef, gate: null };
+  const w = localWeights(img, p, plan, S, color.tex);
+  if (seeds.length) {
+    plan.gate = connectedGate(img, w, seeds, colorTol(p).T);
+    applyGate(w, W, H, plan.gate, 0, 0, W, H);
+  }
+  return finishPlan(img, w, plan);
+}
+
+/** AI の肌の地図が、選んだ場所（なければ写真のどこか）を肌と見ているか */
+function segCovers(seg, seeds) {
+  if (seeds.length) return seeds.some(([sx, sy]) => segAt(seg, sx, sy) > 0.35);
+  let n = 0; for (let i = 0; i < seg.m.length; i++) if (seg.m[i] > 0.5) n++;
+  return n > seg.m.length * 0.002;
+}
+
+/** ① 基準にする肌の色（タップした場所のまわり。なければ写真から推定）と、肌のきめの細かさ */
+function skinPlanColor(img, p, seeds, S) {
+  const { width: W, height: H, data: d } = img;
   let refs;
   if (seeds.length) {
     const rad = Math.max(2, Math.round(S / 120));
@@ -122,10 +151,10 @@ export function skinPlan(img, p) {
       }
       return n ? [cb / n, cr / n, yy / n] : null;
     }).filter(Boolean);
-    if (!refs.length) return finishPlan(img, new Float32Array(N), null);
+    if (!refs.length) return { refs: null, empty: true };
   } else {
     const ref = autoSkinColor(img);
-    if (!ref) return finishPlan(img, skinMask(img), { generic: true });
+    if (!ref) return { refs: null };
     refs = [ref];
   }
   // 細かい明暗の量（髪の毛・ひげ・布の織り目は多く、肌は少ない）の、肌での値
@@ -139,13 +168,26 @@ export function skinPlan(img, p) {
     }
     texRef = median(vals);
   }
-  const plan = { refs, texRef, gate: null };
-  const w = localWeights(img, p, plan, S, tex);
-  if (seeds.length) {
-    plan.gate = connectedGate(img, w, seeds, colorTol(p).T);
-    applyGate(w, W, H, plan.gate, 0, 0, W, H);
+  return { refs, texRef, tex };
+}
+
+/**
+ * AI の肌の地図を使うときの肌の重み（写真の一部 img が、全体 fullW×fullH の (ox, oy) にあるとして）。
+ * 地図（肌である確からしさ）に、色で「明らかに肌でない」所（目・眉・唇・まつげ）を外す重みを掛ける
+ */
+function segWeights(img, p, plan, S, ox, oy, fullW, fullH) {
+  const { width: W, height: H } = img; const N = W * H; const w = new Float32Array(N);
+  const loose = plan.refs ? localWeights(img, p, plan, S).loose : null;
+  for (let y = 0, i = 0; y < H; y++) {
+    const v = (oy + y + 0.5) / fullH;
+    for (let x = 0; x < W; x++, i++) {
+      const q = segAt(plan.seg, (ox + x + 0.5) / fullW, v);
+      // 確からしさ 0.35〜0.75 をなめらかに 0〜1 に（境目の髪・背景を外す）
+      const t = Math.min(1, Math.max(0, (q - 0.35) / 0.4)); const sg = t * t * (3 - 2 * t);
+      w[i] = loose ? sg * Math.min(1, loose[i] * 1.5 + 0.15) : sg;
+    }
   }
-  return finishPlan(img, w, plan);
+  return w;
 }
 
 /** 肌の平均の色・肌のある範囲をまとめる */
@@ -210,6 +252,7 @@ function localWeights(img, p, plan, S, tex) {
   const area = boxBlur(tight, W, H, Math.max(1, Math.round(S / 220)), 2);
   const w = new Float32Array(N);
   for (let i = 0; i < N; i++) { if (!loose[i]) continue; const t = (area[i] - 0.3) / 0.35; w[i] = (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t)) * loose[i]; }
+  w.loose = loose;
   return w;
 }
 
@@ -279,6 +322,7 @@ function applyGate(w, W, H, gate, ox, oy, fullW, fullH) {
 
 /** 元の大きさの写真の一部（左上が全体の (ox, oy)）の肌の重みを、編集用の大きさで作った plan から計算する */
 export function weightsWithPlan(img, p, plan, { S, ox, oy, fullW, fullH }) {
+  if (plan.seg) return segWeights(img, p, plan, S, ox, oy, fullW, fullH);
   if (plan.generic) return skinMask(img);
   if (!plan.refs) return new Float32Array(img.width * img.height);
   const w = localWeights(img, p, plan, S);
