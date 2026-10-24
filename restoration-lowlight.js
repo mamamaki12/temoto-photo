@@ -14,10 +14,16 @@ const toLinear = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : SRGB_LUT[(v * 4095 + 0.5) | 0
 const toSrgb = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
 
 export const NOISE_BINS = 12;
+const hash = (v) => { let h = Math.imul(v ^ (v >>> 16), 0x45d9f3b); h = Math.imul(h ^ (h >>> 16), 0x45d9f3b); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
 /** 帯の上下に余分に読む行数（いちばん粗い段の探索範囲と、色ムラ除去の半径が収まる大きさ。4 の倍数） */
 export const BAND_MARGIN = 48;
 const LEVELS = 3;
-const KEEP_GRAIN = 0.3; // ノイズ除去で取った明るさの成分のうち、戻す割合（強さ 1 のとき）
+// ノイズ除去で取った明るさの成分のうち、戻す割合（強さ 1 のとき）。模様のある所（肌のきめ・レース・髪）は多く、
+// 平らな所（カーテン・背景）は少なく戻す。平らな所に戻すと、それはただのノイズに見える
+const KEEP_FLAT = 0.1;
+const KEEP_TEXTURE = 0.6;
+// ノイズの代わりに足す、細かい粒（1 画素の、色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
+const FILM_GRAIN = 1.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
@@ -375,7 +381,13 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
       }
       // 8bit にするとき、ごく弱いディザ（位置で決まるので、帯に分けても同じ）
       const p = (at.y0 + y) * at.fullW + x;
-      const d = ((((p * 2654435761) >>> 0) / 4294967296) - 0.5) / 255;
+      let d = ((((p * 2654435761) >>> 0) / 4294967296) - 0.5) / 255;
+      if (at.grain) {
+        // 細かい粒（位置で決まる。3 つの乱数の和で、なめらかな山形の分布に）
+        const u = hash(p) + hash(p + 0x9e3779b9) + hash(p + 0x7f4a7c15) - 1.5;
+        const lv = Math.min(1, Math.max(0, toSrgb(0.2126 * r + 0.7152 * g + 0.0722 * bl)));
+        d += u * 2 * at.grain / 255 * 4 * lv * (1 - lv);
+      }
       out[i * 4] = 255 * (toSrgb(r) + d) + 0.5;
       out[i * 4 + 1] = 255 * (toSrgb(g) + d) + 0.5;
       out[i * 4 + 2] = 255 * (toSrgb(bl) + d) + 0.5;
@@ -402,12 +414,17 @@ export function enhanceBand(band, at, { nr, profile, tone }, onProgress = () => 
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
-    const keep = KEEP_GRAIN / Math.max(1, nr);
-    for (let i = 0; i < Y.length; i++) Y[i] += (Y0[i] - Y[i]) * keep;
+    // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
+    const res = new Float32Array(Y.length); for (let i = 0; i < Y.length; i++) { const d = Y0[i] - Y[i]; res[i] = d * d; }
+    const energy = boxBlur(res, w, h, 3); const k = 1 / Math.max(1, nr);
+    for (let i = 0; i < Y.length; i++) {
+      const s = noiseAt(profile[0], Y[i]); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
+      Y[i] += (Y0[i] - Y[i]) * (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
+    }
   }
   onProgress(0.95);
   const rows = at.bottom - at.top; const o = at.top * w;
-  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH });
+  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: nr > 0 ? FILM_GRAIN * Math.min(1, nr) : 0 });
   onProgress(1);
   return out;
 }
