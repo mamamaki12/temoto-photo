@@ -17,7 +17,7 @@ export const NOISE_BINS = 12;
 /** 帯の上下に余分に読む行数（いちばん粗い段の探索範囲と、色ムラ除去の半径が収まる大きさ。4 の倍数） */
 export const BAND_MARGIN = 48;
 const LEVELS = 3;
-const KEEP_GRAIN = 0.2; // ノイズ除去で取った明るさの成分のうち、戻す割合（強さ 1 のとき）
+const KEEP_GRAIN = 0.3; // ノイズ除去で取った明るさの成分のうち、戻す割合（強さ 1 のとき）
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
@@ -232,7 +232,7 @@ function removeSpeckles(ch, w, h, profile) {
 export function denoise(ch, w, h, { profile, nr = 1, level = 0, onProgress = () => {} }) {
   const bins = profile[level]; const sm = boxBlur(ch[0], w, h, 3); const sig = new Float32Array(w * h);
   // 粗い段ほど控えめに（細部を薄くしない）
-  const k = nr * [0.75, 0.7, 0.6][level];
+  const k = nr * [0.75, 0.6, 0.5][level];
   for (let i = 0; i < sig.length; i++) sig[i] = noiseAt(bins, sm[i]) * k;
   const last = level >= LEVELS - 1 || Math.min(w, h) < 32;
   const share = last ? 1 : 0.75;
@@ -264,7 +264,11 @@ const logLum = (r, g, b) => Math.log(0.2126 * toLinear(r) + 0.7152 * toLinear(g)
  * @param {{width:number,height:number,data:Uint8ClampedArray}} small
  * @param {number} light 0〜100（50 で自動の狙いどおり）
  */
-export function planTone(small, light, { wbAmount = WB_AMOUNT, sat = SAT_EXP, target = TARGET } = {}) {
+/**
+ * @param {{m:Float32Array,w:number,h:number}|null} [o.person] 人物の地図（0〜1。skinseg.js の personSeg）。
+ *   人物（肌・衣装・髪）と背景で、照明の色の直し方を変える。ないときは、その間
+ */
+export function planTone(small, light, { person = null, sat = SAT_EXP, target = TARGET, wbPerson = WB_PERSON, wbBack = WB_BACK } = {}) {
   const { width: w, height: h, data } = small; const n = w * h;
   const logL = new Float32Array(n);
   for (let i = 0; i < n; i++) logL[i] = logLum(data[i * 4] / 255, data[i * 4 + 1] / 255, data[i * 4 + 2] / 255);
@@ -278,16 +282,35 @@ export function planTone(small, light, { wbAmount = WB_AMOUNT, sat = SAT_EXP, ta
   const L = new Float32Array(n); for (let i = 0; i < n; i++) L[i] = Math.exp(logL[i]);
   L.sort(); const p999 = L[Math.floor(n * 0.999)];
   const white = Math.max(0.25, gain * p999 * 1.1);
-  return { w, h, a, b, gain, white, wb: whiteBalance(data, n, wbAmount), sat };
+  return { w, h, a, b, gain, white, wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), sat, person: person && smoothMask(person) };
 }
 
 /**
- * 照明の色を直す倍率（R・G・B）。白飛びしていない明るい所（上位 5%。白い衣装など）を白とみなして照明の色を測り、
- * 色かぶり（暗い所で撮ると出やすい赤紫）は戻し、色温度（電球の琥珀色）は残す。
- * 同じ舞台を明るく撮った写真（IMG_9228）では、白い衣装・カーテン・肌が琥珀寄りで、赤紫には寄っていない。
- * 色温度まで戻すと、肌やカーテンの色が抜けて灰色っぽく（ドライに）見える
+ * 人物の地図を整える。AI が見落とした小さな穴（衣装の暗い帯など）を埋めてから（いちばん大きい値で広げて、小さい値で縮める）、
+ * 境目を少しぼかす（髪の縁などで、色の直し方が急に変わらないように）
  */
-const WB_AMOUNT = { tint: 1, temp: 0 };
+function smoothMask({ m, w, h }) {
+  const r = Math.max(2, Math.round(Math.max(w, h) / 80));
+  const closed = rank(rank(m, w, h, r, Math.max), w, h, r, Math.min);
+  return { m: boxBlur(boxBlur(closed, w, h, 2), w, h, 2), w, h };
+}
+/** 縦横 (2r+1) の範囲の、いちばん大きい（小さい）値 */
+function rank(src, w, h, r, pick) {
+  const tmp = new Float32Array(w * h); const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = src[y * w + x]; for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) v = pick(v, src[y * w + k]); tmp[y * w + x] = v; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = tmp[y * w + x]; for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) v = pick(v, tmp[k * w + x]); out[y * w + x] = v; }
+  return out;
+}
+
+/**
+ * 照明の色を直す倍率（R・G・B）。白飛びしていない明るい所（上位 5%。白い衣装など）を白とみなして照明の色を測る。
+ * 照明の色は、色温度（青 ⇔ 電球の琥珀）と色かぶり（緑 ⇔ 赤紫）に分けて、どれだけ戻すかを決める。
+ * - 人物（肌・衣装）: どちらも 3 割だけ白に戻す。肌は明るく自然に、白い衣装は白に近く
+ * - 背景（カーテンなど）: 色かぶり（暗い所で出やすい赤紫）だけ戻し、琥珀色は残す。
+ *   同じ舞台を明るく撮った写真（IMG_9228）のカーテンの色。戻しすぎると灰色っぽく（ドライに）見える
+ */
+const WB_PERSON = { tint: 0.3, temp: 0.3 };
+const WB_BACK = { tint: 1, temp: 0 };
 const SAT_EXP = 1; // 明るくした倍率 k に対して、色の濃さ（明るさとの差）を k^SAT_EXP 倍にする（1 で元の色のまま明るく）
 const TARGET = 0.16; // 自動の明るさの狙い（ベースの平均、リニア）
 function whiteBalance(data, n, amount) {
@@ -334,7 +357,9 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
       const yy = Y[i]; const r0 = yy + Cr[i]; const b0 = yy + Cb[i]; const g0 = (yy - 0.299 * r0 - 0.114 * b0) / 0.587;
       let r = toLinear(r0); let g = toLinear(g0); let bl = toLinear(b0);
       if (tone) {
-        r *= tone.wb[0]; g *= tone.wb[1]; bl *= tone.wb[2];
+        // 人物と背景で、照明の色の直し方を変える（人物の地図がないときは、その間）
+        const p = tone.person ? sampleGrid(tone.person.m, tone.person.w, tone.person.h, (x + 0.5) * tone.person.w / at.fullW - 0.5, (at.y0 + y + 0.5) * tone.person.h / at.fullH - 0.5) : 0.5;
+        r *= tone.wb[0] + (tone.wbP[0] - tone.wb[0]) * p; g *= tone.wb[1] + (tone.wbP[1] - tone.wb[1]) * p; bl *= tone.wb[2] + (tone.wbP[2] - tone.wb[2]) * p;
         const L = 0.2126 * r + 0.7152 * g + 0.0722 * bl; const lg = Math.log(L + 1e-4);
         const gx = (x + 0.5) * sx - 0.5;
         // ベース（明るさの大きな流れ）。縮めた絵の係数を、この画素の明るさに当てる（輪郭は元の大きさのまま保たれる）

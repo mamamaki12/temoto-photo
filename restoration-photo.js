@@ -1,6 +1,7 @@
 import { restoreInWorker } from './restoration-client.js';
 import { measureNoise, planTone, BAND_MARGIN } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
+import { personSeg } from './skinseg.js';
 
 // 一度にWorkerへ送る範囲を限定する。3画素の探索+1画素のパッチ分を重ねて継ぎ目を防ぐ。
 export async function restorePhotoBanded(input, options = {}, hooks = {}) {
@@ -108,8 +109,10 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light }
     profile = measureNoise(crop, cw, rows);
   }
   check(); onProgress(0.02);
-  // 2. 明るさの曲線（写真全体で 1 つ）
-  const tone = light > 0 ? planTone(small, light) : null;
+  // 2. 明るさの曲線（写真全体で 1 つ）。人物と背景で照明の色の直し方を変えるので、人物の範囲を AI で見分ける
+  const person = light > 0 ? await personSeg(small) : null;
+  check();
+  const tone = light > 0 ? planTone(small, light, { person }) : null;
   // 3. 帯ごとに、いくつかの Worker で
   const ROWS = Math.max(64, Math.min(512, Math.floor(1_000_000 / width / 4) * 4));
   const bands = [];
