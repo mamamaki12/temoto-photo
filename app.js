@@ -807,6 +807,7 @@ const PANELS = {
       slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
         onInput: live((v) => { E.state.adj.noise = v; }), onChange: commit }).el,
       hint('顔・腕・衣装・背景を一緒に明るくします。明るい部分は保ち、照明の色は変えません。ノイズ軽減は細部を見ながら控えめに調整してください。'),
+      h('a', { href: 'restoration-check.html', target: '_blank', rel: 'noopener' }, '高精度ノイズ除去を別画面で比較（試作）'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');

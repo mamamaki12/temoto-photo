@@ -3,7 +3,7 @@
 set -eu
 rm -rf _site
 mkdir -p _site
-cp index.html manifest.webmanifest icon.svg style.css ./*.js _site/
+cp index.html restoration-check.html manifest.webmanifest icon.svg style.css restoration-check.css ./*.js _site/
 cp -R vendor _site/
 rm -f _site/playwright.config.js
 touch _site/.nojekyll
