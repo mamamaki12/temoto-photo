@@ -157,6 +157,19 @@ const mixLike = (gs, F, i) => {
   const a = logLike(gs[0], F, i); const b = logLike(gs[1], F, i); const m = Math.max(a, b);
   return m + Math.log(0.5 * Math.exp(a - m) + 0.5 * Math.exp(b - m));
 };
+/**
+ * 影に入った歯（口の端の奥歯・上の歯の陰になった下の歯）: 影では明るさも色の濃さ（Cb・Cr の 128 からの差）も同じ割合で小さくなるので、
+ * 画素を 1/k 倍に戻してから日の当たった歯の分布で測る。暗い所ほどノイズが大きいので、少しだけ割り引く
+ */
+const SHADE = [0.7, 0.5, 0.35]; const F1 = new Float32Array(3);
+const shadeLike = (gs, F, i) => {
+  let best = mixLike(gs, F, i);
+  for (const k of SHADE) {
+    F1[0] = F[i * 3] / k; F1[1] = 128 + (F[i * 3 + 1] - 128) / k; F1[2] = 128 + (F[i * 3 + 2] - 128) / k;
+    best = Math.max(best, mixLike(gs, F1, 0) - 1.2);
+  }
+  return best;
+};
 /** しきい値より大きい所のつながり（4 近傍）。つながりごとの番号と大きさ */
 function components(a, w, h, th) {
   const lab = new Int32Array(w * h).fill(-1); const sizes = []; const st = [];
@@ -230,6 +243,9 @@ function segmentMouth(img, mk, p, at) {
   const above = (i) => { const t = top[i % w]; return t >= 0 && Math.floor(i / w) < t - lipH * 0.06; };
   // 輪郭の目安（どれも、どこにでも少しはありうる）
   const prior = (c, i) => (c === 0 ? 0.01 + (1 - sOutT[i]) : c === 1 ? 0.005 + sLip[i] : (0.003 + 0.25 * sOutT[i] + 0.75 * sIn[i]) * (above(i) ? 0.05 : 1)); // 唇・歯・口の奥は、外側の輪郭から離れた所にはまずない
+  // 影の歯は、口の中（内側の輪郭のあたり）だけで探す（口の端の影になった肌・唇を歯にしない）。
+  // 暗い写真（舞台など）は、どこも暗くノイズも多く、影の歯と暗い唇・口の端の見分けがつかないので、探さない
+  const dim = ySkin < 70;
   const P = Array.from({ length: 4 }, () => new Float32Array(n));
   const L = Array.from({ length: 4 }, () => new Float32Array(n));
   const R = Math.max(1, lipH * 0.03); const e = [0, 0, 0, 0];
@@ -242,7 +258,7 @@ function segmentMouth(img, mk, p, at) {
     }
   };
   for (let pass = 0; pass < 2; pass++) {
-    for (let c = 0; c < 4; c++) if (G[c]) for (let i = 0; i < n; i++) L[c][i] = mixLike(G[c], F, i) + Math.log(prior(c, i));
+    for (let c = 0; c < 4; c++) if (G[c]) for (let i = 0; i < n; i++) L[c][i] = (c === 2 && !dim && sIn[i] > 0.2 ? shadeLike : mixLike)(G[c], F, i) + Math.log(prior(c, i));
     post(null);
     for (let it = 0; it < 4; it++) post(P.map((a, c) => (G[c] ? blur(a, w, h, 1, R) : a)));
     if (pass === 0) G = G.map((g, c) => (g ? gauss2(F, P[c].map((v) => (v > 0.6 ? v : 0)), n) || g : null));
@@ -251,11 +267,24 @@ function segmentMouth(img, mk, p, at) {
   if (G[2]) {
     // 歯は、唇・歯ぐきのように赤い所には広げない（濡れた下唇の内側・歯ぐきの縁）。確かな歯と唇の赤みの中間で分ける
     const tg = []; for (let i = 0; i < n; i++) if (teethW[i]) tg.push(gr[i]);
-    // 暗い・照明の色が強い写真では赤みの差が小さくノイズも多いので、境目を唇寄りにして、広くならしてから比べる
-    const gT = q(tg, 0.5); const gL = gSkin - span; const sep = gT - gL; const low = sep < 0.22;
-    const mid = gL + sep * (low ? 0.3 : 0.5); const wd = Math.max(0.01, sep * 0.12);
-    const grS = blur(gr, w, h, 1, Math.max(1, lipH * (low ? 0.04 : 0.02)));
-    for (let i = 0; i < n; i++) teeth[i] *= clamp01((grS[i] - mid) / wd + 0.5);
+    // 暗い写真では赤みの差が小さくノイズも多いので、境目を唇寄りにして、広くならしてから比べる
+    const gT = q(tg, 0.5); const gL = gSkin - span; const low = gT - gL < 0.22 && dim;
+    // 歯と唇の赤みは、場所によって違う（日の当たった上唇の歯に近い所は淡く、影の歯は赤みが強い）。写真全体の値で切ると、
+    // 淡い上唇が歯に入ったり影の歯が抜けたりするので、その場所の近くの歯と唇の赤みの中間で切る。近くにどちらかが少なければ、写真全体の値に寄せる
+    const cT = new Float32Array(n); const aT = new Float32Array(n); const sT = new Float32Array(n); const aL = new Float32Array(n); const sL = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      // 歯の側は、赤みの少ない（白い）所ほど重く数える（歯と同じ側に入った淡い歯ぐき・唇の縁に引っぱられない）
+      const t = P[2][i] > 0.5 ? P[2][i] * Math.max(0, gr[i] - gL) ** 2 : 0; const l = P[1][i] > 0.5 ? P[1][i] : 0;
+      cT[i] = P[2][i] > 0.5 ? P[2][i] : 0; aT[i] = t; sT[i] = t * gr[i]; aL[i] = l; sL[i] = l * gr[i];
+    }
+    const RL = Math.max(2, lipH * 0.2); const [bc, bT, bsT, bL, bsL] = [cT, aT, sT, aL, sL].map((a) => blur(a, w, h, 1, RL));
+    const grS = blur(gr, w, h, 1, Math.max(1, low ? lipH * 0.04 : Math.min(3, lipH * 0.02))); // 大きな口でも、細く見える下の歯がならしで消えないよう、明るい写真は 3 画素まで
+    for (let i = 0; i < n; i++) {
+      const kT = Math.min(1, bc[i] * 5); const kL = Math.min(1, bL[i] * 5);
+      const tT = kT * (bT[i] > 1e-6 ? bsT[i] / bT[i] : gT) + (1 - kT) * gT; const tL = kL * (bL[i] > 1e-4 ? bsL[i] / bL[i] : gL) + (1 - kL) * gL;
+      const sep = Math.max(0.04, tT - tL); const mid = tL + sep * (low ? 0.3 : 0.5); const wd = Math.max(0.01, sep * 0.12);
+      teeth[i] *= clamp01((grS[i] - mid) / wd + 0.5);
+    }
   }
   // 歯: 小さな（いちばん大きなかたまりの 2 割より小さな）明るい所のうち、まわりが唇・肌だけの所（唇のつや・肌のてかり）は外す。
   // 歯と歯のすき間で分かれた奥の歯は、まわりに口の奥（暗い所）があるので残る
@@ -268,7 +297,12 @@ function segmentMouth(img, mk, p, at) {
     }
     const keep = new Float32Array(n);
     // 残すのは: 口の中（内側の輪郭のあたり）にあるもの。大きいか、口の奥の暗い所に接しているもの
-    for (let i = 0; i < n; i++) { const c = lab[i]; if (c >= 0 && inSum[c] / sizes[c] > 0.1 && (sizes[c] >= big * 0.2 || darkEdge[c] > edge[c] * 0.15 || inSum[c] / sizes[c] > 0.4)) keep[i] = 1; }
+    // ごく小さなもの（唇の厚みの 15% 四方より小さい）は、口の中にしっかり入っているときだけ（口の端の影の縁を歯にしない）
+    const tiny = (lipH * 0.15) ** 2;
+    for (let i = 0; i < n; i++) {
+      const c = lab[i]; if (c < 0) continue; const m = inSum[c] / sizes[c];
+      if (m > 0.1 && (sizes[c] >= big * 0.2 || darkEdge[c] > edge[c] * 0.15 || m > 0.4) && (sizes[c] >= tiny || m > 0.4)) keep[i] = 1;
+    }
     const near = blur(keep, w, h, 1, Math.max(1, lipH * 0.03)); // かたまりの縁のなだらかな所は残す
     for (let i = 0; i < n; i++) teeth[i] *= Math.min(1, near[i] * 3);
   }

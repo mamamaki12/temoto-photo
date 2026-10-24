@@ -6,7 +6,9 @@ import { applyBrush } from '../../brushfx.js';
 // 作りものの口: 肌の中に、唇（楕円の輪）と、口の中に歯（明るく色の薄い帯）と口の奥（暗い所）
 const W = 400; const H = 300;
 const SKIN = [205, 160, 140]; const LIP = [190, 95, 105]; const TOOTH = [215, 200, 160]; const DARK = [60, 30, 30];
-function mouthImage({ open = true } = {}) {
+const SHADED = TOOTH.map((v) => Math.round(v * 0.45)); const PALE = [200, 130, 120];
+// back: 口の左端の奥に、影に入った歯 / pale: 歯のすぐ上まで、日の当たった淡い上唇がかぶさっている
+function mouthImage({ open = true, back = false, pale = false } = {}) {
   const d = new Uint8ClampedArray(W * H * 4);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const u = (x - 200) / 90; const v = (y - 150) / 45; const r = u * u + v * v;
@@ -14,6 +16,8 @@ function mouthImage({ open = true } = {}) {
     let c = SKIN;
     if (r < 1) c = LIP;
     if (open && ri < 1) c = Math.abs(y - 150) < 9 && Math.abs(x - 200) < 60 ? TOOTH : DARK;
+    if (back && ri < 1 && Math.abs(y - 150) < 7 && x >= 142 && x < 156) c = SHADED;
+    if (pale && ri < 1 && y < 142) c = PALE;
     const k = (y * W + x) * 4; d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 255;
   }
   return { width: W, height: H, data: d };
@@ -47,4 +51,18 @@ test('歯: 口を閉じている（内側の輪郭がつぶれている）とき
   const img = mouthImage({ open: false }); const org = mouthImage({ open: false });
   applyBrush(img, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 1, whole: true, lips: [{ outer: ring(200, 150, 88, 44), inner: ring(200, 150, 62, 0.5) }] });
   assert.deepEqual(img.data, org.data);
+});
+
+test('歯: 口の端の影に入った奥の歯も白くし、まわりの口の奥は変えない', () => {
+  const img = mouthImage({ back: true }); const org = mouthImage({ back: true });
+  applyBrush(img, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 0.8, whole: true, lips });
+  for (const [x, y] of [[149, 150], [146, 147]]) assert.ok(chroma(px(img, x, y)) < chroma(px(org, x, y)) - 4, `影の歯 ${x},${y}`);
+  for (const [x, y] of [[200, 163], [137, 150]]) assert.deepEqual(px(img, x, y), px(org, x, y), `口の奥 ${x},${y}`);
+});
+
+test('歯: 日の当たった淡い上唇が歯のすぐ上にかぶさっていても、上唇は白くしない', () => {
+  const img = mouthImage({ pale: true }); const org = mouthImage({ pale: true });
+  applyBrush(img, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 0.8, whole: true, lips });
+  assert.ok(chroma(px(img, 200, 152)) < chroma(px(org, 200, 152)) - 8, '歯');
+  for (const [x, y] of [[200, 139], [170, 138], [230, 139]]) { const a = px(img, x, y); const b = px(org, x, y); for (let c = 0; c < 3; c++) assert.ok(Math.abs(a[c] - b[c]) <= 3, `上唇 ${x},${y}`); }
 });
