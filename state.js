@@ -129,6 +129,7 @@ function validRetouch(r) {
       // AI で見つけた唇の輪郭（顔ごとに外側・内側 20 点ずつ）。あればその中だけに色をのせる
       const poly = (q) => (Array.isArray(q) ? q.slice(0, 40).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
       op.lips = arr(r.lips, 6).map((l) => ({ outer: poly(l?.outer), inner: poly(l?.inner) })).filter((l) => l.outer.length >= 3);
+      if (r.whole === true) op.whole = true; // 唇全体に色をのせる（なければ、なぞった所だけ）
     }
     return op;
   }

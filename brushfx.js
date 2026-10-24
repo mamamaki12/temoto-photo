@@ -91,6 +91,17 @@ function inPoly(x, y, poly) {
  * 唇の範囲（AI で見つけた唇の外側の輪郭の内側で、内側の輪郭（口の中）の外）。境目は少しぼかす。
  * polys: [{ outer, inner }]（写真全体に対する 0〜1）。at: この画像の一部が写真全体のどこか
  */
+/** 唇の輪郭（とその少し外）を囲む四角の中を、ブラシの効き具合 1 で埋めたもの（唇全体に色をのせるとき） */
+function lipBoxMask(img, polys, at) {
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const p of polys) for (const [x, y] of p.outer) { const X = x * at.W - at.ox; const Y = y * at.H - at.oy; x0 = Math.min(x0, X); y0 = Math.min(y0, Y); x1 = Math.max(x1, X); y1 = Math.max(y1, Y); }
+  const pad = (y1 - y0) * 0.2 + 3;
+  const bx = Math.max(0, Math.floor(x0 - pad)); const by = Math.max(0, Math.floor(y0 - pad));
+  const bx1 = Math.min(img.width, Math.ceil(x1 + pad)); const by1 = Math.min(img.height, Math.ceil(y1 + pad));
+  const w = bx1 - bx; const h = by1 - by;
+  return w > 0 && h > 0 ? { m: new Float32Array(w * h).fill(1), bx, by, w, h } : null;
+}
+
 function lipArea(mk, polys, at) {
   const { bx, by, w, h } = mk; const a = new Float32Array(w * h);
   const toPx = (poly) => poly.map(([x, y]) => [x * at.W - at.ox, y * at.H - at.oy]);
@@ -384,6 +395,12 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
     for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt, guard);
     return;
   }
+  if (op.type === 'lip' && op.whole && op.lips?.length) {
+    // 唇全体: なぞった所に関係なく、AI で見つけた唇（上唇・下唇。歯は除く）の全体に色をのせる
+    const mk = lipBoxMask(img, op.lips, at);
+    if (mk) lip(img, mk, amt, op.col || LIP_COLORS[0][2], lipArea(mk, op.lips, at));
+    return;
+  }
   const mk = strokeMask(img, pts, rad); if (!mk) return;
   if (op.type === 'dodge') dodgeBurn(img, mk, amt, 1);
   else if (op.type === 'burn') dodgeBurn(img, mk, amt, -1);
@@ -401,6 +418,11 @@ export function brushBounds(op, W, H) {
     const px = x * W; const py = y * H; x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py);
     if (i) travel = Math.max(travel, Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H));
   });
+  // 唇全体に色をのせるときは、唇のまわりも読み出す（唇の高さの 2 割ほど外まで）
+  if (op.type === 'lip' && op.whole) for (const l of op.lips || []) {
+    const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.2 + 4;
+    for (const [x, y] of l.outer) { x0 = Math.min(x0, x * W - m); y0 = Math.min(y0, y * H - m); x1 = Math.max(x1, x * W + m); y1 = Math.max(y1, y * H + m); }
+  }
   // しわ取り・目元のぼかしは、ブラシの外の画素も少し使う（境目が変わらないよう、余白を足す）
   const pad = rad * (op.type === 'wrinkle' ? 1.5 : op.type === 'eyes' ? 1.3 : op.type === 'warp' ? 2.6 : 1.05) + travel + 4;
   const rx = Math.max(0, Math.floor(x0 - pad)); const ry = Math.max(0, Math.floor(y0 - pad));
