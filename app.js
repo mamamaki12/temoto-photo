@@ -24,7 +24,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.14.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.14.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -1482,6 +1482,7 @@ function fxAction(tool, c, p) {
         flush(); E.state.retouch.push(op); E.retouchKey = sourceKey(E.state); E.small = null;
       } else if (type === 'lip') {
         // 唇の場所は AI で見つける（はじめての 1 回は少し時間がかかる）。見つからなければ色で判定する
+        drawHandles(); // なぞった線は、AI を待たずにすぐ消す
         E.stageEl.classList.add('busy', 'lips');
         const e0 = E;
         findLips(baseImageData()).then((lips) => {
@@ -1494,7 +1495,7 @@ function fxAction(tool, c, p) {
       } else addRetouch(op);
       commit(); buildPanel(); requestRender();
     },
-    cancel: () => { E.fxPath = null; if (raf) cancelAnimationFrame(raf); if (live && pts.length > 1) { E.state.retouch.push({ type, pts, r, amt }); E.retouchKey = sourceKey(E.state); rebuildSource(); } drawHandles(); },
+    cancel: () => { E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf); if (live && pts.length > 1) { E.state.retouch.push({ type, pts, r, amt }); E.retouchKey = sourceKey(E.state); rebuildSource(); } drawHandles(); },
   };
 }
 

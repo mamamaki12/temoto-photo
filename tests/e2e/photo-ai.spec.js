@@ -46,6 +46,7 @@ test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つ
   const at = (x, y) => [view.x + view.width * (L.ix + L.iw * x), view.y + view.height * (L.iy + L.ih * y)];
   const lip0 = await srcPixel(page, 0.513, 0.592);
   await page.mouse.move(...at(0.45, 0.585)); await page.mouse.down(); await page.mouse.move(...at(0.58, 0.585), { steps: 20 }); await page.mouse.up();
+  expect(await page.evaluate(() => document.querySelectorAll('.handles .heal-path').length)).toBe(0); // なぞった線は、AI を待たずにすぐ消える
   await page.waitForFunction(() => { const r = window.__temoto.state.retouch; return r.length && !document.querySelector('.stage.busy'); }, null, { timeout: 60000 });
   await page.waitForTimeout(300);
   const op = (await page.evaluate(() => window.__temoto.state.retouch))[0];
