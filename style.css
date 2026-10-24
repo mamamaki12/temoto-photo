@@ -302,11 +302,23 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ed-hist { padding-left: 2px; margin-left: 0; }
   .ed-head .export { padding: 4px 12px; min-height: 36px; white-space: nowrap; font-size: clamp(14px, .95rem, 18px); line-height: 1.2; } /* 見出しは文字を大きくしても 1 行に収める */
   .ed-head button.icon, .ed-head .menu summary { font-size: clamp(18px, 1.15rem, 22px); }
-  .side { max-height: 40dvh; }
+  /* 写真を大きく見せるため、下のパネルと道具の列を薄く（文字の大きさに引きずられないよう px で上限） */
+  .side { max-height: min(32dvh, 300px); grid-template-columns: minmax(0, 1fr); } /* 道具のタブが多くても、画面の幅を超えない */
   .look { width: max(78px, 5rem); }
   .look canvas { width: 66px; height: 66px; }
-  .side-head { gap: 6px; padding: 6px 12px 6px; }
-  .rail button { min-height: max(50px, 3.1rem); }
+  /* パネルの見出しは 1 行に: グループ名は道具の列と同じなので出さず、道具のタブと閉じるボタンを横に並べる */
+  .side-head { display: flex; align-items: center; gap: 4px; padding: 4px 6px 4px 12px; }
+  .side-title { display: contents; }
+  .side-title h2 { display: none; }
+  .side-head .subtabs { flex: 1; min-width: 0; margin: 0; }
+  .side-close { order: 2; flex: none; }
+  .side-head:not(:has(.subtabs)) { justify-content: flex-end; padding-block: 0; }
+  .subtabs button { min-height: 32px; padding: 2px 10px; }
+  .panel-inner { padding: 8px 12px 12px; gap: 8px; }
+  .hint { font-size: clamp(11px, .76rem, 15px); line-height: 1.45; }
+  .rail { padding: 2px 4px calc(2px + env(safe-area-inset-bottom, 0px)); }
+  .rail button { min-height: 44px; min-width: max(60px, 3.6rem); padding: 2px 4px; gap: 0; font-size: clamp(10px, .65rem, 13px); }
+  .rail .tab-icon { width: 26px; height: 26px; font-size: 16px; border-radius: 7px; }
 }
 /* 長押し（比較ボタンなど）で iPhone の選択メニューが出ないように */
 .ed-head button, .rail button, .stage { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
