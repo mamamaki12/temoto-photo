@@ -33,11 +33,13 @@ test('美肌: AI で人物の肌だけを見分け、背景・髪・服は変え
   for (let c = 0; c < 3; c++) { expect(Math.abs(bg1[c] - bg0[c])).toBeLessThan(3); expect(Math.abs(hair1[c] - hair0[c])).toBeLessThan(3); } // 背景・髪は変わらない
 });
 
-test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つけた唇だけに色がのる。色合い・濃さ・明るさを選べる', async ({ page }) => {
+test('リップ（なぞった所だけ）: 口のまわりを大ざっぱになぞっても、AI で見つけた唇だけに色がのる。色合い・濃さ・明るさを選べる', async ({ page }) => {
   await open(page);
   const skin0 = await srcPixel(page, 0.513, 0.62); // 唇の下の肌（ブラシの中）
   await openTool(page, '目元・歯');
   await page.getByRole('button', { name: 'リップ', exact: true }).click();
+  await expect(page.getByRole('button', { name: '唇全体', exact: true })).toHaveAttribute('aria-pressed', 'true'); // はじめは唇全体
+  await page.getByRole('button', { name: 'なぞった所だけ', exact: true }).click();
   await page.getByRole('button', { name: /レッド/ }).click();
   for (const label of ['色合い', '色の濃さ', '色の明るさ']) await expect(page.getByLabel(label, { exact: true })).toBeVisible();
   await page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el) => { el.value = 6; el.dispatchEvent(new Event('change', { bubbles: true })); });
@@ -54,6 +56,43 @@ test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つ
   const lip1 = await srcPixel(page, 0.513, 0.592); const skin1 = await srcPixel(page, 0.513, 0.62);
   expect(lip1[0] - lip1[1]).toBeGreaterThan(lip0[0] - lip0[1] + 15); // 下唇は赤く
   for (let c = 0; c < 3; c++) expect(Math.abs(skin1[c] - skin0[c])).toBeLessThan(3); // 唇の下の肌は変わらない
+});
+
+test('リップ（唇全体）: 唇をタップする・丸で囲むと、AI で見つけた唇の全体（上唇も下唇も）に色がのる', async ({ page }) => {
+  await open(page);
+  await openTool(page, '目元・歯');
+  await page.getByRole('button', { name: 'リップ', exact: true }).click();
+  await page.getByRole('button', { name: /レッド/ }).click();
+  await page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el) => { el.value = 1; el.dispatchEvent(new Event('change', { bubbles: true })); });
+  const view = await page.locator('canvas.view').boundingBox();
+  const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
+  const at = (x, y) => [view.x + view.width * (L.ix + L.iw * x), view.y + view.height * (L.iy + L.ih * y)];
+  const red = ([r, g]) => r - g;
+  const done = (n) => page.waitForFunction((n) => window.__temoto.state.retouch.length === n && !document.querySelector('.stage.busy'), n, { timeout: 60000 });
+  // 唇の真ん中（上唇: 外側の上のまん中と内側の上のまん中の間、下唇: 同じく下）。輪郭の 15 番目・5 番目
+  const mids = async () => { const l = (await page.evaluate(() => window.__temoto.state.retouch.at(-1).lips[0])); const mid = (i) => [(l.outer[i][0] + l.inner[i][0]) / 2, (l.outer[i][1] + l.inner[i][1]) / 2]; return { up: mid(15), low: mid(5), l }; };
+  const base = async (x, y) => page.evaluate(([x, y]) => { const E = window.__temoto.editor; const cv = document.createElement('canvas'); cv.width = E.W; cv.height = E.H; const g = cv.getContext('2d'); g.drawImage(E.base, 0, 0); return [...g.getImageData(Math.round(x * (E.W - 1)), Math.round(y * (E.H - 1)), 1, 1).data.slice(0, 3)]; }, [x, y]);
+  // ① 下唇を 1 回タップ
+  await page.mouse.click(...at(0.513, 0.592)); await done(1);
+  const op = (await page.evaluate(() => window.__temoto.state.retouch))[0];
+  expect(op.whole).toBe(true); expect(op.lips.length).toBe(1);
+  const { up, low, l } = await mids();
+  expect(red(await srcPixel(page, ...up))).toBeGreaterThan(red(await base(...up)) + 12); // タップしていない上唇にも色がのる
+  expect(red(await srcPixel(page, ...low))).toBeGreaterThan(red(await base(...low)) + 12);
+  // 唇の外（あごの肌）は変わらない
+  const ys = l.outer.map((q) => q[1]); const chin = [0.513, Math.max(...ys) + (Math.max(...ys) - Math.min(...ys)) * 0.6];
+  const c0 = await base(...chin); const c1 = await srcPixel(page, ...chin);
+  for (let c = 0; c < 3; c++) expect(Math.abs(c1[c] - c0[c])).toBeLessThan(3);
+  // ② 元に戻して、口のまわりを丸で囲む（線は唇にかからない）
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click(); await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__temoto.state.retouch.length)).toBe(0);
+  const xs = l.outer.map((q) => q[0]); const cx = (Math.max(...xs) + Math.min(...xs)) / 2; const cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  const rx = (Math.max(...xs) - Math.min(...xs)) * 0.85; const ry = (Math.max(...ys) - Math.min(...ys)) * 1.3;
+  await page.mouse.move(...at(cx + rx, cy)); await page.mouse.down();
+  for (let i = 1; i <= 32; i++) await page.mouse.move(...at(cx + rx * Math.cos(i / 32 * 2 * Math.PI), cy + ry * Math.sin(i / 32 * 2 * Math.PI)));
+  await page.mouse.up(); await done(1);
+  expect(red(await srcPixel(page, ...up))).toBeGreaterThan(red(await base(...up)) + 12);
+  expect(red(await srcPixel(page, ...low))).toBeGreaterThan(red(await base(...low)) + 12);
 });
 
 test('リップ: 2本指での拡大・移動はリップの範囲にしない（2本目の指が写真の外・下のパネルの上でも）。1本指ではなぞれる', async ({ page }) => {
