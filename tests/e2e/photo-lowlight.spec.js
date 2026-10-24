@@ -63,3 +63,93 @@ test('暗部を上げ、白と色を保つ。元解像度の書き出しにも�
   expect(result.progress.at(-1)).toBe(1);
   expect(result.legacy).toBe(0); expect(result.clamped).toBe(100);
 });
+
+test('暗い写真の補正: ノイズを取ってから明るくする処理を、編集画面から Worker で実行し、残り%のバーを出す', async ({ page }) => {
+  await page.goto('/');
+  // 暗くてざらついた写真（左右で明るさの違う布と、ノイズ）
+  const b64 = await page.evaluate(async () => {
+    const w = 480; const h = 360; const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+    const img = x.createImageData(w, h); let seed = 7;
+    const rnd = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647 - 0.5; };
+    for (let i = 0; i < w * h; i++) {
+      const base = (i % w) < w / 2 ? [34, 22, 14] : [70, 46, 28]; const n = rnd() * 16;
+      img.data.set([base[0] + n, base[1] + n, base[2] + n, 255], i * 4);
+    }
+    x.putImageData(img, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  await page.locator('#open-file').setInputFiles({ name: 'dark.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  await openTool(page, '自動補正');
+  const before = await viewMean(page);
+  // バーの「残り○%」を記録する
+  await page.evaluate(() => {
+    window.__hq = [];
+    new MutationObserver(() => { const e = document.querySelector('.hq-status'); if (e && !e.hidden) window.__hq.push(e.textContent); })
+      .observe(document.querySelector('.hq-status'), { attributes: true, childList: true, subtree: true, characterData: true });
+  });
+  for (const label of ['ノイズ軽減', '写真全体の明るさ補正']) {
+    const control = page.getByLabel(label, { exact: true }); await control.fill('50'); await control.dispatchEvent('change');
+  }
+  await page.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 30_000 });
+  await expect(page.locator('.hq-status')).toBeHidden();
+  const seen = await page.evaluate(() => window.__hq);
+  expect(seen.some((t) => /残り\d+%/.test(t))).toBe(true);
+  // 明るくなり、ざらつきが減っている（GPU の簡易版は二重にかけない）
+  await expect.poll(async () => (await viewMean(page))[0]).toBeGreaterThan(before[0] + 30);
+  const spread = await page.evaluate(() => {
+    const c = document.querySelector('canvas.view'); const x = c.getContext('2d');
+    const d = x.getImageData(Math.floor(c.width * 0.1), Math.floor(c.height * 0.2), Math.floor(c.width * 0.3), Math.floor(c.height * 0.6), { colorSpace: 'srgb' }).data;
+    let s = 0; let s2 = 0; const n = d.length / 4; for (let i = 0; i < d.length; i += 4) { s += d[i + 1]; s2 += d[i + 1] ** 2; }
+    return { sd: Math.sqrt(s2 / n - (s / n) ** 2), mean: s / n };
+  });
+  // 元のノイズ（標準偏差 約 4.6 階調）を明るくした分だけ増やすと 15 階調を超える。それより十分小さい
+  expect(spread.sd).toBeLessThan(8);
+  // 値を 0 に戻すと、元の写真に戻る
+  for (const label of ['ノイズ軽減', '写真全体の明るさ補正']) {
+    const control = page.getByLabel(label, { exact: true }); await control.fill('0'); await control.dispatchEvent('change');
+  }
+  await expect.poll(async () => Math.abs((await viewMean(page))[0] - before[0])).toBeLessThan(2);
+  await expect.poll(() => page.evaluate(() => window.__temoto.editor.srcHQ)).toBe(false);
+  // もう一度かけて、書き出し（進捗バーが最後まで進む）
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click();
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click();
+  await page.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 30_000 });
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  const dlg = page.getByRole('dialog');
+  await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
+  const pending = page.waitForEvent('download');
+  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  expect((await pending).suggestedFilename()).toMatch(/\.png$/);
+  await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
+});
+
+test('暗い写真の補正: 元の大きさの書き出しでも、帯ごとに同じ補正を当てる', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { COLOR_SPACE } = await import('/color.js');
+    const { defaultState } = await import('/state.js');
+    const { exportFull } = await import('/fullres.js');
+    const { enhanceCanvas, lowlightOptions } = await import('/restoration-photo.js');
+    const w = 300; const h = 1100; // 帯が何本かに分かれる高さ
+    const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d', { colorSpace: COLOR_SPACE });
+    const g = x.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#120c08'); g.addColorStop(1, '#4a3020'); x.fillStyle = g; x.fillRect(0, 0, w, h);
+    const st = defaultState(); st.adj.lowlight = 50; st.adj.noise = 50;
+    const progress = [];
+    const res = await exportFull({ full: c, work: c, mask: document.createElement('canvas'), state: st, format: 'image/png', space: COLOR_SPACE, lowlight: lowlightOptions(st.adj), onProgress: (v) => progress.push(v) });
+    const bmp = await createImageBitmap(res.blob); const o = document.createElement('canvas'); o.width = w; o.height = h;
+    const ox = o.getContext('2d', { colorSpace: COLOR_SPACE }); ox.drawImage(bmp, 0, 0);
+    const ref = await enhanceCanvas(c, w, h, lowlightOptions(st.adj));
+    const a = ox.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }).data; const b = ref.getContext('2d', { colorSpace: COLOR_SPACE }).getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }).data;
+    let max = 0; for (let i = 0; i < a.length; i++) max = Math.max(max, Math.abs(a[i] - b[i]));
+    const src = x.getImageData(150, 550, 1, 1, { colorSpace: COLOR_SPACE }).data[0];
+    return { max, before: src, after: a[(550 * w + 150) * 4], progress, size: [bmp.width, bmp.height] };
+  });
+  expect(r.size).toEqual([300, 1100]);
+  expect(r.after).toBeGreaterThan(r.before + 30);
+  expect(r.max).toBeLessThanOrEqual(2); // 編集画面で計算したもの（同じ大きさ）と同じ
+  expect(r.progress.at(-1)).toBe(1);
+  for (let i = 1; i < r.progress.length; i++) expect(r.progress[i]).toBeGreaterThanOrEqual(r.progress[i - 1]);
+});

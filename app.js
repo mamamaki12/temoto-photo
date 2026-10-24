@@ -18,6 +18,7 @@ import * as db from './db.js';
 import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull } from './fullres.js';
+import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
@@ -432,6 +433,7 @@ function closeEditor() {
   if (!E) return;
   flushSave();
   cancelAnimationFrame(E.raf);
+  E.hq?.ctrl?.abort(); clearTimeout(hqTimer);
   E.engine?.dispose(); E.thumbEngine?.dispose();
   E.base?.close?.();
   document.removeEventListener('pointerdown', E.closeMenu); E.offPointer?.();
@@ -475,13 +477,56 @@ function rebuildSource() {
     if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.base); E.baseData = null; E.skinCache = {}; }
     E.rawKey = rk;
   }
-  if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(E.base, E.W, E.H); }
-  else { const r = retouchCanvas(E.base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
-  E.engine.setResidual(E.base.residual || null); // RAW は 16bit の細かさで
+  const base = srcBase(); E.srcHQ = base !== E.base;
+  if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(base, E.W, E.H); }
+  else { const r = retouchCanvas(base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
+  E.engine.setResidual(E.srcHQ ? null : E.base.residual || null); // RAW は 16bit の細かさで（暗所補正を当てたものは 8bit）
   E.retouchKey = sourceKey(E.state);
   if (E.showSkin && E.tool === 'skin') E.engine.setSource(skinOverlaySource(), E.W, E.H);
   E.small = null; E.thumbsKey = null;
   if (portraitActive(E.state.portrait)) maybeSkinSeg();
+}
+// ───── 暗所補正（ノイズを取ってから明るくする）を、編集用の大きさの写真に裏で当てる ─────
+// スライダーを動かしている間は GPU の簡易版で見せ、手を止めたら Worker で計算する（進捗は写真の上のバーに）。
+// できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）
+const hqKey = (st) => (lowlightActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, E.rawKey]) : null);
+function hqReady() { return !!E.hq?.canvas && E.hq.key === hqKey(E.state); }
+/** 修復・美肌・GPU の元にする写真 */
+function srcBase() { return hqReady() ? E.hq.canvas : E.base; }
+let hqTimer = 0;
+function scheduleLowlight() {
+  if (!E || (E.hq?.key ?? null) === hqKey(E.state)) return; // 済み・計算中
+  clearTimeout(hqTimer); hqTimer = setTimeout(runLowlight, 400);
+}
+async function runLowlight() {
+  if (!E) return;
+  const key = hqKey(E.state);
+  if ((E.hq?.key ?? null) === key) return;
+  E.hq?.ctrl?.abort();
+  if (!key) { E.hq = null; hqBar(null); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
+  const e0 = E; const ctrl = new AbortController();
+  E.hq = { key, canvas: null, ctrl };
+  hqBar(0);
+  try {
+    const canvas = await enhanceCanvas(E.base, E.W, E.H, lowlightOptions(E.state.adj), {
+      signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
+    });
+    if (E !== e0 || E.hq?.ctrl !== ctrl) return;
+    E.hq = { key, canvas, ctrl: null }; hqBar(null);
+    rebuildSource(); requestRender();
+  } catch (err) {
+    if (E !== e0 || E.hq?.ctrl !== ctrl) return;
+    E.hq = { key, canvas: null, ctrl: null }; hqBar(null);
+    if (err.name !== 'AbortError') { console.warn('暗所補正', err); toast('ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
+  }
+}
+/** 写真の上の進捗バー（t: 0〜1、null で隠す） */
+function hqBar(t) {
+  if (!E?.hqEl) return;
+  E.hqEl.hidden = t == null; if (t == null) return;
+  const p = Math.min(99, Math.floor(t * 100));
+  E.hqEl.querySelector('progress').value = p;
+  E.hqEl.querySelector('span').textContent = `ノイズ除去と明るさ補正… 残り${100 - p}%`;
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {
@@ -508,7 +553,7 @@ function maybeSkinSeg() {
 function addRetouch(op) {
   if (E.state.retouch.length >= S.MAX_RETOUCH) { toast('修復・モザイクは300個までです'); return; }
   E.state.retouch.push(op);
-  if (!E.src) { const r = retouchCanvas(E.base, [], null); E.src = r.canvas; }
+  if (!E.src) { const r = retouchCanvas(srcBase(), [], null); E.src = r.canvas; }
   const ctx = ctx2d(E.src, { willReadFrequently: true });
   if (!E.srcData) E.srcData = ctx.getImageData(0, 0, E.W, E.H);
   applyRetouch(E.srcData, [op]);
@@ -610,7 +655,8 @@ function renderNow() {
   const k = zk * (E.fast ? 0.5 : 1); // 画面上の大きさは変えず、描く細かさだけを変える
   const fit = fit0 * k;
   const pw = Math.max(1, Math.round(out.w * fit)); const ph = Math.max(1, Math.round(out.h * fit));
-  const eff = effective(st);
+  if (!orig && E.srcHQ !== hqReady()) rebuildSource(); // 暗所補正の値が変わったら、計算し直すまで元の写真＋簡易版で
+  const eff = effective(!orig && hqReady() ? withoutLowlight(st) : st);
   const showMask = E.tool === 'local' && E.showMask && E.sel ? st.locals.findIndex((l) => l.id === E.sel) : -1;
   if (E.maskDirty) { E.mask = buildMask(E.state, E.W, E.H, E.maskCache); E.engine.setMask(E.mask); E.maskDirty = false; }
   E.engine.render(eff, pw, ph, { bypass: orig, showMask });
@@ -620,6 +666,7 @@ function renderNow() {
   E.origBadge.hidden = !orig;
   drawHandles();
   scheduleHistogram();
+  scheduleLowlight();
 }
 let histTimer = 0;
 function scheduleHistogram() {
@@ -652,7 +699,8 @@ function buildEditor() {
   E.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); E.svg.classList.add('handles');
   E.wrap = h('div', { class: 'view-wrap' }, E.view, E.svg);
   E.origBadge = h('div', { class: 'orig-badge', hidden: true }, '編集前');
-  E.stageEl = h('div', { class: 'stage', tabindex: '-1' }, E.wrap, E.origBadge);
+  E.hqEl = h('div', { class: 'hq-status', role: 'status', hidden: true }, h('span', {}), h('progress', { max: 100, value: 0, 'aria-label': '暗い写真の補正の進捗' }));
+  E.stageEl = h('div', { class: 'stage', tabindex: '-1' }, E.wrap, E.origBadge, E.hqEl);
   setupPointer(E.stageEl);
   E.undoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': '元に戻す（Ctrl+Z）', title: '元に戻す（Ctrl+Z）', onclick: undo }, '↶');
   E.redoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': 'やり直す（Ctrl+Shift+Z）', title: 'やり直す（Ctrl+Shift+Z）', onclick: redo }, '↷');
@@ -806,8 +854,7 @@ const PANELS = {
         onInput: live((v) => { E.state.adj.lowlight = v; }), onChange: commit }).el,
       slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
         onInput: live((v) => { E.state.adj.noise = v; }), onChange: commit }).el,
-      hint('顔・腕・衣装・背景を一緒に明るくします。明るい部分は保ち、照明の色は変えません。ノイズ軽減は細部を見ながら控えめに調整してください。'),
-      h('a', { href: 'restoration-check.html', target: '_blank', rel: 'noopener' }, '高精度ノイズ除去を別画面で比較（試作）'),
+      hint('ノイズを先に取ってから、顔・腕・衣装・背景を一緒に明るくします。明るい部分と細かい模様は保ち、照明のオレンジは少しだけ白に戻します。スライダーから手を離すと、写真の上のバーの「残り○%」が 0 になるまで計算します（大きな写真は時間がかかります）。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
@@ -1464,7 +1511,7 @@ function fxAction(tool, c, p) {
   let live = null; let raf = 0;
   if (type === 'warp') {
     // なぞりながら動かす: 編集用の画素に 1 区間ずつ当てて、画面に反映する
-    if (!E.src) { const rr = retouchCanvas(E.base, E.state.retouch, E.state.portrait, E.skinCache); E.src = rr.canvas; E.srcData = rr.data; }
+    if (!E.src) { const rr = retouchCanvas(srcBase(), E.state.retouch, E.state.portrait, E.skinCache); E.src = rr.canvas; E.srcData = rr.data; }
     const ctx = ctx2d(E.src, { willReadFrequently: true });
     if (!E.srcData) E.srcData = ctx.getImageData(0, 0, E.W, E.H);
     live = { ctx, dirty: null };
@@ -1655,13 +1702,20 @@ async function canvasToBlob(canvas, format, quality, space = COLOR_SPACE) {
  * @param {object} src { base, W, H, state, full?（元の大きさの写真）, origW, origH }
  */
 async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE, onProgress }) {
+  const st0 = S.validateState(src.state);
+  const ll = lowlightActive(st0.adj) ? lowlightOptions(st0.adj) : null; // 暗所補正（ノイズ除去 → 明るさ）
   if (useFull(src, format, maxSide)) {
-    const st = S.validateState(src.state);
+    const st = st0;
     // 修復で自動で選んだコピー元は、編集用の大きさで決めておく（プレビューと同じ場所になる）
     if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(src.base, st.retouch, null);
     try {
-      return await exportFull({ full: src.full, work: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, onProgress });
+      return await exportFull({ full: src.full, work: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll, onProgress });
     } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
+  }
+  if (ll) {
+    // 編集中に計算したものがあれば、それを使う
+    const base = src.hqCanvas || await enhanceCanvas(src.base, src.W, src.H, ll, { onProgress: (t) => onProgress?.(t * 0.9) });
+    src = { ...src, base, state: withoutLowlight(st0) };
   }
   return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality, space);
 }
@@ -1727,7 +1781,7 @@ function openExport({ batch }) {
     }
     const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
-    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
     status.textContent = `画像の生成完了（残り0%） ${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };

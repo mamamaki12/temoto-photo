@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "serve": "python3 -m http.server 4173",
-    "unit": "node --test 'tests/unit/*.test.js'",
+    "unit": "node --test \"tests/unit/*.test.js\"",
     "security": "node scripts/security-check.mjs",
     "test": "npm run security && npm run unit && playwright test",
     "site": "sh scripts/make-site.sh"

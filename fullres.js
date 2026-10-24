@@ -14,6 +14,7 @@ import { heal, mosaic, blurRect } from './retouch.js';
 import { applyBrush, brushBounds, BRUSH_TYPES } from './brushfx.js';
 import { jpegEncoder, pngEncoder, readJpegIcc } from './encode.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
+import { enhancePhoto, smallPixels, withoutLowlight } from './restoration-photo.js';
 
 const TILE = 1024; // 美肌を当てる一部の大きさ
 const STRIP_PIXELS = 4_000_000; // 帯 1 本の画素数の目安
@@ -42,9 +43,10 @@ async function iccFor(space) {
  * @param {ImageData|object} a.mask ブラシの部分補正のマスク
  * @param {'image/jpeg'|'image/png'} a.format
  * @param {'display-p3'|'srgb'} a.space 書き出す色空間
+ * @param {{nr:number,light:number}|null} [a.lowlight] 暗所補正（ノイズ除去 → 明るさ）。元の大きさの写真に、いちばん先に当てる
  * @param {(t:number)=>void} [a.onProgress] 0〜1
  */
-export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, onProgress = () => {} }) {
+export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, onProgress: report = () => {} }) {
   const glc = canvas(1, 1); const eng = new Engine(glc);
   try {
     // 写真が GPU で扱える大きさを超えるときは、そこまで縮める
@@ -55,10 +57,16 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
       const s = lim / Math.max(FW, FH); FW = Math.floor(FW * s); FH = Math.floor(FH * s);
       src = await createImageBitmap(full, { resizeWidth: FW, resizeHeight: FH, resizeQuality: 'high' });
     }
+    // 暗所補正があるときは、進捗の前半をそれに使う
+    const onProgress = lowlight ? (t) => report(t <= 0.02 ? t : 0.5 + 0.5 * t) : report;
     onProgress(0.02);
     // ① 元の写真を GPU に
     eng.allocSource(FW, FH);
-    if (src.region) {
+    const scaled = src !== full ? src : null;
+    if (lowlight) {
+      await lowlightFull(eng, src, work, FW, FH, lowlight, (t) => report(0.02 + 0.48 * t));
+      src = { width: FW, height: FH, region: (x, y, w, h) => eng.readSource(x, y, w, h) }; // 美肌・修復は、補正したものに当てる
+    } else if (src.region) {
       // RAW を現像した画素（Canvas に入りきらない大きさ）: 帯ごとに現像して GPU に送る。8bit に丸めた残りも送って、16bit の細かさで描く
       const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
       if (src.regionHi) eng.allocResidual(FW, FH);
@@ -72,12 +80,12 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     if (portraitActive(state.portrait)) await portraitFull(eng, src, work, state.portrait, FW, FH, (t) => onProgress(0.02 + t * 0.3));
     for (const op of state.retouch) await retouchFull(eng, op, FW, FH);
     eng.finishSource();
-    if (src !== full) src.close?.();
+    scaled?.close?.();
     eng.setMask(mask);
     onProgress(0.35);
 
     // ② 大きさを決める（枠・余白を含めた長辺の指定と、GPU の上限）
-    const st = effective(state);
+    const st = effective(lowlight ? withoutLowlight(state) : state);
     const o = outputSize(state.geo, FW, FH);
     const L0 = layout(o.w, o.h, state.frame);
     const s = Math.min(1, (maxSide || Infinity) / Math.max(L0.cw, L0.ch), lim / Math.max(o.w, o.h));
@@ -134,6 +142,22 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     onProgress(1);
     return { blob, w: L.cw, h: L.ch };
   } finally { eng.dispose(); }
+}
+
+/**
+ * 暗所補正（ノイズ除去 → 明るさ）を、元の大きさの写真に帯ごとに当てて GPU に送る。
+ * 明るさの曲線は編集用の大きさの写真から決めるので、編集中と同じ明るさになる
+ */
+async function lowlightFull(eng, src, work, FW, FH, options, onProgress) {
+  let read;
+  if (src.region) read = (y, rows) => src.region(0, y, FW, rows).slice();
+  else {
+    const c = canvas(FW, 1); const x = ctx2d(c, { willReadFrequently: true });
+    read = (y, rows) => { if (c.height !== rows) c.height = rows; x.clearRect(0, 0, FW, rows); x.drawImage(src, 0, y, FW, rows, 0, 0, FW, rows); return x.getImageData(0, 0, FW, rows, { colorSpace: COLOR_SPACE }).data; };
+  }
+  await enhancePhoto({ width: FW, height: FH, read, small: smallPixels(work, work.width, work.height) }, options, {
+    onProgress, onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, data),
+  });
 }
 
 /** 美肌を、元の大きさの写真に一部ずつ当てる（肌の範囲は編集用の大きさの写真で決める） */
