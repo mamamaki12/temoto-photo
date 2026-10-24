@@ -54,3 +54,42 @@ test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つ
   expect(lip1[0] - lip1[1]).toBeGreaterThan(lip0[0] - lip0[1] + 15); // 下唇は赤く
   for (let c = 0; c < 3; c++) expect(Math.abs(skin1[c] - skin0[c])).toBeLessThan(3); // 唇の下の肌は変わらない
 });
+
+test('リップ: 2本指での拡大・移動はリップの範囲にしない（2本目の指が写真の外・下のパネルの上でも）。1本指ではなぞれる', async ({ page }) => {
+  await open(page);
+  await openTool(page, '目元・歯');
+  await page.getByRole('button', { name: 'リップ', exact: true }).click();
+  const v = await page.locator('canvas.view').boundingBox();
+  const cx = v.x + v.width / 2; const cy = v.y + v.height / 2;
+  const cdp = await page.context().newCDPSession(page);
+  const T = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y, id]) => ({ x, y, id })) });
+  const n = () => page.evaluate(() => window.__temoto.state.retouch.length);
+  // ① 写真の上で 2 本指を広げる（1 本目は少しずれてから 2 本目が着く）。拡大はされ、リップは付かない
+  await T('touchStart', [[cx - 10, cy, 0]]);
+  for (let i = 1; i <= 3; i++) await T('touchMove', [[cx - 10 - i * 4, cy, 0]]);
+  await T('touchStart', [[cx - 22, cy, 0], [cx + 30, cy, 1]]);
+  for (let i = 1; i <= 8; i++) await T('touchMove', [[cx - 22 - i * 6, cy, 0], [cx + 30 + i * 6, cy, 1]]);
+  await T('touchEnd', [[cx + 78, cy, 1]]); // 1 本目を先に離し、残った指を動かす
+  for (let i = 1; i <= 4; i++) await T('touchMove', [[cx + 78 - i * 8, cy, 1]]);
+  await T('touchEnd', []);
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.__temoto.editor.zoom)).toBeGreaterThan(1.5);
+  expect(await n()).toBe(0);
+  // ② 1 本目でなぞっている間に、2 本目を写真の外（下のパネルの上）に置く
+  const zb = await page.locator('.side').boundingBox();
+  await T('touchStart', [[cx, cy, 0]]);
+  for (let i = 1; i <= 5; i++) await T('touchMove', [[cx + i * 6, cy, 0]]);
+  await T('touchStart', [[cx + 30, cy, 0], [zb.x + zb.width / 2, zb.y + zb.height / 2, 1]]);
+  for (let i = 1; i <= 5; i++) await T('touchMove', [[cx + 30 + i * 6, cy, 0], [zb.x + zb.width / 2, zb.y + zb.height / 2, 1]]);
+  await T('touchEnd', [[zb.x + zb.width / 2, zb.y + zb.height / 2, 1]]);
+  await T('touchEnd', []);
+  await page.waitForTimeout(500);
+  await page.waitForFunction(() => !document.querySelector('.stage.busy'), null, { timeout: 60000 }); // 唇を探す AI が終わるまで待つ
+  expect(await n()).toBe(0);
+  // ③ 指を全部離したら、1 本指でなぞれる
+  await T('touchStart', [[cx - 20, cy, 0]]);
+  for (let i = 1; i <= 8; i++) await T('touchMove', [[cx - 20 + i * 5, cy, 0]]);
+  await T('touchEnd', []);
+  await page.waitForFunction(() => window.__temoto.state.retouch.length && !document.querySelector('.stage.busy'), null, { timeout: 60000 });
+  expect(await n()).toBe(1);
+});

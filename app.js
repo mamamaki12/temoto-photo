@@ -24,7 +24,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.14.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.14.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -434,7 +434,7 @@ function closeEditor() {
   cancelAnimationFrame(E.raf);
   E.engine?.dispose(); E.thumbEngine?.dispose();
   E.base?.close?.();
-  document.removeEventListener('pointerdown', E.closeMenu);
+  document.removeEventListener('pointerdown', E.closeMenu); E.offPointer?.();
   removeEventListener('keydown', onKey); removeEventListener('keyup', onKeyUp); removeEventListener('resize', requestRender);
   E = null;
 }
@@ -1208,11 +1208,20 @@ const outToCanvas = ([x, y]) => [E.L.ix + x * E.L.iw, E.L.iy + y * E.L.ih];
 
 function setupPointer(stage) {
   const pts = new Map(); let action = null; let pinch = null;
+  // 2本指になったら（写真の外・拡大縮小のボタンの上に置いた指も数える）、なぞっていた線は取り消して、
+  // 指を全部離すまでブラシなどを当てない（2本指の拡大・移動が、リップなどの範囲にならないように）
+  let multi = false;
+  const toMulti = () => { if (action) { action.cancel?.(); action = null; } multi = true; };
+  // 写真の外の指も数えるため document で受ける（編集画面を閉じたら外す。E.offPointer）
+  const ac = new AbortController(); E.offPointer = () => ac.abort();
+  const on = (ev, f) => document.addEventListener(ev, f, { capture: true, passive: true, signal: ac.signal });
+  on('pointerdown', (e) => { if (e.pointerType === 'touch' && pts.size && !pts.has(e.pointerId) && !stage.contains(e.target)) toMulti(); });
   stage.addEventListener('pointerdown', (e) => {
     if (!E || e.button > 0) return;
     pts.set(e.pointerId, [e.clientX, e.clientY]);
     stage.setPointerCapture(e.pointerId);
-    if (pts.size === 2) { action?.cancel?.(); action = null; const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: E.zoom, pan: [...E.pan], mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; return; }
+    if (pts.size === 2) { toMulti(); const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: E.zoom, pan: [...E.pan], mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; return; }
+    if (pts.size > 2 || multi) return;
     action = startAction(e);
   });
   stage.addEventListener('pointermove', (e) => {
@@ -1229,10 +1238,16 @@ function setupPointer(stage) {
   const up = (e) => {
     if (!pts.has(e.pointerId)) return;
     pts.delete(e.pointerId);
-    if (pinch) { if (pts.size < 2) pinch = null; return; }
+    if (pts.size < 2) pinch = null;
+    if (!pts.size && !touching()) multi = false;
+    if (multi) { action?.cancel?.(); action = null; return; }
     action?.end?.(e); action = null;
   };
-  stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', (e) => { action?.cancel?.(); action = null; pts.delete(e.pointerId); pinch = null; });
+  let fingers = 0; // 画面に触れている指の数（写真の外も含む）
+  const touching = () => fingers > 0;
+  on('touchstart', (e) => { fingers = e.touches.length; if (fingers >= 2) toMulti(); });
+  for (const ev of ['touchend', 'touchcancel']) on(ev, (e) => { fingers = e.touches.length; if (!fingers && !pts.size) multi = false; });
+  stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', (e) => { action?.cancel?.(); action = null; pts.delete(e.pointerId); pinch = null; if (!pts.size && !touching()) multi = false; });
   stage.addEventListener('wheel', (e) => {
     if (!E) return; e.preventDefault();
     const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002));
