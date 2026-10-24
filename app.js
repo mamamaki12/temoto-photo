@@ -801,10 +801,17 @@ const PANELS = {
   auto() {
     return [
       histo(),
+      h('h3', {}, '暗い写真を明るく'),
+      slider({ label: '写真全体の明るさ補正', min: 0, max: 100, value: E.state.adj.lowlight, def: 0,
+        onInput: live((v) => { E.state.adj.lowlight = v; }), onChange: commit }).el,
+      slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
+        onInput: live((v) => { E.state.adj.noise = v; }), onChange: commit }).el,
+      hint('顔・腕・衣装・背景を一緒に明るくします。明るい部分は保ち、照明の色は変えません。ノイズ軽減は細部を見ながら控えめに調整してください。'),
+      h('a', { href: 'restoration-check.html', target: '_blank', rel: 'noopener' }, '高精度ノイズ除去を別画面で比較（試作）'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
-      }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); requestRender(); })),
+      }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); buildPanel(); requestRender(); })),
       hint('写真の明るさの分布と、白・灰色らしい所の色から、露光・白黒レベル・ホワイトバランスを整えます（電球の部屋の暖かさは残します）。気に入らなければ「元に戻す」で戻せます。'),
     ];
   },
@@ -1683,6 +1690,7 @@ function openExport({ batch }) {
   let ready = null; // 写真アプリへの保存で、用意できた画像（iPhone は時間がたつと共有を開けないので、もう一度押してもらう）
   const save = () => { prefs.set('export', opt); ready = null; };
   const status = h('p', { class: 'muted small', 'aria-live': 'polite' });
+  const exportProgress = h('progress', { max: 100, hidden: true, 'aria-label': '画像の書き出し進捗' });
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
   const q = slider({ label: '画質', min: 50, max: 100, value: opt.quality, def: 92, unit: '%', onChange: (v) => { opt.quality = v; save(); } });
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
@@ -1704,22 +1712,24 @@ function openExport({ batch }) {
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
     ...(navigator.canShare && !batch ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→ 出てきたメニューの「画像を保存」で、写真アプリに入ります。「書き出す」はファイルアプリ（ダウンロード）に保存します。')] : []),
     h('p', { class: 'ok-note' }, '✓ 位置情報・撮影日時・カメラ情報などのメタデータは、書き出した画像には入りません。'),
-    status,
+    status, exportProgress,
     h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), shareBtn, go));
   dlg.addEventListener('close', () => dlg.remove());
   const one = async () => {
     flushSave();
     const st = S.clone(E.state);
     status.textContent = '書き出しています…';
+    exportProgress.hidden = false; exportProgress.removeAttribute('value');
     let full = null;
     if (useFull({ full: { width: E.proj.w || 0, height: E.proj.h || 0 }, W: E.W, H: E.H }, opt.format, opt.maxSide)) {
       status.textContent = E.rawLin ? 'RAW を元の大きさで現像しています…（しばらくかかります）' : '元の大きさの写真を読み込んでいます…';
       try { full = await loadFull(E.proj, await db.getBlob(E.id), st, E.rawLin?.gain); } catch (e) { console.warn('元の大きさの写真を読み込めませんでした', e); full = null; }
     }
-    const progress = (t) => { status.textContent = `書き出しています… ${Math.round(t * 100)}%`; };
+    const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
     try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
-    status.textContent = `${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
+    exportProgress.value = 100;
+    status.textContent = `画像の生成完了（残り0%） ${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
   };
   go.addEventListener('click', async () => {
@@ -1743,7 +1753,7 @@ function openExport({ batch }) {
         }
         status.textContent = `${batch.length}枚を書き出しました`;
       }
-    } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
+    } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });
   shareBtn.addEventListener('click', async () => {
     shareBtn.disabled = true;
