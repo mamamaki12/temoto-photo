@@ -19,13 +19,15 @@ import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull } from './fullres.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
+import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
+import { grainFor } from './restoration-lowlight.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.15.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.16.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -474,7 +476,7 @@ function rebuildSource() {
   // RAW の露出が変わったら、16bit のデータから現像し直す
   const rk = JSON.stringify({ ...E.state.raw, ca: null }); // 色にじみの補正は書き出しのときだけ
   if (E.rawLin && rk !== E.rawKey) {
-    if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.base); E.baseData = null; E.skinCache = {}; }
+    if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.base); E.baseData = null; E.skinCache = {}; E.hqCache = {}; }
     E.rawKey = rk;
   }
   const base = srcBase();
@@ -489,38 +491,85 @@ function rebuildSource() {
   E.small = null; E.thumbsKey = null;
   if (portraitActive(E.state.portrait)) maybeSkinSeg();
 }
-// ───── 暗所補正（ノイズを取ってから明るくする）を、編集用の大きさの写真に裏で当てる ─────
+// ───── 暗所補正（ノイズを取ってから明るくする）とブレ補正を、編集用の大きさの写真に裏で当てる ─────
 // スライダーを動かしている間は GPU の簡易版で見せ、手を止めたら Worker で計算する（進捗は写真の上のバーに）。
-// できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）
-const hqKey = (st) => (lowlightActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, E.rawKey]) : null);
+// できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）。
+// 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒」。途中の結果は取っておき、ブレ補正の強さだけを変えたときは AI を動かし直さない
+const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey]) : null);
 function hqReady() { return !!E.hq?.canvas && E.hq.key === hqKey(E.state); }
+/**
+ * いま見せる、暗所補正・ブレ補正をした写真。ブレ補正の強さだけを変えて計算し直している間は、前にできたものを見せる
+ * （暗所補正の値が同じなら、元の写真＋GPU の簡易版に戻さない）
+ */
+function hqView() {
+  if (hqReady()) return E.hq.canvas;
+  const key = hqKey(E.state); const last = E.hqLast;
+  if (!key || !last) return null;
+  const a = JSON.parse(key); const b = JSON.parse(last.key);
+  return a[0] === b[0] && a[1] === b[1] && a[3] === b[3] ? last.canvas : null;
+}
 /** 修復・美肌・GPU の元にする写真 */
-function srcBase() { return hqReady() ? E.hq.canvas : E.base; }
+function srcBase() { return hqView() || E.base; }
+/** ブレ補正の差分（AI の結果）。書き出しでも使う */
+function hqResidual() { return hqReady() ? E.hq.res || null : null; }
 let hqTimer = 0;
 function scheduleLowlight() {
   if (!E || (E.hq?.key ?? null) === hqKey(E.state)) return; // 済み・計算中
   clearTimeout(hqTimer); hqTimer = setTimeout(runLowlight, 400);
+}
+/**
+ * 暗所補正・ブレ補正をした写真を作る（編集画面と、書き出しで編集中の結果がないときに使う）
+ * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res} }）
+ * @returns {Promise<{canvas, res}>} res: ブレ補正の差分（なければ null）
+ */
+async function enhanceSource(src, adj, { signal, onProgress = () => {} } = {}) {
+  const ll = lowlightActive(adj) ? lowlightOptions(adj) : null; const db = deblurActive(adj);
+  const cache = src.cache || {};
+  // 粒はブレ補正の後に足す（ブレ補正があるときは、暗所補正では足さない）
+  const llKey = ll ? JSON.stringify([adj.noise, adj.lowlight, db]) : null;
+  const dbKey = JSON.stringify([adj.noise, adj.lowlight]);
+  const share = ll && db ? (cache.ll?.key === llKey ? 0 : 0.3) : ll ? 1 : 0; // 進捗のうち暗所補正の割合
+  let canvas = src.base;
+  if (ll) {
+    if (cache.ll?.key !== llKey) {
+      cache.ll = null;
+      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db }, { signal, onProgress: (t) => onProgress(t * share) });
+      cache.ll = { key: llKey, canvas: c };
+    }
+    canvas = cache.ll.canvas;
+  }
+  if (!db) return { canvas, res: null };
+  if (cache.db?.key !== dbKey) {
+    cache.db = null;
+    const res = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => onProgress(share + (1 - share) * t) });
+    cache.db = { key: dbKey, res };
+  }
+  const res = cache.db.res;
+  const out = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? grainFor(ll.nr) : 0 }, { signal });
+  onProgress(1);
+  return { canvas: out, res };
 }
 async function runLowlight() {
   if (!E) return;
   const key = hqKey(E.state);
   if ((E.hq?.key ?? null) === key) return;
   E.hq?.ctrl?.abort();
-  if (!key) { E.hq = null; hqBar(null); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
+  if (!key) { E.hq = null; E.hqLast = null; hqBar(null); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
   const e0 = E; const ctrl = new AbortController();
   E.hq = { key, canvas: null, ctrl };
+  E.hqCache ||= {};
   hqBar(0);
   try {
-    const canvas = await enhanceCanvas(E.base, E.W, E.H, lowlightOptions(E.state.adj), {
+    const { canvas, res } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
-    E.hq = { key, canvas, ctrl: null }; hqBar(null);
+    E.hq = { key, canvas, res, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender();
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null);
-    if (err.name !== 'AbortError') { console.warn('暗所補正', err); toast('ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
+    if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正', err); toast(deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
   }
 }
 /** 写真の上の進捗バー（t: 0〜1、null で隠す） */
@@ -529,7 +578,7 @@ function hqBar(t) {
   E.hqEl.hidden = t == null; if (t == null) return;
   const p = Math.min(99, Math.floor(t * 100));
   E.hqEl.querySelector('progress').value = p;
-  E.hqEl.querySelector('span').textContent = `ノイズ除去と明るさ補正… 残り${100 - p}%`;
+  E.hqEl.querySelector('span').textContent = `${[lowlightActive(E.state.adj) && 'ノイズ除去と明るさ補正', deblurActive(E.state.adj) && 'ブレ補正'].filter(Boolean).join('・')}… 残り${100 - p}%`;
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {
@@ -659,8 +708,8 @@ function renderNow() {
   const k = zk * (E.fast ? 0.5 : 1); // 画面上の大きさは変えず、描く細かさだけを変える
   const fit = fit0 * k;
   const pw = Math.max(1, Math.round(out.w * fit)); const ph = Math.max(1, Math.round(out.h * fit));
-  if (!orig && E.srcHQ !== hqReady()) rebuildSource(); // 暗所補正の値が変わったら、計算し直すまで元の写真＋簡易版で
-  const eff = effective(!orig && hqReady() ? withoutLowlight(st) : st);
+  if (!orig && srcBase() !== E.srcBaseUsed) rebuildSource(); // 暗所補正の値が変わったら、計算し直すまで元の写真＋簡易版で
+  const eff = effective(!orig && hqView() ? withoutLowlight(st) : st);
   const showMask = E.tool === 'local' && E.showMask && E.sel ? st.locals.findIndex((l) => l.id === E.sel) : -1;
   if (E.maskDirty) { E.mask = buildMask(E.state, E.W, E.H, E.maskCache); E.engine.setMask(E.mask); E.maskDirty = false; }
   E.engine.render(eff, pw, ph, { bypass: orig, showMask });
@@ -859,6 +908,10 @@ const PANELS = {
       slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
         onInput: live((v) => { E.state.adj.noise = v; }), onChange: commit }).el,
       hint('ノイズを先に取ってから、顔・腕・衣装・背景を一緒に明るくします。明るい部分と細かい模様は保ち、照明のオレンジは少しだけ白に戻します。スライダーから手を離すと、写真の上のバーの「残り○%」が 0 になるまで計算します（大きな写真は時間がかかります）。'),
+      h('h3', {}, '動いた手・髪のブレを直す'),
+      slider({ label: '被写体ブレの補正', min: 0, max: 100, value: E.state.adj.deblur, def: 0,
+        onInput: live((v) => { E.state.adj.deblur = v; }), onChange: commit }).el,
+      hint('シャッターが間に合わずにぶれた手・髪・顔を、端末の中の AI がくっきりさせます（写真は外に送りません）。平らな所（背景・肌）はそのままです。50 が標準の強さです。はじめて使うときに AI（約 65MB）を読み込み、大きな写真では計算に数分かかることがあります。暗くてざらついた写真は、ノイズ軽減も一緒に使うときれいに直ります。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
@@ -1703,16 +1756,19 @@ async function canvasToBlob(canvas, format, quality, space = COLOR_SPACE) {
 }
 /**
  * 1枚を書き出す。編集用に縮めた写真（約1,670万画素まで）より大きく書き出すときは、元の写真から帯ごとに描き直す（fullres.js）
- * @param {object} src { base, W, H, state, full?（元の大きさの写真）, origW, origH }
+ * @param {object} src { base, W, H, state, full?（元の大きさの写真）, origW, origH, hqCanvas?・hqRes?（編集中に作った、暗所補正・ブレ補正をした写真とブレ補正の差分） }
  */
 async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE, onProgress }) {
   const st0 = S.validateState(src.state);
   const ll = lowlightActive(st0.adj) ? lowlightOptions(st0.adj) : null; // 暗所補正（ノイズ除去 → 明るさ）
-  // 暗所補正をするときは、美肌の肌の判定・修復のコピー元も、補正した写真（編集用の大きさ）で決める。編集中と同じになる
-  let work = src.base; let pre = 0; // pre: 進捗のうち、ここで使った割合
-  if (ll) {
-    if (!src.hqCanvas) pre = 0.3;
-    work = src.hqCanvas || await enhanceCanvas(src.base, src.W, src.H, ll, { onProgress: (t) => onProgress?.(t * pre) });
+  const db = deblurActive(st0.adj); // ブレ補正（明るさの後、粒の前）
+  // 暗所補正・ブレ補正をするときは、美肌の肌の判定・修復のコピー元も、補正した写真（編集用の大きさ）で決める。編集中と同じになる
+  let work = src.base; let pre = 0; let res = null; // pre: 進捗のうち、ここで使った割合
+  if (ll || db) {
+    if (!src.hqCanvas) pre = db ? 0.6 : 0.3;
+    if (src.hqCanvas) { work = src.hqCanvas; res = src.hqRes || null; } else {
+      ({ canvas: work, res } = await enhanceSource({ base: src.base, W: src.W, H: src.H, origW: src.origW || src.W, origH: src.origH || src.H }, st0.adj, { onProgress: (t) => onProgress?.(t * pre) }));
+    }
     if (portraitActive(st0.portrait)) await ensureSkinSeg(ctx2d(toCanvas(work, src.W, src.H), { willReadFrequently: true }).getImageData(0, 0, src.W, src.H));
   }
   if (useFull(src, format, maxSide)) {
@@ -1721,10 +1777,11 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
     if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(work, st.retouch, null);
     try {
       return await exportFull({ full: src.full, work, lowlightFrom: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
+        deblur: db ? { res, amount: deblurAmount(st0.adj), grain: ll ? grainFor(ll.nr) : 0 } : null,
         onProgress: onProgress && ((t) => onProgress(pre + (1 - pre) * t)) });
     } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
   }
-  if (ll) src = { ...src, base: work, state: withoutLowlight(st0) };
+  if (ll || db) src = { ...src, base: work, state: withoutLowlight(st0) };
   return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality, space);
 }
 /**
@@ -1789,7 +1846,7 @@ function openExport({ batch }) {
     }
     const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
-    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), origW: E.proj.w || E.W, origH: E.proj.h || E.H }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
     status.textContent = `画像の生成完了（残り0%） ${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
@@ -1809,7 +1866,7 @@ function openExport({ batch }) {
             try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
           }
           let r;
-          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
+          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
           download(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
           await new Promise((res) => setTimeout(res, 400));
         }

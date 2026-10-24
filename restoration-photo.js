@@ -90,13 +90,13 @@ function workerCount() {
  * @param {number} src.height
  * @param {(y:number, rows:number)=>Uint8ClampedArray|Promise<Uint8ClampedArray>} src.read 横幅いっぱいの rows 行分の RGBA（新しい配列）
  * @param {{width:number,height:number,data:Uint8ClampedArray}} src.small 長い辺 512 くらいに縮めた写真（明るさの曲線を決める）
- * @param {{nr:number, light:number}} options
+ * @param {{nr:number, light:number, grain?:boolean}} options grain: false で細かい粒を足さない（ブレ補正のあとに足すとき）
  * @param {object} hooks
  * @param {(y:number, rows:number, data:Uint8ClampedArray)=>void} hooks.onBand 補正できた帯（順番どおりとは限らない）
  * @param {(t:number)=>void} [hooks.onProgress] 0〜1（実際に処理した量）
  * @param {AbortSignal} [hooks.signal]
  */
-export async function enhancePhoto({ width, height, read, small }, { nr, light }, { onBand, onProgress = () => {}, signal } = {}) {
+export async function enhancePhoto({ width, height, read, small }, { nr, light, grain = true }, { onBand, onProgress = () => {}, signal } = {}) {
   const check = () => { if (signal?.aborted) throw abortError(); };
   check();
   // 1. ノイズの量（写真の中央で）
@@ -137,7 +137,7 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light }
       try { data = await read(top, bottom - top); } catch (e) { fail(e); return; }
       if (failed) return;
       worker.postMessage({ type: 'lowlight', id, band: { width, height: bottom - top, data },
-        at: { top: y - top, bottom: y - top + rows, y0: top, fullW: width, fullH: height }, options: { nr, profile, tone } }, [data.buffer]);
+        at: { top: y - top, bottom: y - top + rows, y0: top, fullW: width, fullH: height }, options: { nr, profile, tone, grain } }, [data.buffer]);
     };
     const n = Math.min(workerCount(), bands.length);
     for (let i = 0; i < n; i++) {

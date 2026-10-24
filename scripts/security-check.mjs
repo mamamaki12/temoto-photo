@@ -18,7 +18,12 @@ const VENDOR = {
   // 人物の肌を見分ける AI（MediaPipe。モデルも同梱し、Worker の中で同じサイトのファイルだけを読む）
   'vendor/mediapipe': ['seg-worker.js', 'vision_bundle.js', 'selfie_multiclass_256x256.tflite', 'face_landmarker.task', 'LICENSE.txt', 'wasm'],
   'vendor/mediapipe/wasm': ['vision_wasm_internal.js', 'vision_wasm_internal.wasm'],
+  // 被写体ブレの補正の AI を動かす ONNX Runtime Web と、そのモデル（Worker の中で同じサイトのファイルだけを読む）
+  'vendor/ort': ['ort.webgpu.min.mjs', 'ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm', 'LICENSE.txt'],
+  'vendor/deblur': ['nafnet-gopro-w32.onnx', 'LICENSE.txt'],
 };
+// vendor/ のスクリプトに書かれていてよい URL（警告の文に出てくる説明のページ。読み込みはしない）
+const DOC_URLS = [/https:\/\/web\.dev\/cross-origin-isolation-guide\/?/g];
 const files = [];
 (function walk(d) {
   for (const n of readdirSync(d)) {
@@ -68,8 +73,8 @@ for (const f of files) {
 for (const [dir, allowed] of Object.entries(VENDOR)) {
   const names = readdirSync(join(root, dir));
   for (const n of names) if (!allowed.includes(n)) problems.push(`${dir}/${n}: 決めたファイル以外がある`);
-  for (const n of names.filter((x) => x.endsWith('.js'))) {
-    const src = readFileSync(join(root, dir, n), 'utf8');
+  for (const n of names.filter((x) => /\.m?js$/.test(x))) {
+    const src = DOC_URLS.reduce((t, re) => t.replace(re, ''), readFileSync(join(root, dir, n), 'utf8'));
     if (/https?:\/\//.test(src)) problems.push(`${dir}/${n}: 外部の URL がある`);
     if (/import\s*\(\s*['"`]https?:/.test(src) || /importScripts\s*\(\s*['"`]https?:/.test(src)) problems.push(`${dir}/${n}: 外部のスクリプトを読み込む`);
   }

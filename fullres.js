@@ -15,6 +15,7 @@ import { applyBrush, brushBounds, BRUSH_TYPES } from './brushfx.js';
 import { jpegEncoder, pngEncoder, readJpegIcc } from './encode.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 import { enhancePhoto, smallPixels, withoutLowlight } from './restoration-photo.js';
+import { finishBand } from './deblur-photo.js';
 
 const TILE = 1024; // 美肌を当てる一部の大きさ
 const STRIP_PIXELS = 4_000_000; // 帯 1 本の画素数の目安
@@ -44,10 +45,11 @@ async function iccFor(space) {
  * @param {'image/jpeg'|'image/png'} a.format
  * @param {'display-p3'|'srgb'} a.space 書き出す色空間
  * @param {{nr:number,light:number}|null} [a.lowlight] 暗所補正（ノイズ除去 → 明るさ）。元の大きさの写真に、いちばん先に当てる
+ * @param {{res:object|null,amount:number,grain:number}|null} [a.deblur] ブレ補正（暗所補正の後に、編集中に AI で求めた差分を足し、そのあと細かい粒を足す）
  * @param {HTMLCanvasElement|ImageBitmap} [a.lowlightFrom] 暗所補正の明るさの曲線を決める、補正する前の編集用の写真（work が補正済みのとき）
  * @param {(t:number)=>void} [a.onProgress] 0〜1
  */
-export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, lowlightFrom = work, onProgress: report = () => {} }) {
+export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, deblur = null, lowlightFrom = work, onProgress: report = () => {} }) {
   const glc = canvas(1, 1); const eng = new Engine(glc);
   try {
     // 写真が GPU で扱える大きさを超えるときは、そこまで縮める
@@ -65,8 +67,17 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     eng.allocSource(FW, FH);
     const scaled = src !== full ? src : null;
     if (lowlight) {
-      await lowlightFull(eng, src, lowlightFrom, FW, FH, lowlight, (t) => report(0.02 + 0.48 * t));
+      await lowlightFull(eng, src, lowlightFrom, FW, FH, lowlight, deblur, (t) => report(0.02 + 0.48 * t));
       src = { width: FW, height: FH, region: (x, y, w, h) => eng.readSource(x, y, w, h) }; // 美肌・修復は、補正したものに当てる
+    } else if (deblur) {
+      const read = bandReader(src, FW);
+      const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
+      for (let y = 0; y < FH; y += band) {
+        const bh = Math.min(band, FH - y);
+        eng.putSourcePixels(0, y, FW, bh, finishBand(read(y, bh), bh, { y0: y, fullW: FW, fullH: FH }, deblur));
+        onProgress(0.02 + 0.3 * (y / FH)); await later();
+      }
+      src = { width: FW, height: FH, region: (x, y, w, h) => eng.readSource(x, y, w, h) };
     } else if (src.region) {
       // RAW を現像した画素（Canvas に入りきらない大きさ）: 帯ごとに現像して GPU に送る。8bit に丸めた残りも送って、16bit の細かさで描く
       const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
@@ -149,16 +160,17 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
  * 暗所補正（ノイズ除去 → 明るさ）を、元の大きさの写真に帯ごとに当てて GPU に送る。
  * 明るさの曲線は編集用の大きさの写真から決めるので、編集中と同じ明るさになる
  */
-async function lowlightFull(eng, src, work, FW, FH, options, onProgress) {
-  let read;
-  if (src.region) read = (y, rows) => src.region(0, y, FW, rows).slice();
-  else {
-    const c = canvas(FW, 1); const x = ctx2d(c, { willReadFrequently: true });
-    read = (y, rows) => { if (c.height !== rows) c.height = rows; x.clearRect(0, 0, FW, rows); x.drawImage(src, 0, y, FW, rows, 0, 0, FW, rows); return x.getImageData(0, 0, FW, rows, { colorSpace: COLOR_SPACE }).data; };
-  }
-  await enhancePhoto({ width: FW, height: FH, read, small: smallPixels(work, work.width, work.height) }, options, {
-    onProgress, onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, data),
+async function lowlightFull(eng, src, work, FW, FH, options, deblur, onProgress) {
+  await enhancePhoto({ width: FW, height: FH, read: bandReader(src, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur }, {
+    onProgress, onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, deblur ? finishBand(data, rows, { y0: y, fullW: FW, fullH: FH }, deblur) : data),
   });
+}
+
+/** 元の写真から、横幅いっぱいの rows 行分の RGBA を読む関数（新しい配列を返す） */
+function bandReader(src, FW) {
+  if (src.region) return (y, rows) => src.region(0, y, FW, rows).slice();
+  const c = canvas(FW, 1); const x = ctx2d(c, { willReadFrequently: true });
+  return (y, rows) => { if (c.height !== rows) c.height = rows; x.clearRect(0, 0, FW, rows); x.drawImage(src, 0, y, FW, rows, 0, 0, FW, rows); return x.getImageData(0, 0, FW, rows, { colorSpace: COLOR_SPACE }).data; };
 }
 
 /** 美肌を、元の大きさの写真に一部ずつ当てる（肌の範囲は編集用の大きさの写真で決める） */

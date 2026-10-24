@@ -412,7 +412,7 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
  * @param {{nr:number,profile:Float32Array[]|null,tone:object|null}} o
  * @returns {Uint8ClampedArray} top〜bottom の行の RGBA
  */
-export function enhanceBand(band, at, { nr, profile, tone }, onProgress = () => {}) {
+export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onProgress = () => {}) {
   const { width: w, height: h, data } = band;
   let [Y, Cb, Cr] = toYCC(data, w, h);
   if (nr > 0 && profile) {
@@ -431,7 +431,29 @@ export function enhanceBand(band, at, { nr, profile, tone }, onProgress = () => 
   }
   onProgress(0.95);
   const rows = at.bottom - at.top; const o = at.top * w;
-  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: nr > 0 ? FILM_GRAIN * Math.min(1, nr) : 0 });
+  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: grain ? grainFor(nr) : 0 });
   onProgress(1);
   return out;
+}
+
+/** ノイズ軽減の強さ → 足す粒の強さ */
+export const grainFor = (nr) => (nr > 0 ? FILM_GRAIN * Math.min(1, nr) : 0);
+
+/**
+ * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）
+ * @param {{y0:number,fullW:number}} at data の 1 行目が写真全体の何行目か
+ */
+export function addGrain(data, w, rows, at, grain) {
+  if (!(grain > 0)) return data;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4; const p = (at.y0 + y) * at.fullW + x;
+      const r = data[i] / 255; const g = data[i + 1] / 255; const b = data[i + 2] / 255;
+      const lv = toSrgb(0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b));
+      const u = hash(p) + hash(p + 0x9e3779b9) + hash(p + 0x7f4a7c15) - 1.5;
+      const d = u * 2 * grain * 4 * lv * (1 - lv);
+      data[i] += d; data[i + 1] += d; data[i + 2] += d; // Uint8ClampedArray は代入で四捨五入される
+    }
+  }
+  return data;
 }
