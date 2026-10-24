@@ -200,13 +200,20 @@ function nlm(ch, sig, w, h, { R, r = 2, hh = 1, onProgress = () => {} }) {
  */
 function removeSpeckles(ch, w, h, profile) {
   const [Y, Cb, Cr] = ch; const nb = new Float32Array(8);
-  const find = (img, iw, ih, bins) => {
+  // 輝度だけでなく色差も調べる（赤や青の 1 点は、明るさの差は小さくても、色ムラ除去でにじんで灰色の点になる）
+  const find = (chs, iw, ih, bins) => {
     const hits = [];
     for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) {
-      const i = y * iw + x; let k = 0;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) nb[k++] = img[i + dy * iw + dx];
-      nb.sort(); const v = img[i]; const t = 3 * noiseAt(bins, nb[4]);
-      if (v > nb[7] + t || v < nb[0] - t) hits.push(x, y, (nb[3] + nb[4]) / 2);
+      const i = y * iw + x; let med = 0; let hit = false;
+      for (let c = 0; c < 3; c++) {
+        const img = chs[c]; let k = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) nb[k++] = img[i + dy * iw + dx];
+        nb.sort();
+        if (c === 0) med = (nb[3] + nb[4]) / 2;
+        const t = (c === 0 ? 3 : 4) * noiseAt(bins, c === 0 ? nb[4] : chs[0][i]); const v = img[i];
+        if (v > nb[7] + t || v < nb[0] - t) hit = true;
+      }
+      if (hit) hits.push(x, y, med);
     }
     return hits;
   };
@@ -221,10 +228,10 @@ function removeSpeckles(ch, w, h, profile) {
       const i = y * w + x; Y[i] = val; if (n) { Cb[i] = cb / n; Cr[i] = cr / n; }
     }
   };
-  const one = find(Y, w, h, profile[0]);
+  const one = find(ch, w, h, profile[0]);
   for (let j = 0; j < one.length; j += 3) fill(one[j], one[j + 1], 1, one[j + 2]);
   const w2 = (w + 1) >> 1; const h2 = (h + 1) >> 1;
-  const two = find(down2(Y, w, h), w2, h2, profile[1]);
+  const two = find(ch.map((c) => down2(c, w, h)), w2, h2, profile[1]);
   // 半分の大きさの 1 画素 = 元の 2×2。にじみの分、まわり 1 画素も含めて 4×4 を直す
   for (let j = 0; j < two.length; j += 3) fill(two[j] * 2 - 1, two[j + 1] * 2 - 1, 4, two[j + 2]);
 }

@@ -477,7 +477,10 @@ function rebuildSource() {
     if (E.rawKey != null) { developToCanvas(E.rawLin, E.state.raw, E.base); E.baseData = null; E.skinCache = {}; }
     E.rawKey = rk;
   }
-  const base = srcBase(); E.srcHQ = base !== E.base;
+  const base = srcBase();
+  // 元の写真と暗所補正したものを切り替えたら、美肌の計算と肌の判定に使う画素も作り直す（暗いままの写真で計算した美肌を残さない）
+  if (E.srcBaseUsed !== base) { E.srcBaseUsed = base; E.baseData = null; E.skinCache = {}; }
+  E.srcHQ = base !== E.base;
   if (!ops.length && !portraitActive(E.state.portrait)) { E.src = null; E.srcData = null; E.engine.setSource(base, E.W, E.H); }
   else { const r = retouchCanvas(base, ops, E.state.portrait, E.skinCache); E.src = r.canvas; E.srcData = r.data; E.engine.setSource(E.src, E.W, E.H); }
   E.engine.setResidual(E.srcHQ ? null : E.base.residual || null); // RAW は 16bit の細かさで（暗所補正を当てたものは 8bit）
@@ -530,7 +533,8 @@ function hqBar(t) {
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {
-  if (!E.baseData) E.baseData = ctx2d(toCanvas(E.base, E.W, E.H), { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
+  // 暗所補正ができていれば、補正したもの（美肌・リップの AI は、明るくした写真の方がよく見分ける）
+  if (!E.baseData) E.baseData = ctx2d(toCanvas(srcBase(), E.W, E.H), { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
   return E.baseData;
 }
 /**
@@ -1704,19 +1708,23 @@ async function canvasToBlob(canvas, format, quality, space = COLOR_SPACE) {
 async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE, onProgress }) {
   const st0 = S.validateState(src.state);
   const ll = lowlightActive(st0.adj) ? lowlightOptions(st0.adj) : null; // 暗所補正（ノイズ除去 → 明るさ）
+  // 暗所補正をするときは、美肌の肌の判定・修復のコピー元も、補正した写真（編集用の大きさ）で決める。編集中と同じになる
+  let work = src.base; let pre = 0; // pre: 進捗のうち、ここで使った割合
+  if (ll) {
+    if (!src.hqCanvas) pre = 0.3;
+    work = src.hqCanvas || await enhanceCanvas(src.base, src.W, src.H, ll, { onProgress: (t) => onProgress?.(t * pre) });
+    if (portraitActive(st0.portrait)) await ensureSkinSeg(ctx2d(toCanvas(work, src.W, src.H), { willReadFrequently: true }).getImageData(0, 0, src.W, src.H));
+  }
   if (useFull(src, format, maxSide)) {
     const st = st0;
     // 修復で自動で選んだコピー元は、編集用の大きさで決めておく（プレビューと同じ場所になる）
-    if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(src.base, st.retouch, null);
+    if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(work, st.retouch, null);
     try {
-      return await exportFull({ full: src.full, work: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll, onProgress });
+      return await exportFull({ full: src.full, work, lowlightFrom: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
+        onProgress: onProgress && ((t) => onProgress(pre + (1 - pre) * t)) });
     } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
   }
-  if (ll) {
-    // 編集中に計算したものがあれば、それを使う
-    const base = src.hqCanvas || await enhanceCanvas(src.base, src.W, src.H, ll, { onProgress: (t) => onProgress?.(t * 0.9) });
-    src = { ...src, base, state: withoutLowlight(st0) };
-  }
+  if (ll) src = { ...src, base: work, state: withoutLowlight(st0) };
   return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality, space);
 }
 /**

@@ -44,9 +44,10 @@ async function iccFor(space) {
  * @param {'image/jpeg'|'image/png'} a.format
  * @param {'display-p3'|'srgb'} a.space 書き出す色空間
  * @param {{nr:number,light:number}|null} [a.lowlight] 暗所補正（ノイズ除去 → 明るさ）。元の大きさの写真に、いちばん先に当てる
+ * @param {HTMLCanvasElement|ImageBitmap} [a.lowlightFrom] 暗所補正の明るさの曲線を決める、補正する前の編集用の写真（work が補正済みのとき）
  * @param {(t:number)=>void} [a.onProgress] 0〜1
  */
-export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, onProgress: report = () => {} }) {
+export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, lowlightFrom = work, onProgress: report = () => {} }) {
   const glc = canvas(1, 1); const eng = new Engine(glc);
   try {
     // 写真が GPU で扱える大きさを超えるときは、そこまで縮める
@@ -64,7 +65,7 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     eng.allocSource(FW, FH);
     const scaled = src !== full ? src : null;
     if (lowlight) {
-      await lowlightFull(eng, src, work, FW, FH, lowlight, (t) => report(0.02 + 0.48 * t));
+      await lowlightFull(eng, src, lowlightFrom, FW, FH, lowlight, (t) => report(0.02 + 0.48 * t));
       src = { width: FW, height: FH, region: (x, y, w, h) => eng.readSource(x, y, w, h) }; // 美肌・修復は、補正したものに当てる
     } else if (src.region) {
       // RAW を現像した画素（Canvas に入りきらない大きさ）: 帯ごとに現像して GPU に送る。8bit に丸めた残りも送って、16bit の細かさで描く
