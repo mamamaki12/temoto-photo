@@ -1,4 +1,4 @@
-import { restorePhoto } from './restoration-photo.js';
+import { restorePhotoBanded } from './restoration-photo.js';
 import { COLOR_SPACE } from './color.js';
 import { download } from './lib.js';
 
@@ -32,7 +32,7 @@ $('photo').addEventListener('change', async () => {
   try {
     bmp = await createImageBitmap(file);
     if (ticket !== version) return;
-    if (bmp.width * bmp.height > 4_000_000) throw new Error('400万画素を超えています。原寸を保つため自動縮小せず停止しました。');
+    if (bmp.width * bmp.height > 16_000_000 || bmp.width > 16384) throw new Error('1600万画素または幅16384pxを超えています。原寸を保つため自動縮小せず停止しました。');
     before.width = after.width = bmp.width; before.height = after.height = bmp.height;
     ctx(before).drawImage(bmp, 0, 0); source = ctx(before).getImageData(0, 0, bmp.width, bmp.height, { colorSpace: COLOR_SPACE });
     filename = file.name.replace(/\.[^.]+$/, ''); status(`${bmp.width}×${bmp.height}・元画像を変更せず比較します。`);
@@ -44,7 +44,7 @@ $('run').addEventListener('click', async () => {
   controller = new AbortController(); busy(true); $('save').disabled = true;
   $('progress').value = 0; status('補正しています… 残り100%');
   try {
-    const result = await restorePhoto(source, { amount: Number($('amount').value), noise: Number($('noise').value) }, {
+    const result = await restorePhotoBanded(source, { amount: Number($('amount').value), noise: Number($('noise').value) }, {
       signal: controller.signal, onProgress: ({ percent }) => {
         $('progress').value = Math.min(percent, 99); status(`補正しています… 残り${100 - Math.min(percent, 99)}%`);
       },

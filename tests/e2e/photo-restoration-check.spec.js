@@ -1,6 +1,29 @@
 import { test, expect } from '@playwright/test';
 import { solidPhoto } from './photo-helpers.js';
 
+test('帯分割の境目が一括処理と一致し、途中で中止できる', async ({ page }) => {
+  await page.goto('/restoration-check.html');
+  const r = await page.evaluate(async () => {
+    const { restorePhoto, restorePhotoBanded } = await import('/restoration-photo.js');
+    const width = 32; const height = 520; const data = new Uint8ClampedArray(width * height * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 30 + (i * 7 % 19); data[i + 1] = 50 + (i * 3 % 23); data[i + 2] = 60; data[i + 3] = 255;
+    }
+    const input = { width, height, data };
+    const whole = await restorePhoto(input); const progress = [];
+    const banded = await restorePhotoBanded(input, {}, { onProgress: ({ percent }) => progress.push(percent) });
+    let max = 0; for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(whole.data[i] - banded.data[i]));
+    const controller = new AbortController(); let cancelled;
+    try { await restorePhotoBanded(input, {}, { signal: controller.signal, onProgress: ({ percent }) => { if (percent > 10) controller.abort(); } }); }
+    catch (e) { cancelled = e.name; }
+    return { max, progress, cancelled };
+  });
+  expect(r.max).toBeLessThanOrEqual(1);
+  expect(r.progress.at(-1)).toBe(100);
+  expect(r.progress.every((v, i, a) => i === 0 || v >= a[i - 1])).toBe(true);
+  expect(r.cancelled).toBe('AbortError');
+});
+
 test('写真の比較: 原寸読み込み・補正・PNG保存・中止・再実行', async ({ page }) => {
   await page.goto('/restoration-check.html');
   await page.getByLabel('元の写真').setInputFiles(await solidPhoto(page, '#302018', { w: 256, h: 256 }));

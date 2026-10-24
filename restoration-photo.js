@@ -1,5 +1,29 @@
 import { restoreInWorker } from './restoration-client.js';
 
+// 一度にWorkerへ送る範囲を限定する。3画素の探索+1画素のパッチ分を重ねて継ぎ目を防ぐ。
+export async function restorePhotoBanded(input, options = {}, hooks = {}) {
+  const { width, height, data } = input;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 ||
+      width > 16384 || width * height > 16_000_000 || !(data instanceof Uint8ClampedArray) || data.length !== width * height * 4) {
+    throw new Error('比較画面は1600万画素・幅16384pxまで対応しています。自動縮小はしません。');
+  }
+  const output = new Uint8ClampedArray(data.length);
+  const rows = Math.min(256, Math.floor(4_000_000 / width) - 8);
+  for (let y = 0; y < height; y += rows) {
+    if (hooks.signal?.aborted) throw new DOMException('処理を中止しました', 'AbortError');
+    const end = Math.min(height, y + rows); const top = Math.max(0, y - 4); const bottom = Math.min(height, end + 4);
+    const part = await restorePhoto({ width, height: bottom - top, colorSpace: input.colorSpace,
+      data: data.slice(top * width * 4, bottom * width * 4) }, options, {
+      signal: hooks.signal,
+      onProgress: ({ percent }) => hooks.onProgress?.({ percent: Math.min(99, Math.floor(100 * (y + (end - y) * percent / 100) / height)) }),
+    });
+    output.set(part.data.subarray((y - top) * width * 4, (end - top) * width * 4), y * width * 4);
+  }
+  if (hooks.signal?.aborted) throw new DOMException('処理を中止しました', 'AbortError');
+  hooks.onProgress?.({ percent: 100 });
+  return { width, height, data: output, colorSpace: input.colorSpace || 'srgb' };
+}
+
 // 評価用の写真アダプター。入力は同一色空間の8bit RGBA。
 // 既存エンジンに合わせたgamma 2.2の近似。平方根領域でノイズを軽減してから明るくする。
 // noise は平方根領域の標準偏差（255倍）。自動推定値ではない。
