@@ -14,13 +14,23 @@ export function fingerprint(img) {
 /** 覚えている肌の地図（なければ null） */
 export const skinSegFor = (img) => store.get(fingerprint(img)) || null;
 
+const TIMEOUT = 90000; // これより長く返事がなければ、AI をあきらめる（端末のメモリが足りず Worker が止まったときなど。色で判定する）
+function stopWorker(why) {
+  worker?.terminate(); worker = null;
+  for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(new Error(why)); }
+  waiting.clear();
+}
 function call(msg, transfer) {
   if (!worker) {
     worker = new Worker(new URL('vendor/mediapipe/seg-worker.js', import.meta.url));
-    worker.onmessage = (e) => { const w = waiting.get(e.data.id); if (!w) return; waiting.delete(e.data.id); if (e.data.error) w.reject(new Error(e.data.error)); else w.resolve(e.data); };
-    worker.onerror = (e) => { for (const w of waiting.values()) w.reject(new Error(e.message || 'worker error')); waiting.clear(); worker = null; };
+    worker.onmessage = (e) => { const w = waiting.get(e.data.id); if (!w) return; waiting.delete(e.data.id); clearTimeout(w.timer); if (e.data.error) w.reject(new Error(e.data.error)); else w.resolve(e.data); };
+    worker.onerror = (e) => stopWorker(e.message || 'worker error');
   }
-  const id = ++seq; return new Promise((resolve, reject) => { waiting.set(id, { resolve, reject }); worker.postMessage({ ...msg, id }, transfer); });
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    waiting.set(id, { resolve, reject, timer: setTimeout(() => stopWorker('AI の返事がありません'), TIMEOUT) });
+    worker.postMessage({ ...msg, id }, transfer);
+  });
 }
 
 /**
