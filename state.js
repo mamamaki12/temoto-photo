@@ -4,6 +4,7 @@ import { BRUSH_TYPES } from './brushfx.js';
 
 /** 調整スライダーの定義: [キー, 表示名, 最小, 最大, グループ] */
 export const ADJ = [
+  ['lowlight', '暗い写真を明るく', 0, 100, 'light'],
   ['exposure', '露光量', -100, 100, 'light'],
   ['brightness', '明るさ', -100, 100, 'light'],
   ['contrast', 'コントラスト', -100, 100, 'light'],
