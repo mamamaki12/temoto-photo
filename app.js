@@ -9,8 +9,9 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpSegment, warpGuard } from './brushfx.js';
+import { warpSegment, warpGuard, LIP_COLORS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
+import { ensureSkinSeg, skinSegFor, findLips } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -23,7 +24,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.13.4'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.14.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -480,6 +481,28 @@ function rebuildSource() {
   E.retouchKey = sourceKey(E.state);
   if (E.showSkin && E.tool === 'skin') E.engine.setSource(skinOverlaySource(), E.W, E.H);
   E.small = null; E.thumbsKey = null;
+  if (portraitActive(E.state.portrait)) maybeSkinSeg();
+}
+/** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
+function baseImageData() {
+  if (!E.baseData) E.baseData = ctx2d(toCanvas(E.base, E.W, E.H), { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
+  return E.baseData;
+}
+/**
+ * 美肌を使うとき、AI で人物の肌（顔・首・腕）を見分ける（はじめての 1 回は、AI の読み込みに少し時間がかかる）。
+ * できたら美肌を計算し直す。使えない端末では、今までどおり色だけで判定する
+ */
+function maybeSkinSeg() {
+  if (E.segBusy || E.segFailed) return;
+  const bd = baseImageData(); if (skinSegFor(bd)) return;
+  E.segBusy = true; E.stageEl.classList.add('busy', 'seg');
+  const e0 = E;
+  ensureSkinSeg(bd).then((ok) => {
+    if (E !== e0) return;
+    E.segBusy = false; E.stageEl.classList.remove('busy', 'seg');
+    if (!ok) { E.segFailed = true; return; }
+    E.skinCache = {}; rebuildSource(); requestRender();
+  });
 }
 /** 修復を1つ足す（全部やり直さず、その場所だけ書き換える） */
 function addRetouch(op) {
@@ -1012,7 +1035,7 @@ function setShowSkin(on) {
   requestAnimationFrame(() => setTimeout(() => { if (!E) return; try { rebuildSource(); } finally { E.stageEl.classList.remove('busy'); } requestRender(); }, 0));
 }
 function skinOverlaySource() {
-  if (!E.baseData) E.baseData = ctx2d(toCanvas(E.base, E.W, E.H), { willReadFrequently: true }).getImageData(0, 0, E.W, E.H);
+  baseImageData();
   const c = toCanvas(E.src || E.base, E.W, E.H); const ctx = ctx2d(c, { willReadFrequently: true });
   const d = ctx.getImageData(0, 0, E.W, E.H); tintSkin(d, E.baseData, E.state.portrait); ctx.putImageData(d, 0, 0);
   return c;
@@ -1333,8 +1356,8 @@ function localHandles(l) {
 const FX = {
   shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
     hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは動かしたい所が丸ごと入るくらいにして、少しずつ何回かに分けると自然です（小さすぎると、へこみができます）。' },
-  eyes: { modes: [['eyes', '目元'], ['teeth', '歯']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 } },
-    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をなぞってください。黄ばみだけを取って白くします（唇・歯ぐきの赤はほとんど変えません）。' } },
+  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 } },
+    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をなぞってください。黄ばみだけを取って白くします（唇・歯ぐきの赤はほとんど変えません）。', lip: '色を選んで、唇をなぞってください。唇（まわりの肌より赤い所）だけに色をのせます。はみ出しても肌・歯はほとんど変わりません。唇のしわ・つやは残ります。' } },
   dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
     hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
   wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
@@ -1363,12 +1386,42 @@ function fxPanel(tool) {
   return [
     hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
     d.modes ? chips(d.modes, f.mode, (v) => { prefs.set(`fx2:${tool}:mode`, v); buildPanel(); }, { label: '種類' }).el : null,
+    f.mode === 'lip' ? lipColorPicker() : null,
     slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
     slider({ label: '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
     h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
     n ? row(btn(`${TOOL_LABEL[tool]}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small')) : null,
     hint('うまくいかなかったら「元に戻す」で 1 回ずつ戻せます。2 本指で広げると、拡大して細かい所をなぞれます（ブラシの大きさは写真に対する大きさなので、拡大しても変わりません）。'),
   ];
+}
+/** リップの色（選んだもの） */
+// 色は「色合い（色相）・濃さ（彩度）・明るさ」で持つ。見本の色を選ぶと 3 つがその色になり、スライダーで好みに調整できる
+const rgbToHsl = ([r, g, b]) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b); const mn = Math.min(r, g, b); const l = (mx + mn) / 2; const d = mx - mn; if (!d) return [0, 0, Math.round(l * 100)]; const s = d / (1 - Math.abs(2 * l - 1)); let hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh = (hh * 60 + 360) % 360; return [Math.round(hh), Math.round(s * 100), Math.round(l * 100)]; };
+const hslToRgb = ([hh, s, l]) => { s /= 100; l /= 100; const c = (1 - Math.abs(2 * l - 1)) * s; const x = c * (1 - Math.abs(((hh / 60) % 2) - 1)); const m = l - c / 2; const [r, g, b] = hh < 60 ? [c, x, 0] : hh < 120 ? [x, c, 0] : hh < 180 ? [0, c, x] : hh < 240 ? [0, x, c] : hh < 300 ? [x, 0, c] : [c, 0, x]; return [r, g, b].map((v) => Math.round((v + m) * 255)); };
+const lipHsl = () => { const v = prefs.get('lipHsl', null); return Array.isArray(v) && v.length === 3 ? v : rgbToHsl(LIP_COLORS[0][2]); };
+const lipColor = () => hslToRgb(lipHsl());
+/** リップの色: 見本の色と、色合い・濃さ・明るさのスライダー（いまの色の見本つき） */
+function lipColorPicker() {
+  const cur = lipHsl(); const set = (v) => { prefs.set('lipHsl', v); };
+  const sw = h('span', { class: 'lip-dot big', 'aria-hidden': 'true', style: { background: `rgb(${lipColor().join(' ')})` } });
+  const upd = (i) => (v) => { const x = lipHsl(); x[i] = v; set(x); sw.style.background = `rgb(${lipColor().join(' ')})`; };
+  return h('div', { class: 'lip-picker' },
+    h('div', { class: 'chips lip-colors', role: 'group', 'aria-label': 'リップの色の見本' }, LIP_COLORS.map(([k, label, rgb]) => {
+      const hsl = rgbToHsl(rgb); const on = hsl.every((v, i) => Math.abs(v - cur[i]) <= 1);
+      return h('button', { type: 'button', 'aria-pressed': String(on), onclick: () => { set(hsl); buildPanel(); } }, h('span', { class: 'lip-dot', 'aria-hidden': 'true', style: { background: `rgb(${rgb.join(' ')})` } }), label);
+    })),
+    h('div', { class: 'lip-now' }, sw, h('span', { class: 'muted small' }, 'いまの色（スライダーで調整）')),
+    slider({ label: '色合い', min: 0, max: 360, value: cur[0], def: cur[0], unit: '°', track: 'hue', onInput: upd(0), onChange: upd(0) }).el,
+    slider({ label: '色の濃さ', min: 10, max: 100, value: cur[1], def: cur[1], unit: '%', onInput: upd(1), onChange: upd(1) }).el,
+    slider({ label: '色の明るさ', min: 15, max: 75, value: cur[2], def: cur[2], unit: '%', onInput: upd(2), onChange: upd(2) }).el);
+}
+/** なぞった線のそばにある唇の輪郭だけを選ぶ（AI で見つけたもの） */
+function lipsNear(lips, pts) {
+  if (!lips?.length) return [];
+  const xs = pts.map((q) => q[0]); const ys = pts.map((q) => q[1]);
+  const box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  return lips.filter((l) => { const lx = l.outer.map((q) => q[0]); const ly = l.outer.map((q) => q[1]); return Math.max(...lx) >= box[0] && Math.min(...lx) <= box[2] && Math.max(...ly) >= box[1] && Math.min(...ly) <= box[3]; })
+    .map((l) => ({ outer: l.outer.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]), inner: l.inner.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]) }));
 }
 /** なぞる操作。形を整えるは、なぞりながらその場で動かす。ほかは指を離したときに当てる */
 function fxAction(tool, c, p) {
@@ -1408,10 +1461,21 @@ function fxAction(tool, c, p) {
     end: (e) => {
       E.fxPath = null; if (raf) { cancelAnimationFrame(raf); raf = 0; }
       if (e?.pointerType !== 'mouse') E.cursor = null; // 指で描いたときは、離したら丸を消す
-      const op = { type, pts, r, amt };
+      const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
         flush(); E.state.retouch.push(op); E.retouchKey = sourceKey(E.state); E.small = null;
+      } else if (type === 'lip') {
+        // 唇の場所は AI で見つける（はじめての 1 回は少し時間がかかる）。見つからなければ色で判定する
+        E.stageEl.classList.add('busy', 'lips');
+        const e0 = E;
+        findLips(baseImageData()).then((lips) => {
+          if (E !== e0) return; E.stageEl.classList.remove('busy', 'lips');
+          op.lips = lipsNear(lips, pts);
+          if (!op.lips.length) toast(lips ? '唇が見つからなかったので、色で判定しました（顔の向きによっては見つかりません）' : '唇を見つける AI を使えないので、色で判定しました');
+          addRetouch(op); commit(); buildPanel(); requestRender();
+        });
+        return;
       } else addRetouch(op);
       commit(); buildPanel(); requestRender();
     },
@@ -1643,6 +1707,7 @@ function openExport({ batch }) {
         for (const p of batch) {
           status.textContent = `書き出しています… ${++i}/${batch.length}`;
           const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
+          if (portraitActive(S.validateState(p.state).portrait)) await ensureSkinSeg(ctx2d(toCanvas(prep.base, prep.W, prep.H), { willReadFrequently: true }).getImageData(0, 0, prep.W, prep.H)); // 美肌の肌を AI で見分ける
           if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
             status.textContent = `RAW を元の大きさで現像しています… ${i}/${batch.length}`;
             try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
