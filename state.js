@@ -125,12 +125,12 @@ function validRetouch(r) {
     const pts = arr(r.pts, MAX_BRUSH_POINTS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]);
     if (!pts.length) return null;
     const op = { type: r.type, pts, r: num(r.r, 0.002, 0.3, 0.03), amt: num(r.amt, 0, 1, 0.5) };
-    if (r.type === 'lip') {
-      op.col = Array.isArray(r.col) && r.col.length === 3 ? r.col.map((v) => int(v, 0, 255)) : [214, 92, 120]; // リップの色
-      // AI で見つけた唇の輪郭（顔ごとに外側・内側 20 点ずつ）。あればその中だけに色をのせる
+    if (r.type === 'lip') op.col = Array.isArray(r.col) && r.col.length === 3 ? r.col.map((v) => int(v, 0, 255)) : [214, 92, 120]; // リップの色
+    if (r.type === 'lip' || r.type === 'teeth') {
+      // AI で見つけた唇の輪郭（顔ごとに外側・内側 20 点ずつ）。リップは唇、歯は口の中（内側の輪郭）を元に範囲を決める
       const poly = (q) => (Array.isArray(q) ? q.slice(0, 40).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
       op.lips = arr(r.lips, 6).map((l) => ({ outer: poly(l?.outer), inner: poly(l?.inner) })).filter((l) => l.outer.length >= 3);
-      if (r.whole === true) op.whole = true; // 唇全体に色をのせる（なければ、なぞった所だけ）
+      if (r.whole === true) op.whole = true; // 範囲を自動で決める（なければ、なぞった所だけ）
     }
     return op;
   }

@@ -114,3 +114,58 @@ export async function findLips(img) {
     return r.lips;
   } catch (e) { console.warn('唇を見つける AI を使えませんでした（色で判定します）', e); return null; }
 }
+
+const mouthStore = new Map(); // 指紋と切り出した所 → 唇の輪郭の一覧
+/**
+ * なぞった所（目印）のそばの口（唇の外側・内側の輪郭。写真全体に対する 0〜1 の座標）を AI で見つける。
+ * 舞台や集合写真では顔が小さく、写真全体を縮めて AI に渡すと見つからないので、なぞった所のまわりを
+ * 狭い方から順に切り出して渡す（顔がまるごと入る大きさになったところで見つかる）。最後に写真全体でも探す。
+ * pts: なぞった線（0〜1）、r: ブラシの半径（短い辺に対する割合）
+ * @returns {Promise<{outer:number[][],inner:number[][]}[]|null>} 見つからなければ []、AI を使えなければ null
+ */
+export async function findMouth(img, pts, r = 0) {
+  const W = img.width; const H = img.height; const S = Math.min(W, H);
+  const xs = pts.map((q) => q[0] * W); const ys = pts.map((q) => q[1] * H); const rp = r * S;
+  const box = [Math.min(...xs) - rp, Math.min(...ys) - rp, Math.max(...xs) + rp, Math.max(...ys) + rp];
+  const cx = (box[0] + box[2]) / 2; const cy = (box[1] + box[3]) / 2;
+  const s = Math.max(box[2] - box[0], box[3] - box[1], S * 0.01);
+  // 目印に重なる口のうち、目印の真ん中にいちばん近いもの
+  const pick = (lips) => {
+    let best = null; let bd = Infinity;
+    for (const l of lips) {
+      const lx = l.outer.map((q) => q[0] * W); const ly = l.outer.map((q) => q[1] * H);
+      const mw = Math.max(...lx) - Math.min(...lx); const pad = mw * 0.25;
+      if (Math.max(...lx) + pad < box[0] || Math.min(...lx) - pad > box[2] || Math.max(...ly) + pad < box[1] || Math.min(...ly) - pad > box[3]) continue;
+      const d = Math.hypot((Math.max(...lx) + Math.min(...lx)) / 2 - cx, (Math.max(...ly) + Math.min(...ly)) / 2 - cy);
+      if (d < bd) { bd = d; best = l; }
+    }
+    return best ? [best] : [];
+  };
+  let src = null; let ok = false;
+  for (const k of [5, 10, 20, 40]) {
+    const side = s * k; if (side > Math.max(W, H) * 1.2) break;
+    const x0 = Math.max(0, Math.round(cx - side / 2)); const y0 = Math.max(0, Math.round(cy - side / 2));
+    const cw = Math.min(W, Math.round(cx + side / 2)) - x0; const ch = Math.min(H, Math.round(cy + side / 2)) - y0;
+    if (cw < 16 || ch < 16) continue;
+    const key = `${fingerprint(img)}|${x0},${y0},${cw},${ch}`;
+    let lips = mouthStore.get(key);
+    if (!lips) {
+      try {
+        if (!src) { src = new OffscreenCanvas(W, H); src.getContext('2d').putImageData(img instanceof ImageData ? img : new ImageData(img.data, W, H), 0, 0); }
+        // AI に渡す大きさ: 長い辺 384〜768（小さく切り出したときは拡大する。顔の点は渡した大きさの中の割合で返る）
+        const sc = Math.min(768, Math.max(384, Math.max(cw, ch))) / Math.max(cw, ch);
+        const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
+        const c2 = new OffscreenCanvas(w, h); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
+        const small = x2.getImageData(0, 0, w, h);
+        const res = await call({ kind: 'lips', w, h, data: small.data }, [small.data.buffer]);
+        const back = (q) => [(x0 + q[0] * cw) / W, (y0 + q[1] * ch) / H];
+        lips = res.lips.map((l) => ({ outer: l.outer.map(back), inner: l.inner.map(back) }));
+        mouthStore.set(key, lips); if (mouthStore.size > 32) mouthStore.delete(mouthStore.keys().next().value);
+        ok = true;
+      } catch (e) { console.warn('口を見つける AI を使えませんでした', e); return null; }
+    } else ok = true;
+    const got = pick(lips); if (got.length) return got;
+  }
+  const all = await findLips(img); if (!all) return ok ? [] : null;
+  return pick(all);
+}

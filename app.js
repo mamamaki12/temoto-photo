@@ -11,7 +11,7 @@ import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, co
 import { applyRetouch } from './retouch.js';
 import { warpSegment, warpGuard, LIP_COLORS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findLips } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -1426,7 +1426,7 @@ const FX = {
   shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
     hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは動かしたい所が丸ごと入るくらいにして、少しずつ何回かに分けると自然です（小さすぎると、へこみができます）。' },
   eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 } },
-    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をなぞってください。黄ばみだけを取って白くします（唇・歯ぐきの赤はほとんど変えません）。', lip: '色を選んで、唇を丸で囲むか、唇をタップしてください。AI が唇を見つけて、唇全体（歯は除く）に色をのせます。元の唇の明暗・つや・しわは残ります。「なぞった所だけ」にすると、なぞった所の唇にだけ色をのせます（端だけ足したいときなど）。' } },
+    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
   dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
     hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
   wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
@@ -1455,7 +1455,6 @@ function fxPanel(tool) {
   return [
     hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
     d.modes ? chips(d.modes, f.mode, (v) => { prefs.set(`fx2:${tool}:mode`, v); buildPanel(); }, { label: '種類' }).el : null,
-    f.mode === 'lip' ? chips([['whole', '唇全体'], ['paint', 'なぞった所だけ']], lipFill(), (v) => { prefs.set('lipFill', v); buildPanel(); }, { label: '色をのせる所' }).el : null,
     f.mode === 'lip' ? lipColorPicker() : null,
     slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
     slider({ label: '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
@@ -1464,8 +1463,6 @@ function fxPanel(tool) {
     hint('うまくいかなかったら「元に戻す」で 1 回ずつ戻せます。2 本指で広げると、拡大して細かい所をなぞれます（ブラシの大きさは写真に対する大きさなので、拡大しても変わりません）。'),
   ];
 }
-/** リップで色をのせる所: 'whole'（唇全体。丸で囲む・タップ）／'paint'（なぞった所だけ） */
-const lipFill = () => (prefs.get('lipFill', 'whole') === 'paint' ? 'paint' : 'whole');
 /** リップの色（選んだもの） */
 // 色は「色合い（色相）・濃さ（彩度）・明るさ」で持つ。見本の色を選ぶと 3 つがその色になり、スライダーで好みに調整できる
 const rgbToHsl = ([r, g, b]) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b); const mn = Math.min(r, g, b); const l = (mx + mn) / 2; const d = mx - mn; if (!d) return [0, 0, Math.round(l * 100)]; const s = d / (1 - Math.abs(2 * l - 1)); let hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh = (hh * 60 + 360) % 360; return [Math.round(hh), Math.round(s * 100), Math.round(l * 100)]; };
@@ -1487,16 +1484,8 @@ function lipColorPicker() {
     slider({ label: '色の濃さ', min: 10, max: 100, value: cur[1], def: cur[1], unit: '%', onInput: upd(1), onChange: upd(1) }).el,
     slider({ label: '色の明るさ', min: 15, max: 75, value: cur[2], def: cur[2], unit: '%', onInput: upd(2), onChange: upd(2) }).el);
 }
-/** なぞった線のそばにある唇の輪郭だけを選ぶ（AI で見つけたもの） */
-function lipsNear(lips, pts, r = 0) {
-  if (!lips?.length) return [];
-  // なぞった線（丸で囲んだ線・タップした点）を、ブラシの半径だけ広げた四角に重なる唇
-  const S = Math.min(E.W, E.H); const mx = (r * S) / E.W; const my = (r * S) / E.H;
-  const xs = pts.map((q) => q[0]); const ys = pts.map((q) => q[1]);
-  const box = [Math.min(...xs) - mx, Math.min(...ys) - my, Math.max(...xs) + mx, Math.max(...ys) + my];
-  return lips.filter((l) => { const lx = l.outer.map((q) => q[0]); const ly = l.outer.map((q) => q[1]); return Math.max(...lx) >= box[0] && Math.min(...lx) <= box[2] && Math.max(...ly) >= box[1] && Math.min(...ly) <= box[3]; })
-    .map((l) => ({ outer: l.outer.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]), inner: l.inner.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]) }));
-}
+/** AI で見つけた口の輪郭を、保存する形に（座標は 5 桁まで） */
+const roundLips = (lips) => lips.map((l) => ({ outer: l.outer.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]), inner: l.inner.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]) }));
 /** なぞる操作。形を整えるは、なぞりながらその場で動かす。ほかは指を離したときに当てる */
 function fxAction(tool, c, p) {
   const f = fxPrefs(tool); const type = FX[tool].type(f.mode);
@@ -1535,21 +1524,22 @@ function fxAction(tool, c, p) {
     end: (e) => {
       E.fxPath = null; if (raf) { cancelAnimationFrame(raf); raf = 0; }
       if (e?.pointerType !== 'mouse') E.cursor = null; // 指で描いたときは、離したら丸を消す
-      const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor(), ...(lipFill() === 'whole' ? { whole: true } : {}) } : {}) };
+      const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
         flush(); E.state.retouch.push(op); E.retouchKey = sourceKey(E.state); E.small = null;
-      } else if (type === 'lip') {
-        // 唇の場所は AI で見つける（はじめての 1 回は少し時間がかかる）。見つからなければ色で判定する
+      } else if (type === 'lip' || type === 'teeth') {
+        // なぞった所・タップした所は目印。そのそばの口を AI で見つけ、唇・歯の範囲はアプリが決める（はじめての 1 回は少し時間がかかる）
         drawHandles(); // なぞった線は、AI を待たずにすぐ消す
         E.stageEl.classList.add('busy', 'lips');
         const e0 = E;
-        findLips(baseImageData()).then((lips) => {
+        findMouth(baseImageData(), pts, r).then((lips) => {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'lips');
-          op.lips = lipsNear(lips, pts, r);
-          if (!op.lips.length) {
-            delete op.whole; // 唇が見つからないときは、なぞった所の赤い所だけ
-            toast(lips ? '唇が見つからなかったので、なぞった所の唇の色の所だけに色をのせました（顔の向きによっては見つかりません）' : '唇を見つける AI を使えないので、なぞった所の唇の色の所だけに色をのせました');
+          if (lips?.length) { op.lips = roundLips(lips); op.whole = true; }
+          else {
+            // 口が見つからないときは、今までどおり、なぞった所の唇・歯の色の所だけ
+            const what = type === 'lip' ? '唇' : '歯';
+            toast(lips ? `口が見つからなかったので、なぞった所の${what}の色の所だけを補正しました（横顔・顔が隠れているときは見つかりません）` : `口を見つける AI を使えないので、なぞった所の${what}の色の所だけを補正しました`);
           }
           addRetouch(op); commit(); buildPanel(); requestRender();
         });

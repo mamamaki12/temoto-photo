@@ -87,34 +87,144 @@ function inPoly(x, y, poly) {
   }
   return c;
 }
-/**
- * 唇の範囲（AI で見つけた唇の外側の輪郭の内側で、内側の輪郭（口の中）の外）。境目は少しぼかす。
- * polys: [{ outer, inner }]（写真全体に対する 0〜1）。at: この画像の一部が写真全体のどこか
- */
-/** 唇の輪郭（とその少し外）を囲む四角の中を、ブラシの効き具合 1 で埋めたもの（唇全体に色をのせるとき） */
+const ycc = (r, g, b) => [0.299 * r + 0.587 * g + 0.114 * b, 128 - 0.168736 * r - 0.331264 * g + 0.5 * b, 128 + 0.5 * r - 0.418688 * g - 0.081312 * b];
+
+/** 唇の輪郭（とその少し外）を囲む四角の中を、ブラシの効き具合 1 で埋めたもの（範囲を自動で決めるとき） */
 function lipBoxMask(img, polys, at) {
   let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
   for (const p of polys) for (const [x, y] of p.outer) { const X = x * at.W - at.ox; const Y = y * at.H - at.oy; x0 = Math.min(x0, X); y0 = Math.min(y0, Y); x1 = Math.max(x1, X); y1 = Math.max(y1, Y); }
-  const pad = (y1 - y0) * 0.2 + 3;
+  const pad = (y1 - y0) * 0.45 + 4;
   const bx = Math.max(0, Math.floor(x0 - pad)); const by = Math.max(0, Math.floor(y0 - pad));
   const bx1 = Math.min(img.width, Math.ceil(x1 + pad)); const by1 = Math.min(img.height, Math.ceil(y1 + pad));
   const w = bx1 - bx; const h = by1 - by;
   return w > 0 && h > 0 ? { m: new Float32Array(w * h).fill(1), bx, by, w, h } : null;
 }
 
-function lipArea(mk, polys, at) {
+/** 輪郭の中を 1 で塗る（inner があれば、その中は 0）。四角 mk の中の画素ごと */
+function fillPoly(mk, outer, inner) {
   const { bx, by, w, h } = mk; const a = new Float32Array(w * h);
-  const toPx = (poly) => poly.map(([x, y]) => [x * at.W - at.ox, y * at.H - at.oy]);
-  let lipH = 0;
-  for (const p of polys) {
-    const o = toPx(p.outer); const n = toPx(p.inner);
-    const ys = o.map((q) => q[1]); lipH = Math.max(lipH, Math.max(...ys) - Math.min(...ys));
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const X = bx + x + 0.5; const Y = by + y + 0.5;
-      if (inPoly(X, Y, o) && !inPoly(X, Y, n)) a[y * w + x] = 1;
-    }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const X = bx + x + 0.5; const Y = by + y + 0.5;
+    if (inPoly(X, Y, outer) && !(inner && inPoly(X, Y, inner))) a[y * w + x] = 1;
   }
-  return blur(a, w, h, 1, Math.max(1, lipH * 0.04)); // 唇の厚みの 4% ほどぼかす
+  return a;
+}
+
+/**
+ * AI の輪郭は数画素ずれることがあるので、輪郭のそばでは色で境目を決め直す。
+ * prior: 輪郭からの「それらしさ」（輪郭をぼかしたもの。輪郭の上で 0.5）。fg / bg: 色を覚える画素（それらしい所・違う所）。
+ * 明るさ・色（YCbCr）のヒストグラムで、その色が「それらしい所」と「違う所」のどちらに多いかを、prior に掛ける（ベイズ）
+ */
+function refineByColor(img, mk, prior, fg, bg) {
+  const { bx, by, w, h } = mk; const d = img.data; const W = img.width;
+  const NY = 8; const NC = 24; const span = 48; // Cb・Cr は 128±48 を 24 段に
+  const bin = (Y, cb, cr) => {
+    const iy = Math.min(NY - 1, Math.max(0, Math.floor(Y / 256 * NY)));
+    const ib = Math.min(NC - 1, Math.max(0, Math.floor((cb - 128 + span) / (2 * span) * NC)));
+    const ir = Math.min(NC - 1, Math.max(0, Math.floor((cr - 128 + span) / (2 * span) * NC)));
+    return (iy * NC + ib) * NC + ir;
+  };
+  const n = w * h; const bins = new Int32Array(n); const hf = new Float32Array(NY * NC * NC); const hb = new Float32Array(NY * NC * NC);
+  let sf = 0; let sb = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const k = ((by + y) * W + bx + x) * 4; const [Y, cb, cr] = ycc(d[k], d[k + 1], d[k + 2]);
+    const b = bin(Y, cb, cr); bins[i] = b;
+    if (fg[i] > 0) { hf[b] += fg[i]; sf += fg[i]; }
+    if (bg[i] > 0) { hb[b] += bg[i]; sb += bg[i]; }
+  }
+  if (sf < 20 || sb < 20) return prior; // 色を覚えるには小さすぎる
+  // ヒストグラムを少しならす（隣の段にも少し分ける。サンプルの少ない色で急に変わらないように）
+  const smooth = (hh) => {
+    let a = hh; for (let ax = 0; ax < 3; ax++) {
+      const o = new Float32Array(a.length); const st = ax === 0 ? 1 : ax === 1 ? NC : NC * NC; const len = ax === 2 ? NY : NC;
+      for (let i = 0; i < a.length; i++) { const p = Math.floor(i / st) % len; o[i] = a[i] * 0.5 + (p > 0 ? a[i - st] : a[i]) * 0.25 + (p < len - 1 ? a[i + st] : a[i]) * 0.25; }
+      a = o;
+    }
+    return a;
+  };
+  const pf = smooth(hf); const pb = smooth(hb); const eps = 0.3 / (NY * NC * NC);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = prior[i]; if (p <= 0.01) continue; if (p >= 0.99) { out[i] = 1; continue; }
+    const lf = pf[bins[i]] / sf + eps; const lb = pb[bins[i]] / sb + eps;
+    out[i] = (p * lf) / (p * lf + (1 - p) * lb);
+  }
+  return out;
+}
+
+/** 輪郭の高さ（画素） */
+const polyH = (poly) => { const ys = poly.map((q) => q[1]); return Math.max(...ys) - Math.min(...ys); };
+const toPx = (poly, at) => poly.map(([x, y]) => [x * at.W - at.ox, y * at.H - at.oy]);
+
+/**
+ * 唇の範囲（0〜1）: AI で見つけた唇の外側の輪郭の内側で、内側の輪郭（口の中）の外。
+ * 輪郭のそばは、唇の色とまわり（肌・歯・口の中）の色の違いで境目を決め直し、なめらかにぼかす。
+ * polys: [{ outer, inner }]（写真全体に対する 0〜1）。at: この画像の一部が写真全体のどこか
+ */
+function lipArea(img, mk, polys, at) {
+  const { w, h } = mk; const area = new Float32Array(w * h);
+  for (const p of polys) {
+    const o = toPx(p.outer, at); const n = toPx(p.inner, at); const lipH = Math.max(2, polyH(o));
+    const fill = fillPoly(mk, o, n);
+    const prior = blur(fill, w, h, 1, Math.max(1, lipH * 0.06)); // 輪郭から唇の厚みの 6% ほどの所までは、色で決める
+    // 色を覚える所: 唇の芯（輪郭から離れた所）と、輪郭から離れた外（肌）・口の中
+    const core = blur(fill, w, h, 1, Math.max(1, lipH * 0.04)); const wide = blur(fill, w, h, 1, Math.max(2, lipH * 0.18));
+    const fg = new Float32Array(w * h); const bg = new Float32Array(w * h);
+    for (let i = 0; i < fg.length; i++) { if (core[i] > 0.97) fg[i] = 1; else if (wide[i] < 0.03 || (prior[i] < 0.02 && fill[i] === 0)) bg[i] = 1; }
+    const post = refineByColor(img, mk, prior, fg, bg);
+    const soft = blur(post, w, h, 1, Math.max(1, lipH * 0.04)); // ざらつき（ノイズで色の判定がばらつく所）をならす
+    for (let i = 0; i < area.length; i++) area[i] = Math.max(area[i], soft[i]);
+  }
+  // 内側の輪郭がずれて歯が唇の範囲に入っていても、歯には色をのせない
+  const t = teethArea(img, mk, polys, at).area;
+  for (let i = 0; i < area.length; i++) area[i] *= 1 - Math.min(1, t[i] * 1.5);
+  return area;
+}
+
+/**
+ * 歯の範囲（0〜1）と、まわりの肌の色（照明の色の目安）。
+ * 口を大きく開けて笑っていると AI の内側の輪郭は歯の上にずれることがあるので、範囲は外側の輪郭の中から色で選ぶ:
+ * 肌より赤みが少ない（または同じくらいの）明るい所が歯。唇・歯ぐき・舌（赤い所）と、口の奥の暗い所は選ばない。
+ * 暗い舞台など照明の色が強い写真では、歯もオレンジ色に写るので、色の基準は決まった値ではなく、その写真の肌・唇と比べる
+ */
+function teethArea(img, mk, polys, at) {
+  const { bx, by, w, h } = mk; const d = img.data; const W = img.width; const area = new Float32Array(w * h);
+  let rs = 0; let rb = 0; let rr = 0; // まわりの肌の色（明るさで割った Cb・Cr）
+  const px = (i) => ((by + Math.floor(i / w)) * W + bx + (i % w)) * 4;
+  const gr = (k) => d[k + 1] / Math.max(1, d[k]);
+  for (const p of polys) {
+    const n = toPx(p.inner, at); const o = toPx(p.outer, at);
+    const lipH = Math.max(2, polyH(o)); if (polyH(n) < Math.max(1.5, lipH * 0.04)) continue; // 口を閉じている
+    const face = fillPoly(mk, o, null); const lipFill = fillPoly(mk, o, n);
+    const wide = blur(face, w, h, 1, Math.max(2, lipH * 0.15)); const edge = blur(face, w, h, 1, Math.max(1, lipH * 0.04));
+    const mouth = blur(fillPoly(mk, n, null), w, h, 1, Math.max(1, lipH * 0.06)); // 内側の輪郭の中は、歯らしさを高めに
+    // 基準: 口の中の明るさ（明るい方から 1 割の所）、唇と肌の赤み（緑÷赤のまん中）
+    const Ls = []; const lipGr = []; const skinGr = [];
+    for (let i = 0; i < face.length; i++) {
+      const k = px(i);
+      if (face[i]) { Ls.push(ycc(d[k], d[k + 1], d[k + 2])[0]); if (lipFill[i]) lipGr.push(gr(k)); }
+      else if (wide[i] < 0.02) { const [Y, cb, cr] = ycc(d[k], d[k + 1], d[k + 2]); if (Y > 8) { skinGr.push(gr(k)); rs += 1; rb += (cb - 128) / Y; rr += (cr - 128) / Y; } }
+    }
+    if (Ls.length < 10 || lipGr.length < 10 || skinGr.length < 10) continue;
+    const med = (a) => { a.sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
+    Ls.sort((x, y) => x - y); const Lref = Math.max(12, Ls[Math.floor(Ls.length * 0.9)]);
+    const gSkin = med(skinGr); const span = Math.max(0.05, gSkin - med(lipGr));
+    const g0 = gSkin - 0.3 * span; const g1 = gSkin + 0.15 * span; // 唇と肌の間より赤い所は歯ではない
+    const like = new Float32Array(w * h); const fg = new Float32Array(w * h); const bg = new Float32Array(w * h); const prior = new Float32Array(w * h);
+    for (let i = 0; i < like.length; i++) {
+      prior[i] = clamp01((edge[i] - 0.5) * 2.5) * (0.55 + 0.45 * mouth[i]); if (prior[i] <= 0.01) continue; // 外側の輪郭の少し内側まで
+      const k = px(i); const [Y] = ycc(d[k], d[k + 1], d[k + 2]);
+      const bright = clamp01((Y / Lref - 0.5) / 0.3); // 口の中のいちばん明るい所の半分より暗い所（口の奥・影・唇の陰）は除く
+      const notRed = clamp01((gr(k) - g0) / (g1 - g0));
+      like[i] = bright * notRed;
+      if (like[i] > 0.8) fg[i] = 1; else if (like[i] < 0.15) bg[i] = 1;
+    }
+    const post = refineByColor(img, mk, prior, fg, bg);
+    for (let i = 0; i < like.length; i++) like[i] = Math.min(1, like[i] * 1.25) * post[i];
+    const soft = blur(like, w, h, 1, Math.max(1, lipH * 0.01));
+    for (let i = 0; i < area.length; i++) area[i] = Math.max(area[i], soft[i]);
+  }
+  return { area, skin: rs ? [rb / rs, rr / rs] : [0, 0] };
 }
 
 /**
@@ -125,7 +235,6 @@ function lipArea(mk, polys, at) {
  */
 function lip(img, mk, amt, col, area) {
   const { m, bx, by, w, h } = mk; const d = img.data; const W = img.width;
-  const ycc = (r, g, b) => [0.299 * r + 0.587 * g + 0.114 * b, 128 - 0.168736 * r - 0.331264 * g + 0.5 * b, 128 + 0.5 * r - 0.418688 * g - 0.081312 * b];
   // まわりの肌の赤み（AI の範囲がないとき用）: ブラシの中の赤みの少ない方から 25% の所
   const crs = [];
   for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) { if (m[y * w + x] < 0.2) continue; const k = ((by + y) * W + bx + x) * 4; crs.push(ycc(d[k], d[k + 1], d[k + 2])[2]); }
@@ -163,13 +272,30 @@ function lip(img, mk, amt, col, area) {
   }
 }
 
-/** 歯を白く: 黄ばみ（青の不足）だけを減らし、少し明るく。赤い唇・歯ぐきはほとんど変えない */
-function teeth(img, mk, amt) {
+/**
+ * 歯を白く: 黄ばみ（色）を減らし、少し明るく。赤い唇・歯ぐきはほとんど変えない。
+ * area があれば（自動で決めた歯の範囲）、その範囲に当てる。黄ばみは消しきらず半分ほどにする
+ * （照明の色がついた写真で歯だけ真っ白・青白くなると、浮いて見えるため）
+ */
+function teeth(img, mk, amt, area) {
   const { m, bx, by, w, h } = mk; const d = img.data; const W = img.width;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const a = m[y * w + x]; if (!a) continue;
     const k = ((by + y) * W + bx + x) * 4;
     const r = d[k]; const g = d[k + 1]; const b = d[k + 2];
+    if (area) {
+      const s = a * amt * area.area[y * w + x]; if (s <= 0.002) continue;
+      const [Y, cb, cr] = ycc(r, g, b);
+      // 色（黄ばみ）を、まわりの肌の色の半分くらいの淡い色に寄せる（照明の色は残る。真っ白・青白くはしない）
+      const t = 0.75 * s; const tb = area.skin[0] * 0.55 * Y; const tr = area.skin[1] * 0.55 * Y;
+      const cb1 = cb - 128 < tb ? cb + (tb - (cb - 128)) * t : cb; // 黄色み（青の不足）が目安より強いときだけ減らす
+      const cr1 = cr - 128 > tr ? cr + (tr - (cr - 128)) * t : cr; // 赤みも同じ
+      const Y1 = Y + Math.min(Y * 0.16, 255 - Y) * s * (1 - Y / 300); // 少し明るく（もともと明るい所は控えめ）
+      d[k] = Math.max(0, Math.min(255, Y1 + 1.402 * (cr1 - 128)));
+      d[k + 1] = Math.max(0, Math.min(255, Y1 - 0.344136 * (cb1 - 128) - 0.714136 * (cr1 - 128)));
+      d[k + 2] = Math.max(0, Math.min(255, Y1 + 1.772 * (cb1 - 128)));
+      continue;
+    }
     const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     // 黄色っぽい（赤と緑が近く、青が少ない）・暗すぎない所ほど強く
     const yellow = Math.max(0, (r + g) / 2 - b) / 255;
@@ -395,17 +521,18 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
     for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt, guard);
     return;
   }
-  if (op.type === 'lip' && op.whole && op.lips?.length) {
-    // 唇全体: なぞった所に関係なく、AI で見つけた唇（上唇・下唇。歯は除く）の全体に色をのせる
-    const mk = lipBoxMask(img, op.lips, at);
-    if (mk) lip(img, mk, amt, op.col || LIP_COLORS[0][2], lipArea(mk, op.lips, at));
+  if ((op.type === 'lip' || op.type === 'teeth') && op.whole && op.lips?.length) {
+    // 範囲を自動で: なぞった所は目印。AI で見つけた唇（上唇・下唇）・歯の全体に当てる
+    const mk = lipBoxMask(img, op.lips, at); if (!mk) return;
+    if (op.type === 'lip') lip(img, mk, amt, op.col || LIP_COLORS[0][2], lipArea(img, mk, op.lips, at));
+    else teeth(img, mk, amt, teethArea(img, mk, op.lips, at));
     return;
   }
   const mk = strokeMask(img, pts, rad); if (!mk) return;
   if (op.type === 'dodge') dodgeBurn(img, mk, amt, 1);
   else if (op.type === 'burn') dodgeBurn(img, mk, amt, -1);
   else if (op.type === 'teeth') teeth(img, mk, amt);
-  else if (op.type === 'lip') lip(img, mk, amt, op.col || LIP_COLORS[0][2], op.lips?.length ? lipArea(mk, op.lips, at) : null);
+  else if (op.type === 'lip') lip(img, mk, amt, op.col || LIP_COLORS[0][2], op.lips?.length ? lipArea(img, mk, op.lips, at) : null);
   else if (op.type === 'eyes') eyes(img, mk, amt, rad);
   else if (op.type === 'wrinkle') wrinkle(img, mk, amt, rad);
 }
@@ -418,9 +545,9 @@ export function brushBounds(op, W, H) {
     const px = x * W; const py = y * H; x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py);
     if (i) travel = Math.max(travel, Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H));
   });
-  // 唇全体に色をのせるときは、唇のまわりも読み出す（唇の高さの 2 割ほど外まで）
-  if (op.type === 'lip' && op.whole) for (const l of op.lips || []) {
-    const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.2 + 4;
+  // 範囲を自動で決めるときは、唇のまわりも読み出す（唇の高さの 5 割ほど外まで。色を覚える所とぼかしのぶん）
+  if ((op.type === 'lip' || op.type === 'teeth') && op.whole) for (const l of op.lips || []) {
+    const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.5 + 8;
     for (const [x, y] of l.outer) { x0 = Math.min(x0, x * W - m); y0 = Math.min(y0, y * H - m); x1 = Math.max(x1, x * W + m); y1 = Math.max(y1, y * H + m); }
   }
   // しわ取り・目元のぼかしは、ブラシの外の画素も少し使う（境目が変わらないよう、余白を足す）
