@@ -1,6 +1,7 @@
 // 人物の肌（顔・体）を見分ける Worker（MediaPipe の「Selfie Multiclass」モデル。端末の中だけで動く）。
-// 受け取る: { id, kind: 'skin' | 'person' | 'lips' | 'eyes' | 'face', w, h, data: Uint8ClampedArray（RGBA） }
-// 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }／face → { id, faces: [[[x, y, z], …478 点], …] }
+// 受け取る: { id, kind: 'skin' | 'person' | 'parts' | 'lips' | 'eyes' | 'face', w, h, data: Uint8ClampedArray（RGBA） }
+// 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／
+//       parts → { id, w, h, body, face, cloth: Float32Array（0〜1。体の肌・顔の肌・服とそのほかの身につけた物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }／face → { id, faces: [[[x, y, z], …478 点], …] }
 //       eyes → { id, eyes: [[{ lid, iris, pose }, { lid, iris, pose }]]（顔ごとに右目・左目。lid: まぶたのふち 16 点、iris: 黒目の中心と上右下左の 4 点。0〜1 の座標。pose: 顔の向き [yaw, pitch]） }
 // クラシックな Worker にしているのは、MediaPipe が読み込み用のスクリプトを importScripts で読むため
 /* eslint-disable no-undef */
@@ -57,6 +58,13 @@ self.onmessage = async (e) => {
       for (let i = 0; i < bg.length; i++) person[i] = 1 - bg[i];
       res.close?.();
       self.postMessage({ id, w, h, skin: person }, [person.buffer]); return;
+    }
+    if (kind === 'parts') {
+      const body = Float32Array.from(res.confidenceMasks[2].getAsFloat32Array()); const face = Float32Array.from(res.confidenceMasks[3].getAsFloat32Array());
+      const c4 = res.confidenceMasks[4].getAsFloat32Array(); const c5 = res.confidenceMasks[5].getAsFloat32Array();
+      const cloth = new Float32Array(c4.length); for (let i = 0; i < cloth.length; i++) cloth[i] = Math.min(1, c4[i] + c5[i]);
+      res.close?.();
+      self.postMessage({ id, w, h, body, face, cloth }, [body.buffer, face.buffer, cloth.buffer]); return;
     }
     const body = res.confidenceMasks[2].getAsFloat32Array(); const face = res.confidenceMasks[3].getAsFloat32Array();
     const skin = new Float32Array(body.length); for (let i = 0; i < skin.length; i++) skin[i] = Math.min(1, body[i] + face[i]);

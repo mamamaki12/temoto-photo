@@ -1,14 +1,16 @@
 // 被写体ブレの補正の AI を動かす Worker（ONNX Runtime Web。WebGPU があれば GPU で、なければ CPU で。端末の中だけで動く）
-// 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか }
+// 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか,
+//   strong: 大きなブレを直す所（deblur.js の strongMask の結果。なければ null） }
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
-import { deblurResidual2, denoiseSmall, TILE } from './deblur.js';
+import { deblurResidual2, denoiseSmall, strongResidual, mergeStrong, TILE, STRONG_TILE } from './deblur.js';
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
+const STRONG_MODEL = new URL('./vendor/deblur/fftformer-gopro.onnx', import.meta.url); // 大きなブレ用（34MB。128×128 を 1 枚ずつ）
 
 /** モデルを読み込む（はじめての 1 回は 36MB をダウンロード。以後はキャッシュ） */
-async function download(onProgress) {
-  const res = await fetch(MODEL);
+async function download(url, onProgress) {
+  const res = await fetch(url);
   if (!res.ok || !res.body) throw new Error('ブレ補正の AI を読み込めませんでした');
   const total = +res.headers.get('Content-Length') || 0; const parts = []; let got = 0;
   const reader = res.body.getReader();
@@ -23,10 +25,10 @@ async function download(onProgress) {
 }
 
 /** CPU の Worker をいくつか作り、区画を分けて渡す（1 つの Worker の中の計算は 1 本なので、Worker の数だけ速くなる） */
-function cpuPool(model) {
+function cpuPool(model, size, most, mostIOS) {
   const nav = self.navigator || {};
   const ios = /iP(hone|ad|od)/.test(nav.userAgent || '') || (nav.maxTouchPoints > 1 && /Mac/.test(nav.userAgent || ''));
-  const n = Math.max(1, Math.min(ios ? 2 : 4, (nav.hardwareConcurrency || 2) - 1)); // iPhone・iPad はメモリが少ないので 2 つまで
+  const n = Math.max(1, Math.min(ios ? mostIOS : most, (nav.hardwareConcurrency || 2) - 1));
   const idle = []; const waiting = []; const jobs = new Map(); let seq = 0; let failed = null;
   const ready = [];
   for (let i = 0; i < n; i++) {
@@ -47,7 +49,7 @@ function cpuPool(model) {
   function pump() {
     while (idle.length && waiting.length) {
       const wk = idle.pop(); const job = waiting.shift(); const id = ++seq;
-      jobs.set(id, job); wk.postMessage({ type: 'run', id, input: job.input, n: job.n, size: TILE }, [job.input.buffer]);
+      jobs.set(id, job); wk.postMessage({ type: 'run', id, input: job.input, n: job.n, size }, [job.input.buffer]);
     }
   }
   return {
@@ -57,12 +59,19 @@ function cpuPool(model) {
   };
 }
 
-let backend = null; // { run(input, n), size }
-async function init(onProgress) {
-  if (backend) return backend;
+const backends = new Map(); // モデルの URL → { run(input, n), size }
+async function init(url, opts, onProgress) {
+  if (backends.has(url.href)) return backends.get(url.href);
+  const backend = await create(url, opts, onProgress);
+  backends.set(url.href, backend);
+  return backend;
+}
+/** size: 区画の大きさ。most・mostIOS: CPU で動かすときの Worker の数の上限（1 つの Worker が使うメモリで決める。iPhone・iPad はメモリが少ない） */
+async function create(url, { size, most, mostIOS }, onProgress) {
+  let backend = null;
   ort.env.wasm.wasmPaths = new URL('./vendor/ort/', import.meta.url).href;
   ort.env.wasm.numThreads = 1;
-  const model = await download(onProgress);
+  const model = await download(url, onProgress);
   let gpu = false;
   try {
     const a = navigator.gpu && await navigator.gpu.requestAdapter();
@@ -74,17 +83,17 @@ async function init(onProgress) {
     try {
       const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'] });
       // GPU の計算が正しく動くか、小さな絵で確かめる（おかしければ CPU で）
-      const x = new Float32Array(3 * TILE * TILE).map((_, i) => 0.3 + 0.4 * ((i * 7919) % 97) / 97);
-      const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, TILE, TILE]) })).output.data;
+      const x = new Float32Array(3 * size * size).map((_, i) => 0.3 + 0.4 * ((i * 7919) % 97) / 97);
+      const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, size, size]) })).output.data;
       let bad = false; for (let i = 0; i < y.length; i += 101) if (!Number.isFinite(y[i]) || Math.abs(y[i] - x[i]) > 0.6) { bad = true; break; }
       if (!bad) {
-        backend = { size: 1, run: async (input, n) => (await s.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) })).output.data };
+        backend = { size: 1, run: async (input, n) => (await s.run({ input: new ort.Tensor('float32', input, [n, 3, size, size]) })).output.data };
         return backend;
       }
       await s.release();
     } catch (e) { console.warn('WebGPU でブレ補正を動かせないので CPU で動かします', e); }
   }
-  const pool = cpuPool(model);
+  const pool = cpuPool(model, size, most, mostIOS);
   await pool.ready;
   backend = pool;
   return backend;
@@ -93,9 +102,19 @@ async function init(onProgress) {
 self.onmessage = async ({ data }) => {
   if (data.type !== 'run') return;
   try {
-    const be = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
+    // 読み込みの進捗: 大きなブレも直すときは、2 つのモデルで半分ずつ
+    const sl = data.strong ? 0.5 : 1;
+    const be = await init(MODEL, { size: TILE, most: 4, mostIOS: 2 }, (t) => self.postMessage({ type: 'progress', phase: 'load', t: t * sl }));
+    // 強い AI は 1 つの Worker で 0.6GB ほど使うので、CPU では 2 つまで（iPhone・iPad は 1 つ）
+    const bs = data.strong ? await init(STRONG_MODEL, { size: STRONG_TILE, most: 2, mostIOS: 1 }, (t) => self.postMessage({ type: 'progress', phase: 'load', t: 0.5 + 0.5 * t })) : null;
     const input = data.denoise ? denoiseSmall(data.small, (t) => self.postMessage({ type: 'progress', phase: 'denoise', t })) : data.small;
-    const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t }) });
+    // 計算の進捗: 強い AI は 1 区画が今までの AI の 8 倍くらい重いので、6 割
+    const share = bs ? 0.4 : 1;
+    const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: t * share }) });
+    if (bs) {
+      const st = await strongResidual(input, bs.run, data.strong, { concurrency: bs.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: share + (1 - share) * t }) });
+      mergeStrong(res, st);
+    }
     self.postMessage({ type: 'result', res }, [res.data.buffer]);
   } catch (error) {
     self.postMessage({ type: 'error', message: error?.message || String(error) });

@@ -90,6 +90,42 @@ export async function personSeg(img) {
 }
 
 /**
+ * 人物の部位（体の肌・顔の肌・服）の地図。大きなブレを直す AI を、顔を外して手・腕・服にだけ当てるのに使う。
+ * img: 小さく縮めた写真の画素（長い辺 768 くらい）。personSeg と同じく、写真全体と正方形に近い一部ずつに当てて大きい方をとる。
+ * 使えない端末では null
+ * @returns {Promise<{w:number,h:number,body:Float32Array,face:Float32Array,cloth:Float32Array}|null>}
+ */
+const partsStore = new Map();
+export async function partsSeg(img) {
+  const key = fingerprint(img); if (partsStore.has(key)) return partsStore.get(key);
+  try {
+    const { width: w, height: h, data } = img;
+    const run = async (ox, oy, cw, ch) => {
+      const c = new Uint8ClampedArray(cw * ch * 4);
+      for (let y = 0; y < ch; y++) c.set(data.subarray(((oy + y) * w + ox) * 4, ((oy + y) * w + ox + cw) * 4), y * cw * 4);
+      return call({ kind: 'parts', w: cw, h: ch, data: c }, [c.buffer]);
+    };
+    const names = ['body', 'face', 'cloth']; const v = { w, h };
+    for (const k of names) v[k] = new Float32Array(w * h);
+    const put = (r, ox, oy, cw, ch, ramp) => {
+      for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+        const j = Math.min(r.h - 1, Math.floor(y * r.h / ch)) * r.w + Math.min(r.w - 1, Math.floor(x * r.w / cw)); const i = (oy + y) * w + ox + x; const a = ramp(x, y);
+        for (const k of names) v[k][i] = Math.max(v[k][i], r[k][j] * a);
+      }
+    };
+    put(await run(0, 0, w, h), 0, 0, w, h, () => 1);
+    const S = Math.min(w, h); const L = Math.max(w, h); const steps = Math.ceil((L - S) / (S / 2));
+    for (let k = 0; k <= steps && L > S * 1.1; k++) {
+      const off = Math.round((L - S) * k / steps); const tall = h > w;
+      const ox = tall ? 0 : off; const oy = tall ? off : 0; const cw = tall ? w : S; const ch = tall ? S : h; const fe = S * 0.12;
+      put(await run(ox, oy, cw, ch), ox, oy, cw, ch, (x, y) => { const t = tall ? y : x; return Math.min(1, off > 0 ? t / fe : 1, off + S < L ? (S - 1 - t) / fe : 1); });
+    }
+    partsStore.set(key, v); if (partsStore.size > 4) partsStore.delete(partsStore.keys().next().value);
+    return v;
+  } catch (e) { console.warn('人物の部位を見分ける AI を使えませんでした（大きなブレの補正はしません）', e); return null; }
+}
+
+/**
  * 写真の一部（box: 写真全体に対する 0〜1 の [x0, y0, x1, y1]）の人物の地図を、n×n に縮めて保存できる形にする
  * （形を整えるブラシが、背景を動かさないために使う。{ b: box, n, d: base64 の n×n（0〜255 = 人物らしさ） }）。
  * 切り出して AI に渡すので、写真全体を渡すより顔のまわりの輪郭が細かく出る。使えない端末では null

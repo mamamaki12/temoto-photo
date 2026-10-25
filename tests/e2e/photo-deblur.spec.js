@@ -104,3 +104,20 @@ test('被写体ブレの補正: 元の大きさの書き出しでも、編集中
   expect(r.size).toEqual([300, 700]);
   expect(r.diff).toBeLessThanOrEqual(2);
 });
+
+test('被写体ブレの補正（大きなブレ）: 人物の写真では強い AI も通すが、顔は今までと同じ', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { deblurResidualFor } = await import('/deblur-photo.js');
+    const img = new Image(); img.src = '/tests/fixtures/portrait.jpg'; await img.decode();
+    const w = img.naturalWidth; const h = img.naturalHeight;
+    const pct = []; const a = await deblurResidualFor(img, w, h, w, h, { onProgress: (p) => pct.push(p) });
+    const b = await deblurResidualFor(img, w, h, w, h, { strong: false });
+    // 顔（目・鼻・口のあたり）と、首・服のあたりで、強い AI の分だけ変わった量
+    const diff = (x0, y0, x1, y1) => { let s = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * w + x) * 3; s = Math.max(s, Math.abs(a.data[i] - b.data[i]), Math.abs(a.data[i + 1] - b.data[i + 1])); } return s; };
+    return { face: diff(270, 150, 370, 260), body: diff(100, 330, 540, 427), last: pct.at(-1), n: pct.length };
+  });
+  expect(r.face).toBeLessThan(1e-6); // 顔には当てない
+  expect(r.body).toBeGreaterThan(0); // 首・服には当てる
+  expect(r.n).toBeGreaterThan(3); expect(r.last).toBeGreaterThan(0.95); // 残り%のバーが進む
+});

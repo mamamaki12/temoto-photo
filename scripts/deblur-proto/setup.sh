@@ -10,3 +10,6 @@ mkdir -p w && python -m gdown 1Fr2QadtDCEXg6iwWX8OzeZLbHOx2t5Bj -O w/NAFNet-GoPr
 # FFTformer（MIT）: 構造と RealBlur の学習済みデータ
 curl -sfLO https://raw.githubusercontent.com/kkkls/FFTformer/main/basicsr/models/archs/fftformer_arch.py
 python -m gdown --folder https://drive.google.com/drive/folders/1l_R8_2UKfiQP_BYrgcQrmCBSe_ogwL41 -O realblur
+# FFTformer の GoPro の学習済みデータ（リポジトリの中にある。大きなブレ用。fft_export.py で ONNX に）
+curl -sfL -o w/fftformer_GoPro.pth https://raw.githubusercontent.com/kkkls/FFTformer/main/pretrain_model/fftformer_GoPro.pth
+python -m pip install onnxsim

@@ -56,11 +56,11 @@ function blur3(src, w, h, r) {
 }
 
 /** 区画の左上の位置（端の区画は、写真の端にそろえる） */
-function starts(n) {
-  if (n <= TILE) return [0];
+function starts(n, T = TILE, O = OVERLAP) {
+  if (n <= T) return [0];
   const out = [];
-  for (let v = 0; v < n - TILE; v += TILE - OVERLAP) out.push(v);
-  out.push(n - TILE);
+  for (let v = 0; v < n - T; v += T - O) out.push(v);
+  out.push(n - T);
   return [...new Set(out)];
 }
 
@@ -71,12 +71,12 @@ const RAMP = Float32Array.from({ length: TILE }, (_, i) => Math.min(1, (i + 0.5)
  * 直してよい量の地図（縮めた絵の画素ごと）。まわりの明るさのばらつきが大きい所（輪郭・模様）ほど大きい
  * @param {Float32Array} rgb 縮めた絵（RGB を並べたもの、0〜1）
  */
-export function gateMap(rgb, w, h) {
+export function gateMap(rgb, w, h, r = GATE_R, k = GATE_K) {
   const n = w * h; const Y = new Float32Array(n); const Y2 = new Float32Array(n);
   for (let i = 0; i < n; i++) { const v = 0.299 * rgb[i * 3] + 0.587 * rgb[i * 3 + 1] + 0.114 * rgb[i * 3 + 2]; Y[i] = v; Y2[i] = v * v; }
-  const m1 = blur3(Y, w, h, GATE_R); const m2 = blur3(Y2, w, h, GATE_R);
+  const m1 = blur3(Y, w, h, r); const m2 = blur3(Y2, w, h, r);
   const A = new Float32Array(n);
-  for (let i = 0; i < n; i++) A[i] = GATE_K * Math.max(0, Math.sqrt(Math.max(0, m2[i] - m1[i] * m1[i])) - GATE_FLOOR);
+  for (let i = 0; i < n; i++) A[i] = k * Math.max(0, Math.sqrt(Math.max(0, m2[i] - m1[i] * m1[i])) - GATE_FLOOR);
   return A;
 }
 
@@ -193,13 +193,7 @@ function taps(n, N) {
 export async function deblurResidual2(small, infer, { onProgress = () => {}, signal, concurrency = 1, levels = 3, cap = 1 } = {}) {
   const { width: w, height: h, data } = small;
   if (levels < 2 || Math.min(w, h) < 2 * TILE) return deblurResidual(small, infer, { onProgress, signal, concurrency });
-  const w2 = Math.ceil(w / 2); const h2 = Math.ceil(h / 2); const half = new Float32Array(w2 * h2 * 3);
-  for (let y = 0; y < h2; y++) {
-    for (let x = 0; x < w2; x++) {
-      const xs = [2 * x, Math.min(w - 1, 2 * x + 1)]; const ys = [2 * y, Math.min(h - 1, 2 * y + 1)];
-      for (let c = 0; c < 3; c++) { let v = 0; for (const yy of ys) for (const xx of xs) v += data[(yy * w + xx) * 3 + c]; half[(y * w2 + x) * 3 + c] = v / 4; }
-    }
-  }
+  const { width: w2, height: h2, data: half } = halve(small);
   // 進捗: 半分の大きさの段は区画が 4 分の 1 なので 2 割
   const r1 = await deblurResidual2({ width: w2, height: h2, data: half }, infer, { signal, concurrency, levels: levels - 1, cap, onProgress: (t) => onProgress(0.2 * t) });
   const up = resizeRGB(r1, w, h).data;
@@ -209,6 +203,173 @@ export async function deblurResidual2(small, infer, { onProgress = () => {}, sig
   // 2 段の和も、元の絵の直してよい量までに抑える（頬のやわらかい光の境目が、角ばった形にならないように）
   if (cap > 0) limitResidual(r2.data, gateMap(data, w, h).map((a) => a * cap), w, h);
   return r2;
+}
+
+/** RGB を並べた絵を、縦横半分に縮める（2×2 の平均） */
+function halve(src) {
+  const { width: w, height: h, data } = src;
+  const w2 = Math.ceil(w / 2); const h2 = Math.ceil(h / 2); const half = new Float32Array(w2 * h2 * 3);
+  for (let y = 0; y < h2; y++) {
+    for (let x = 0; x < w2; x++) {
+      const xs = [2 * x, Math.min(w - 1, 2 * x + 1)]; const ys = [2 * y, Math.min(h - 1, 2 * y + 1)];
+      for (let c = 0; c < 3; c++) { let v = 0; for (const yy of ys) for (const xx of xs) v += data[(yy * w + xx) * 3 + c]; half[(y * w2 + x) * 3 + c] = v / 4; }
+    }
+  }
+  return { width: w2, height: h2, data: half };
+}
+
+/** 1 つの値を並べた地図を、双一次補間で別の大きさにする */
+export function resizeMap(m, w, h, W, H) {
+  const out = new Float32Array(W * H);
+  for (let Y = 0; Y < H; Y++) {
+    const fy = Math.min(h - 1, Math.max(0, (Y + 0.5) * h / H - 0.5)); const y0 = fy | 0; const y1 = Math.min(h - 1, y0 + 1); const ty = fy - y0;
+    for (let X = 0; X < W; X++) {
+      const fx = Math.min(w - 1, Math.max(0, (X + 0.5) * w / W - 0.5)); const x0 = fx | 0; const x1 = Math.min(w - 1, x0 + 1); const tx = fx - x0;
+      const a = m[y0 * w + x0] + (m[y0 * w + x1] - m[y0 * w + x0]) * tx; const b = m[y1 * w + x0] + (m[y1 * w + x1] - m[y1 * w + x0]) * tx;
+      out[Y * W + X] = a + (b - a) * ty;
+    }
+  }
+  return out;
+}
+
+// ---- 大きなブレ（前に伸ばした手など、元の写真で 30 画素を超えるもの）を、もう 1 つの AI（FFTformer）で直す ----
+// FFTformer（GoPro のブレで学習。MIT ライセンス）は、NAFNet では指が二重になる大きなブレも、指を分けて直せる。
+// ただし、ない形を作り足すことがある（顔に当てると頬に線が入る）。そこで、人物の部位分け（MediaPipe）で
+// 手・腕・脚（体の肌）と服にだけ当て、顔には当てない。ノイズを取りきった絵だと控えめにしか直さないので、
+// AI に渡す絵にだけ決まった細かいノイズを足す（反転と向きが合う直しだけ残すので、ノイズの模様は残らない）。
+const STRONG_NOISE = 0.75 / 255; // AI に渡す絵に足すノイズ（明るさ。色ごとにはこの 3 割）
+const STRONG_LOW_R = 10; // これより広い範囲のゆるやかな変化は除く（1/4 の大きさの画素）
+const STRONG_GATE_R = 3; // まわりのばらつきを測る範囲（1/4 の大きさの画素）
+const STRONG_K_SKIN = 8; // 直してよい量の倍率: 肌（手・腕）。手の指はまわりのばらつきの 8 倍まで直してよい
+const STRONG_K_CLOTH = 2.5; // 服（レース・ひだに線を作り足さないよう、今までの AI と同じ）
+const STRONG_FACE_GROW = 4; // 顔を外すとき、顔の肌のまわりを広げる幅（部位分けの地図の画素）
+const STRONG_CLOTH_CAP = 1.5;
+export const STRONG_TILE = 128; // 強い AI に通す区画（256 だと 1 枚に 2GB 近くメモリを使う。128 なら 0.6GB）
+const STRONG_OVERLAP = 24;
+const STRONG_RAMP = Float32Array.from({ length: STRONG_TILE }, (_, i) => Math.min(1, (i + 0.5) / STRONG_OVERLAP, (STRONG_TILE - i - 0.5) / STRONG_OVERLAP));
+
+/**
+ * 部位分けの結果から、強い AI を当てる所（0〜1）と、そのうち肌の割合を作る
+ * @param {{w:number,h:number,body:Float32Array,face:Float32Array,cloth:Float32Array}} parts 体の肌・顔の肌・服（＋そのほかの身につけた物）
+ * @returns {{w:number,h:number,mask:Float32Array,skin:Float32Array}}
+ */
+export function strongMask(parts) {
+  const { w, h, body, face, cloth } = parts; const n = w * h;
+  // 顔のまわりを少し広げてぼかす（顔の縁に当たらないように）
+  let f = new Float32Array(n); const R = STRONG_FACE_GROW;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let m = 0;
+    for (let yy = Math.max(0, y - R); yy <= Math.min(h - 1, y + R); yy++) for (let xx = Math.max(0, x - R); xx <= Math.min(w - 1, x + R); xx++) m = Math.max(m, face[yy * w + xx]);
+    f[y * w + x] = m;
+  }
+  f = blur3(f, w, h, 2);
+  let mask = new Float32Array(n); const skin = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    mask[i] = Math.min(1, body[i] + cloth[i]) * Math.max(0, 1 - 1.5 * f[i]);
+    skin[i] = body[i] / Math.max(1e-3, body[i] + cloth[i]);
+  }
+  mask = boxBlur(boxBlur(mask, w, h, 1), w, h, 1);
+  return { w, h, mask, skin };
+}
+
+/** 決まった乱数（同じ写真なら毎回同じ結果に） */
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function gauss(r) { return Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r()); }
+
+/**
+ * 大きなブレを、強い AI で直した差分を求める（small の半分の大きさで。手・腕・服の所だけ）
+ * @param {{width,height,data}} small deblurResidual2 に渡すのと同じ絵
+ * @param {(input:Float32Array, n:number)=>Promise<Float32Array>} infer 強い AI。STRONG_TILE の区画を 1 枚ずつ（n = 1）
+ * @param {{w,h,mask,skin}} sm strongMask の結果
+ * @returns {Promise<{width,height,data,mask}|null>} 差分（RGB）と当てた所。当てる所がなければ null
+ */
+export async function strongResidual(small, infer, sm, { onProgress = () => {}, signal, concurrency = 1 } = {}) {
+  const q = halve(small); const { width: w, height: h, data: clean } = q; const n = w * h;
+  const mask = resizeMap(sm.mask, sm.w, sm.h, w, h); const skin = resizeMap(sm.skin, sm.w, sm.h, w, h);
+  const r = rng(12345); const x = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const g = gauss(r) * STRONG_NOISE;
+    for (let c = 0; c < 3; c++) x[i * 3 + c] = Math.min(1, Math.max(0, clean[i * 3 + c] + g + gauss(r) * STRONG_NOISE * 0.3));
+  }
+  const T = STRONG_TILE; const tiles = [];
+  for (const y0 of starts(h, T, STRONG_OVERLAP)) for (const x0 of starts(w, T, STRONG_OVERLAP)) {
+    let mx = 0;
+    for (let y = y0; y < Math.min(h, y0 + T); y++) for (let xx = x0; xx < Math.min(w, x0 + T); xx++) mx = Math.max(mx, mask[y * w + xx]);
+    if (mx >= 0.3) tiles.push({ y0, x0 }); // 人物らしさが低い所（肌に似た色の背景など）だけの区画は通さない
+  }
+  if (!tiles.length) return null;
+  const P = T * T; const acc = new Float32Array(n * 3); const wsum = new Float32Array(n);
+  const ref = (v, m) => { let i = v; if (i < 0) i = -i; if (i >= m) i = 2 * m - 2 - i; return Math.max(0, Math.min(m - 1, i)); };
+  let done = 0; let next = 0;
+  // 1 つの区画を、そのままと左右反転の 2 回 AI に通して、向きが合う直しだけ足し込む
+  const one = async (t) => {
+    const a0 = new Float32Array(3 * P); const b0 = new Float32Array(3 * P);
+    for (let y = 0; y < T; y++) {
+      const sy = ref(t.y0 + y, h);
+      for (let xx = 0; xx < T; xx++) {
+        const s = (sy * w + ref(t.x0 + xx, w)) * 3; const o = y * T + xx; const of = y * T + (T - 1 - xx);
+        for (let c = 0; c < 3; c++) { a0[c * P + o] = x[s + c]; b0[c * P + of] = x[s + c]; }
+      }
+    }
+    const [oa, ob] = await Promise.all([infer(a0.slice(), 1), infer(b0.slice(), 1)]);
+    const th = Math.min(T, h - t.y0); const tw = Math.min(T, w - t.x0);
+    for (let y = 0; y < th; y++) {
+      for (let xx = 0; xx < tw; xx++) {
+        const o = y * T + xx; const of = y * T + (T - 1 - xx); const i = (t.y0 + y) * w + t.x0 + xx; const wt = STRONG_RAMP[y] * STRONG_RAMP[xx];
+        for (let c = 0; c < 3; c++) {
+          const a = oa[c * P + o] - a0[c * P + o]; const b = ob[c * P + of] - a0[c * P + o];
+          acc[i * 3 + c] += (a > 0 && b > 0 ? Math.min(a, b) : a < 0 && b < 0 ? Math.max(a, b) : 0) * wt;
+        }
+        wsum[i] += wt;
+      }
+    }
+    onProgress(++done / tiles.length);
+  };
+  const lane = async () => {
+    while (next < tiles.length) {
+      if (signal?.aborted) throw new DOMException('処理を中止しました', 'AbortError');
+      await one(tiles[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, tiles.length)) }, lane));
+  for (let i = 0; i < n; i++) { const k = wsum[i] > 0 ? 1 / wsum[i] : 0; acc[i * 3] *= k; acc[i * 3 + 1] *= k; acc[i * 3 + 2] *= k; }
+  const ch = new Float32Array(n);
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < n; i++) ch[i] = acc[i * 3 + c];
+    const lo = blur3(ch, w, h, STRONG_LOW_R);
+    for (let i = 0; i < n; i++) acc[i * 3 + c] -= lo[i];
+  }
+  // 直してよい量: 肌は大きく、服は今までと同じ（ない線を作り足さないように）
+  const A = gateMap(clean, w, h, STRONG_GATE_R, 1);
+  for (let i = 0; i < n; i++) A[i] *= STRONG_K_SKIN * skin[i] + STRONG_K_CLOTH * (1 - skin[i]);
+  limitResidual(acc, A, w, h);
+  for (let i = 0; i < n; i++) { acc[i * 3] *= mask[i]; acc[i * 3 + 1] *= mask[i]; acc[i * 3 + 2] *= mask[i]; }
+  onProgress(1);
+  return { width: w, height: h, data: acc, mask, skin };
+}
+
+/** 強い AI の差分を、今までの差分 res（small の大きさ）に混ぜる。当てた所は強い AI の差分に置き換える */
+export function mergeStrong(res, strong) {
+  if (!strong) return res;
+  const { width: w, height: h } = res; const R = res.data; const up = resizeRGB(strong, w, h).data;
+  const m = resizeMap(strong.mask, strong.width, strong.height, w, h);
+  const sk = strong.skin ? resizeMap(strong.skin, strong.width, strong.height, w, h) : null;
+  for (let i = 0; i < w * h; i++) {
+    if (m[i] <= 0) continue;
+    const q = i * 3; const s = sk ? sk[i] : 1;
+    // 服は、今の差分と明るさの向きが同じで、それより強いところだけ強い AI に替える（今の差分の 1.5 倍まで）
+    const yn = 0.299 * R[q] + 0.587 * R[q + 1] + 0.114 * R[q + 2]; const yu = 0.299 * up[q] + 0.587 * up[q + 1] + 0.114 * up[q + 2];
+    const k = Math.min(1, STRONG_CLOTH_CAP * Math.abs(yn) / Math.max(Math.abs(yu), 1e-3));
+    const take = yn * yu > 0 && Math.abs(yu) * k > Math.abs(yn);
+    for (let c = 0; c < 3; c++) {
+      const cloth = take ? up[q + c] * k : R[q + c];
+      R[q + c] = R[q + c] * (1 - m[i]) + m[i] * (s * up[q + c] + (1 - s) * cloth);
+    }
+  }
+  return res;
 }
 
 /** RGB を並べた絵（差分など）を、3 次補間で別の大きさにする */

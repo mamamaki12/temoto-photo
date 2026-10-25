@@ -1,7 +1,8 @@
 // 被写体ブレの補正（編集画面の「被写体ブレの補正」）を、写真（Canvas）に当てる。AI の計算は deblur-worker.js で。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒」（粒の後にブレ補正を当てると、粒が筋になる）。
 // AI は元の写真の大きさで決めた大きさ（deblurSize）で 1 回だけ動かし、直した差分を、編集用の写真にも書き出す元の大きさの写真にも足す。
-import { deblurSize, applyResidual } from './deblur.js';
+import { deblurSize, applyResidual, strongMask } from './deblur.js';
+import { partsSeg } from './skinseg.js';
 import { addGrain } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 
@@ -22,10 +23,23 @@ let worker = null; // AI を読み込んだ Worker は使い回す（読み込�
  * @param {number} origW 元の写真の幅 @param {number} origH 元の写真の高さ（AI に通す大きさを決める）
  * @param {{onProgress?:(t:number)=>void, signal?:AbortSignal, denoise?:boolean}} hooks onProgress は 0〜1。
  *   denoise: AI に渡す前に、縮めた絵のノイズを取る（ノイズ軽減を使っていない写真。ざらつきを AI がブレと見て格子を作るのを防ぐ）
+ *   strong: 大きなブレ（前に伸ばした手など）を、もう 1 つの AI で直す（人物の手・腕・服だけ。顔には当てない）
  */
-export async function deblurResidualFor(image, W, H, origW, origH, { onProgress = () => {}, signal, denoise = false } = {}) {
+export async function deblurResidualFor(image, W, H, origW, origH, { onProgress = () => {}, signal, denoise = false, strong = true } = {}) {
   if (signal?.aborted) throw abortError();
   const { width: w, height: h } = deblurSize(origW || W, origH || H);
+  // 人物の部位（手・腕・服と顔）を見分ける。使えない端末では、大きなブレの補正はしない
+  let sm = null;
+  if (strong) {
+    const s = Math.min(1, 768 / Math.max(W, H)); const pw = Math.max(1, Math.round(W * s)); const ph = Math.max(1, Math.round(H * s));
+    const pc = document.createElement('canvas'); pc.width = pw; pc.height = ph;
+    const px2 = ctx2d(pc, { willReadFrequently: true }); px2.imageSmoothingQuality = 'high'; px2.drawImage(image, 0, 0, W, H, 0, 0, pw, ph);
+    const parts = await partsSeg(px2.getImageData(0, 0, pw, ph)); pc.width = 0; pc.height = 0;
+    if (signal?.aborted) throw abortError();
+    // 人の肌（顔か手・腕）がはっきり写っている写真だけ。服に似た布や家具だけの写真では読み込まない
+    if (parts && (parts.face.some((v) => v >= 0.5) || parts.body.some((v) => v >= 0.5))) sm = strongMask(parts);
+    if (sm && !sm.mask.some((v) => v >= 0.3)) sm = null; // 手・腕・服が写っていなければ、強い AI は読み込まない
+  }
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = ctx2d(c, { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(image, 0, 0, W, H, 0, 0, w, h);
   const px = x.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }).data; c.width = 0; c.height = 0;
@@ -48,7 +62,7 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
       else if (m.type === 'error') done(new Error(m.message));
     };
     wk.onerror = () => done(new Error('ブレ補正の AI を開始・実行できませんでした（端末のメモリが足りない可能性があります）'));
-    wk.postMessage({ type: 'run', small: { width: w, height: h, data: rgb }, denoise }, [rgb.buffer]);
+    wk.postMessage({ type: 'run', small: { width: w, height: h, data: rgb }, denoise, strong: sm }, [rgb.buffer]);
   });
 }
 
