@@ -59,7 +59,9 @@ test('形を整える: なぞった向きに画素が動く（なぞっている
   for (const [tool, mode, type] of [['しわ取り', null, 'wrinkle'], ['目元・歯', '目元', 'eyes'], ['目元・歯', '歯', 'teeth']]) {
     await openTool(page, tool);
     if (mode) await page.getByRole('button', { name: mode, exact: true }).click();
+    const n = (await ops(page)).length;
     await stroke(page, [[0.55, 0.2], [0.7, 0.3]]);
+    await page.waitForFunction((n) => window.__temoto.state.retouch.length > n && !document.querySelector('.stage.busy'), n, { timeout: 60000 }); // 歯は口を AI で探してから当てる
     expect((await ops(page)).at(-1).type).toBe(type);
   }
   await expect(page.getByText(/なぞった回数: 2/)).toBeVisible(); // 目元・歯は 2 回
