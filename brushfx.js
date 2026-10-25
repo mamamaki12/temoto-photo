@@ -959,7 +959,7 @@ export function warpStroke(img, rad, protect = null) {
  * 半径 1 つ分の帯だと、線はゆるやかに曲がる程度）。
  * 人物がブラシの中にほとんどないときは null（ふつうに動かす）
  */
-export function warpProtect(pm, rad, at, p0, band = 1) {
+export function warpProtect(pm, rad, at, p0, band = WARP_BAND) {
   if (!pm?.d) return null;
   const n = pm.n; const bin = atob(pm.d); if (bin.length !== n * n) return null;
   const P = new Float32Array(n * n); for (let i = 0; i < n * n; i++) P[i] = bin.charCodeAt(i) / 255;
@@ -989,6 +989,14 @@ export function warpProtect(pm, rad, at, p0, band = 1) {
     return (G[b * n + a] * (1 - fx) + G[b * n + a1] * fx) * (1 - fy) + (G[b1 * n + a] * (1 - fx) + G[b1 * n + a1] * fx) * fy;
   };
 }
+
+/**
+ * 形を整える（3 版）の、人物の外で背景を動かす帯の幅（半径に対する割合）と、人物の地図の細かさ。
+ * 2 版は帯が半径 1 つ分（地図 64×64）で、輪郭の近くの柵の柱が S 字に曲がった。帯を狭くして柱を動かさず、
+ * 地図を細かくして、細い髪の束を人物として一緒に動かす（地図が粗いと、束の一部だけが止まって波打つ）
+ */
+export const WARP_BAND = 0.4;
+export const WARP_MAP_N = 128;
 
 /** 人物の地図を作る範囲（なぞり始めのまわり。写真全体に対する 0〜1 の [x0, y0, x1, y1]） */
 export function warpProtectBox(p0, r, W, H) {
@@ -1090,9 +1098,9 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
   if (op.type === 'warp') {
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
-    if (op.v === 2) {
-      // 2 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る
-      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0]));
+    if (op.v >= 2) {
+      // 2 版・3 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅だけが違う）
+      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1));
       for (let i = 1; i < pts.length; i++) st.seg(pts[i - 1], pts[i], amt);
       return;
     }
@@ -1124,8 +1132,8 @@ export function brushBounds(op, W, H) {
     const px = x * W; const py = y * H; x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py);
     if (i) { const l = Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H); travel = Math.max(travel, l); shift += Math.min(l * op.amt, rad * 0.2); }
   });
-  // 形を整える（2 版）は、なぞる前の画素を、区間ごとのずらした量の合計だけ遠くから読む
-  if (op.type === 'warp' && op.v === 2) travel = shift;
+  // 形を整える（2 版・3 版）は、なぞる前の画素を、区間ごとのずらした量の合計だけ遠くから読む
+  if (op.type === 'warp' && op.v >= 2) travel = shift;
   // 範囲を自動で決めるときは、唇のまわりも読み出す（唇の高さの 5 割ほど外まで。色を覚える所とぼかしのぶん）
   if ((op.type === 'lip' || op.type === 'teeth') && op.whole) for (const l of op.lips || []) {
     const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.5 + 8;

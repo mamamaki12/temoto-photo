@@ -9,7 +9,7 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpStroke, warpProtect, warpProtectBox, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
+import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
 import { ensureSkinSeg, skinSegFor, findMouth, findFaceAt, personMap, warmPersonSeg } from './skinseg.js';
 import { compose, layout } from './compose.js';
@@ -27,7 +27,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.20.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.20.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -1566,7 +1566,7 @@ function fxAction(tool, c, p) {
     const rp = Math.max(1.5, r * Math.min(E.W, E.H)); const p0 = [pts[0][0] * E.W, pts[0][1] * E.H];
     live = { ctx, dirty: null, rad: rp, stroke: null, done: 1, pm: undefined };
     const e0 = E;
-    live.ready = personMap(E.srcData, warpProtectBox(pts[0], r, E.W, E.H)).then((pm) => {
+    live.ready = personMap(E.srcData, warpProtectBox(pts[0], r, E.W, E.H), WARP_MAP_N).then((pm) => {
       if (E !== e0) return; live.pm = pm || undefined;
       live.stroke = warpStroke(E.srcData, rp, warpProtect(live.pm, rp, { W: E.W, H: E.H, ox: 0, oy: 0 }, p0));
       live.apply();
@@ -1595,7 +1595,7 @@ function fxAction(tool, c, p) {
       const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
-        op.v = 2;
+        op.v = 3;
         const e0 = E;
         const finish = () => {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'warp');
@@ -1640,7 +1640,7 @@ function fxAction(tool, c, p) {
     },
     cancel: () => {
       E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf);
-      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 2, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
+      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 3, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
       drawHandles();
     },
   };
