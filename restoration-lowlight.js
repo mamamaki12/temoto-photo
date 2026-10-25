@@ -22,7 +22,7 @@ const LEVELS = 3;
 // 平らな所（カーテン・背景）は少なく戻す。平らな所に戻すと、それはただのノイズに見える
 const KEEP_FLAT = 0.1;
 const KEEP_TEXTURE = 0.6;
-// ノイズの代わりに足す、細かい粒（1 画素の、色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
+// ノイズの代わりに足す、細かい粒（色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
 const FILM_GRAIN = 1.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
@@ -342,7 +342,7 @@ export function planTone(small, light, { person = null, sat = SAT_EXP, target = 
   const L = new Float32Array(n); for (let i = 0; i < n; i++) L[i] = Math.exp(logL[i]);
   L.sort(); const p999 = L[Math.floor(n * 0.999)];
   const white = Math.max(0.25, gain * p999 * 1.1);
-  return { w, h, a, b, gain, white, wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), sat, person: person && smoothMask(person) };
+  return { w, h, a, b, gain, white, hiY: toSrgb(0.55 * p999), wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), sat, person: person && smoothMask(person) };
 }
 
 /**
@@ -437,10 +437,9 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
       const p = (at.y0 + y) * at.fullW + x;
       let d = ((((p * 2654435761) >>> 0) / 4294967296) - 0.5) / 255;
       if (at.grain) {
-        // 細かい粒（位置で決まる。3 つの乱数の和で、なめらかな山形の分布に）
-        const u = hash(p) + hash(p + 0x9e3779b9) + hash(p + 0x7f4a7c15) - 1.5;
+        // 細かい粒（位置で決まる）
         const lv = Math.min(1, Math.max(0, toSrgb(0.2126 * r + 0.7152 * g + 0.0722 * bl)));
-        d += u * 2 * at.grain / 255 * 4 * lv * (1 - lv);
+        d += grainAt(p, at.fullW) * at.grain / 255 * 4 * lv * (1 - lv);
       }
       out[i * 4] = 255 * (toSrgb(r) + d) + 0.5;
       out[i * 4 + 1] = 255 * (toSrgb(g) + d) + 0.5;
@@ -467,6 +466,7 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
     const Y0 = Float32Array.from(Y);
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
     removeSpots(Y, Y0, w, h, profile, nr);
+    smoothSteps(Y, w, h, profile[0], nr);
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
     // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
@@ -476,12 +476,75 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
       const s = noiseAt(profile[0], Y[i]); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
       Y[i] += (Y0[i] - Y[i]) * (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
     }
+    sharpenDetail(Y, w, h, profile, nr, tone ? tone.hiY : HI_Y);
   }
   onProgress(0.95);
   const rows = at.bottom - at.top; const o = at.top * w;
   const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: grain ? grainFor(nr) : 0 });
   onProgress(1);
   return out;
+}
+
+/**
+ * ノイズを取ったあとに残る、ゆるやかな面どうしの小さな段差をならす（肌・カーテンが塗り絵のように、平らな面の継ぎはぎに見えるのを防ぐ）。
+ * Non-Local Means は似た模様ごとに平均するので、なめらかな明るさの変化が、ノイズより小さな段のついた面に分かれる。
+ * まわりのばらつきがノイズの量より小さい所だけ、広い範囲（半径 STEP_R）の平均に寄せる（明るさごとのノイズの量で決める）。
+ * 輪郭・模様はばらつきが大きいので、そのまま残る
+ */
+const STEP_R = 6; // 寄せる先の平均の半径
+const STEP_V = 2; // ばらつきを測る半径（小さくして、細い線（髪・糸）を段差と見まちがえないように）
+const STEP_K = 1; // ノイズの量の何倍までのばらつきをならすか（強さ 1 のとき）
+function smoothSteps(Y, w, h, bins, nr) {
+  const n = w * h; const mean = boxBlur(Y, w, h, STEP_V); const sq = new Float32Array(n);
+  for (let i = 0; i < n; i++) sq[i] = Y[i] * Y[i];
+  const m2 = boxBlur(sq, w, h, STEP_V);
+  for (let i = 0; i < n; i++) { const v = Math.max(0, m2[i] - mean[i] * mean[i]); const s = noiseAt(bins, mean[i]) * STEP_K * nr; sq[i] = v / (v + s * s + 1e-10); }
+  const a = boxBlur(sq, w, h, STEP_V, m2); const far = boxBlur(Y, w, h, STEP_R, mean);
+  for (let i = 0; i < n; i++) Y[i] = a[i] * Y[i] + (1 - a[i]) * far[i];
+}
+
+/**
+ * 輪郭と立体感を、元の写真より少しくっきりさせる（ノイズを取ると、髪・目・歯・指の輪郭がやわらかくなり、解像度が落ちたように見える）。
+ * 2 つの細かさで、ぼかした絵との差を足す: 細かい輪郭（約 1 画素）と、中くらいの立体感（約 4 画素。髪の束・まぶた・指の境目）。
+ * - ノイズの量よりはっきり強い模様だけ（平らな所・肌のなだらかな所にノイズを戻さない）
+ * - もともとはっきりした輪郭（明るさの比が大きい所）はほとんど足さない（白い縁・黒い縁が出る）
+ * - まわり（7×7）の最小〜最大から少ししかはみ出させない（輪郭の外に縁を作らない）
+ * - 白く飛びそうな明るい所（ティアラ・目の光）のまわりは控えめに（光が白い塊になり、黒い縁がつく）
+ */
+const SHARP_FINE = 0.8; // 細かい輪郭の強さ
+const SHARP_MID = 5; // 中くらいの立体感の強さ
+const SHARP_MID_R = 4;
+const SHARP_OVER = 0.15; // まわりの最小〜最大の幅の何割まではみ出してよいか
+const HI_Y = 0.77; // 明るさを変えないときの「明るい所」（輝度）
+function sharpenDetail(Y, w, h, profile, nr, hiY) {
+  const amt = Math.min(1, nr); const n = w * h;
+  const b1 = boxBlur(boxBlur(Y, w, h, 1), w, h, 1); const b2 = boxBlur(boxBlur(b1, w, h, SHARP_MID_R), w, h, SHARP_MID_R);
+  const e1 = new Float32Array(n); const e2 = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const x = Y[i] - b1[i]; e1[i] = x * x; const z = b1[i] - b2[i]; e2[i] = z * z; }
+  const g1 = boxBlur(e1, w, h, 2); const g2 = boxBlur(e2, w, h, SHARP_MID_R, e1);
+  const lo = rank(Y, w, h, 3, Math.min); const hi = rank(Y, w, h, 3, Math.max);
+  // 模様の強さ（差の強さ ÷ ノイズの量）で 0〜1、明るさの比（差の強さ ÷ 明るさ）が大きいほど弱く
+  const gate = (r, s, t0, t1, base, c0) => { const c = r / (base + 0.02) / c0; return Math.min(1, Math.max(0, (r / s - t0) / t1)) / (1 + c * c); };
+  for (let i = 0; i < n; i++) {
+    const t1 = gate(Math.sqrt(g1[i]), noiseAt(profile[0], b1[i]), 0.8, 2, b1[i], 0.35);
+    const t2 = gate(Math.sqrt(g2[i]), noiseAt(profile[1], b2[i]), 0.7, 1.5, b2[i], 0.5);
+    const ph = Math.max(0.1, Math.min(1, (hiY - hi[i]) / (0.5 * hiY)));
+    const v = Y[i] + amt * ph * (SHARP_FINE * t1 * (Y[i] - b1[i]) + SHARP_MID * t2 * (b1[i] - b2[i]));
+    const o = (hi[i] - lo[i]) * SHARP_OVER;
+    Y[i] = Math.min(hi[i] + o, Math.max(lo[i] - o, v));
+  }
+}
+
+/**
+ * 位置で決まる粒（標準偏差 1）。となりの画素と少しつながった粒にする（1 画素ずつばらばらの粒は、デジタルのノイズのようにざらついて見える）。
+ * 位置だけで決まるので、帯に分けても同じになる
+ */
+const GRAIN_K = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+const GRAIN_NORM = 1 / 16 / (Math.sqrt(1 / 12) * 0.375); // 一様な乱数（標準偏差 √(1/12)）を GRAIN_K で平均したもの（標準偏差 0.375 倍）を 1 に
+function grainAt(p, W) {
+  let s = 0; let k = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += GRAIN_K[k++] * (hash(p + dy * W + dx) - 0.5);
+  return s * GRAIN_NORM;
 }
 
 /** ノイズ軽減の強さ → 足す粒の強さ */
@@ -498,8 +561,7 @@ export function addGrain(data, w, rows, at, grain) {
       const i = (y * w + x) * 4; const p = (at.y0 + y) * at.fullW + x;
       const r = data[i] / 255; const g = data[i + 1] / 255; const b = data[i + 2] / 255;
       const lv = toSrgb(0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b));
-      const u = hash(p) + hash(p + 0x9e3779b9) + hash(p + 0x7f4a7c15) - 1.5;
-      const d = u * 2 * grain * 4 * lv * (1 - lv);
+      const d = grainAt(p, at.fullW) * grain * 4 * lv * (1 - lv);
       data[i] += d; data[i + 1] += d; data[i + 2] += d; // Uint8ClampedArray は代入で四捨五入される
     }
   }

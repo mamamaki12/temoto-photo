@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/lowlight-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureNoise, planTone, enhanceBand, boxBlur, BAND_MARGIN } from '../../restoration-lowlight.js';
+import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, BAND_MARGIN } from '../../restoration-lowlight.js';
 
 function randomNormal(seed = 521) {
   const uniform = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
@@ -108,4 +108,41 @@ test('lowlight: ノイズを取ったあとに残る小さな点は消し、細�
   assert.ok(Y(40, 40) - around(40, 40) < 4, `点が残っている: ${Y(40, 40)} / まわり ${around(40, 40)}`);
   assert.ok(line / 100 > 6, `細い線が薄くなった: ${(line / 100).toFixed(1)}`);
   assert.ok(Y(70, 120) - around(70, 120) > 60, `光の点が消えた: ${Y(70, 120)}`);
+});
+
+test('lowlight: ぼやけた輪郭は元の写真よりくっきりさせ、輪郭の外に縁（はみ出し）はほとんど作らない', () => {
+  const w = 160; const h = 96; const rand = randomNormal(5);
+  // 縦の輪郭（暗 50 → 明 110）を、ぶれたように 6 画素ほどの幅でなだらかにしたもの。ノイズ 3/255
+  const edge = (x) => 50 + 60 / (1 + Math.exp(-(x - 80) / 1.6));
+  const data = rgba(w, h, (x) => { const v = edge(x) + 3 * rand(); return [v, v, v]; });
+  const profile = measureNoise(data, w, h);
+  const out = whole(data, w, h, { nr: 1, profile, tone: null, grain: false });
+  const col = (img, x) => { let s = 0; for (let y = 16; y < h - 16; y++) s += img[(y * w + x) * 4 + 1]; return s / (h - 32); };
+  const steep = (img) => Math.max(...[77, 78, 79, 80, 81, 82].map((x) => col(img, x + 1) - col(img, x)));
+  assert.ok(steep(out) > steep(data) * 1.15, `くっきりしていない: ${steep(out).toFixed(1)} / 元 ${steep(data).toFixed(1)}`);
+  assert.ok(col(out, 60) > 50 - 4 && col(out, 100) < 110 + 4, `縁が出た: ${col(out, 60).toFixed(1)} ${col(out, 100).toFixed(1)}`);
+});
+
+test('lowlight: ノイズより小さな段差（塗り絵のような面の継ぎ目）はならし、はっきりした境目は残す', () => {
+  const w = 160; const h = 96; const rand = randomNormal(9);
+  // 左半分に 2 階調の小さな段（ノイズ 4/255 の半分）、右半分に 40 階調の境目
+  const data = rgba(w, h, (x, y) => { const v = (x < 80 ? 70 + (y < 48 ? 0 : 2) : y < 48 ? 70 : 110) + 4 * rand(); return [v, v, v]; });
+  const profile = measureNoise(data, w, h);
+  const out = whole(data, w, h, { nr: 1, profile, tone: null, grain: false });
+  const at = (x, y) => out[(y * w + x) * 4 + 1];
+  const jump = (x0, x1) => { let s = 0; for (let x = x0; x < x1; x++) s += at(x, 48) - at(x, 47); return s / (x1 - x0); };
+  assert.ok(jump(20, 60) < 1.2, `小さな段がそのまま: ${jump(20, 60).toFixed(2)}`);
+  assert.ok(jump(100, 140) > 25, `境目がぼやけた: ${jump(100, 140).toFixed(1)}`);
+});
+
+test('lowlight: 足す粒は位置で決まり、となりの画素と少しつながっている（1 画素ずつばらばらのざらつきにしない）', () => {
+  const w = 256; const h = 64; const mk = () => new Uint8ClampedArray(w * h * 4).fill(128);
+  const a = addGrain(mk(), w, h, { y0: 0, fullW: w }, 1.5);
+  const b = mk(); addGrain(b.subarray(0, w * 20 * 4), w, 20, { y0: 0, fullW: w }, 1.5); addGrain(b.subarray(w * 20 * 4), w, h - 20, { y0: 20, fullW: w }, 1.5);
+  assert.deepEqual(a, b);
+  let s = 0; let s2 = 0; let c = 0; let n = 0;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) { const i = (y * w + x) * 4; const v = a[i] - 128; s += v; s2 += v * v; c += v * (a[i + 4] - 128); n++; }
+  const sd = Math.sqrt(s2 / n - (s / n) ** 2); const corr = c / n / (sd * sd);
+  assert.ok(sd > 1.1 && sd < 1.9, `粒の強さ: ${sd.toFixed(2)}`);
+  assert.ok(corr > 0.2 && corr < 0.8, `となりとのつながり: ${corr.toFixed(2)}`);
 });
