@@ -11,6 +11,8 @@ const PHOTO = path.join(__dirname, '..', 'tests', 'fixtures', 'portrait.jpg');
   const el = await _electron.launch({ executablePath: exe, args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), ...args],
     env: { ...process.env, TEMOTO_LOG: '1' }, timeout: 120_000 });
   el.process().stdout.on('data', (d) => { aiCalls += (String(d).match(/deblur \d+ tiles/g) || []).length; ep = String(d).match(/deblur \d+ tiles (\w+)/)?.[1] || ep; });
+  // GPU（DirectML）が使えなかったわけ（main.cjs の console.warn）も出す
+  el.process().stderr.on('data', (d) => { for (const l of String(d).split('\n')) if (/DirectML|GPU/.test(l)) console.log('[main]', l.slice(0, 400)); });
   const out = path.join(os.tmpdir(), `temoto-smoke-${process.env.TEMOTO_EP || 'auto'}.jpg`); fs.rmSync(out, { force: true });
   await el.evaluate(({ session }, out) => session.defaultSession.on('will-download', (e, item) => item.setSavePath(out)), out);
   const page = await el.firstWindow(); page.setDefaultTimeout(10 * 60_000);
