@@ -42,6 +42,7 @@ export const MAX_STROKES = 400;
 export const MAX_RETOUCH = 300;
 export const MAX_BRUSH_POINTS = 600; // なぞった線 1 本の点の数
 export const MAX_SKIN_SEEDS = 12;
+export const MAX_FACEAI = 8;
 export const ASPECTS = { free: '自由', original: '元の比率', '1:1': '1:1', '4:5': '4:5', '3:4': '3:4', '2:3': '2:3', '9:16': '9:16', '16:9': '16:9', '3:2': '3:2', '4:3': '4:3', 'print-L': 'L判', 'print-2L': '2L判', 'print-6': '六つ切り', 'print-A4': 'A4' };
 /** プリントの大きさ（短い辺:長い辺）。写真の向き（縦・横）に合わせて使う */
 export const PRINT_ASPECTS = { 'print-L': [89, 127], 'print-2L': [127, 178], 'print-6': [203, 254], 'print-A4': [210, 297] };
@@ -68,6 +69,8 @@ export function defaultState() {
     // ca: 色にじみの自動補正、vignette: 周辺の暗さの補正、distortion: ゆがみの補正（＋で樽型・－で糸巻き型を直す）
     raw: { exposure: 0, nr: 50, sharpen: 50, ca: true, vignette: 0, distortion: 0 },
     frame: { width: 0, color: '#ffffff', radius: 0, pad: 'none', padFill: 'blur', padColor: '#ffffff' },
+    // 顔専用 AI（暗い写真・ブレの大きい写真の顔）。faces: 選んだ顔（x, y: 鼻先の位置。元写真の 0〜1、on: 使うか、person: 本人の写真の人の id）、amount: 強さ
+    faceai: { faces: [], amount: 100 },
   };
 }
 
@@ -176,6 +179,9 @@ export function validateState(s) {
   d.raw.nr = int(s.raw?.nr, 0, 100, 50); d.raw.sharpen = int(s.raw?.sharpen, 0, 100, 50); d.raw.ca = s.raw?.ca !== false;
   d.raw.vignette = int(s.raw?.vignette, -100, 100); d.raw.distortion = int(s.raw?.distortion, -100, 100);
   d.portrait.seeds = arr(s.portrait?.seeds, MAX_SKIN_SEEDS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, 0, 1), num(y, 0, 1)]);
+  d.faceai.faces = arr(s.faceai?.faces, MAX_FACEAI).filter((q) => q && typeof q === 'object')
+    .map((q) => ({ x: num(q.x, 0, 1), y: num(q.y, 0, 1), on: bool(q.on), person: str(q.person, 40) }));
+  d.faceai.amount = int(s.faceai?.amount, 0, 100, 100);
   const f = s.frame || {};
   d.frame = { width: int(f.width, 0, 30), color: color(f.color, '#ffffff'), radius: int(f.radius, 0, 50), pad: oneOf(f.pad, PADS, 'none'), padFill: f.padFill === 'color' ? 'color' : 'blur', padColor: color(f.padColor, '#ffffff') };
   return d;

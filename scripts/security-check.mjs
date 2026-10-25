@@ -21,6 +21,8 @@ const VENDOR = {
   // 被写体ブレの補正の AI を動かす ONNX Runtime Web と、そのモデル（Worker の中で同じサイトのファイルだけを読む）
   'vendor/ort': ['ort.webgpu.min.mjs', 'ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm', 'LICENSE.txt'],
   'vendor/deblur': ['nafnet-gopro-w32.onnx', 'LICENSE.txt'],
+  // 顔専用 AI のモデル（GFPGAN v1.4。170MB を 2 つに分けた。Worker の中で同じサイトのファイルだけを読む）
+  'vendor/faceai': ['gfpgan-v1.4.onnx.1', 'gfpgan-v1.4.onnx.2', 'LICENSE.txt'],
 };
 // vendor/ のスクリプトに書かれていてよい URL（警告の文に出てくる説明のページ。読み込みはしない）
 const DOC_URLS = [/https:\/\/web\.dev\/cross-origin-isolation-guide\/?/g];

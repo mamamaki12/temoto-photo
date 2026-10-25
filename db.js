@@ -34,3 +34,10 @@ export async function usage() {
 }
 /** ブラウザに「勝手に消さないで」と頼む（iPhone などで容量が足りないと消されることがあるため） */
 export async function persist() { try { return await navigator.storage?.persist?.(); } catch { return false; } }
+
+/**
+ * 顔専用 AI に使う「本人の写真」（人ごとに、明るい所で撮った写真から切り出した顔）。写真をまたいで使う
+ * [{ id, name, refs: [{ id, crop: Blob（512×512 の PNG）, pts: number[]（顔の 478 点。x, y の順。512 の座標） }] }]
+ */
+export const getPeople = () => tx(['blobs'], 'readonly', (b) => req(b.get('faceai:people'))).then((v) => (Array.isArray(v) ? v : []));
+export const putPeople = (list) => tx(['blobs'], 'readwrite', (b) => { b.put(list, 'faceai:people'); });

@@ -20,19 +20,20 @@ import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull } from './fullres.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
+import { applyFaceAI, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.25.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.26.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
 const GROUPS = [
   ['raw', '◈', 'RAW', ['raw']], // RAW を開いたときだけ
-  ['quick', '✦', 'おまかせ', ['looks', 'auto']],
+  ['quick', '✦', 'おまかせ', ['looks', 'auto', 'faceai']],
   ['adjust', '☀', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
   ['crop', '⌗', '切り抜き', ['crop']],
   ['local', '◎', '部分補正', ['local']],
@@ -40,7 +41,9 @@ const GROUPS = [
   ['frame', '▢', 'フレーム', ['frame']],
   ['info', 'ⓘ', '情報', ['info']],
 ];
-const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+/** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
+const MAX_REFS = 40;
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
 /** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
@@ -511,7 +514,7 @@ function rebuildSource() {
 // スライダーを動かしている間は GPU の簡易版で見せ、手を止めたら Worker で計算する（進捗は写真の上のバーに）。
 // できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒」。途中の結果は取っておき、ブレ補正の強さだけを変えたときは AI を動かし直さない
-const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey]) : null);
+const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount]) : null);
 function hqReady() { return !!E.hq?.canvas && E.hq.key === hqKey(E.state); }
 /**
  * いま見せる、暗所補正・ブレ補正をした写真。ブレ補正の強さだけを変えて計算し直している間は、前にできたものを見せる
@@ -528,43 +531,55 @@ function hqView() {
 function srcBase() { return hqView() || E.base; }
 /** ブレ補正の差分（AI の結果）。書き出しでも使う */
 function hqResidual() { return hqReady() ? E.hq.res || null : null; }
+/** 顔 AI の結果（顔ごと）。書き出しでも使う */
+function hqFaces() { return hqReady() ? E.hq.faces || null : null; }
 let hqTimer = 0;
 function scheduleLowlight() {
   if (!E || (E.hq?.key ?? null) === hqKey(E.state)) return; // 済み・計算中
   clearTimeout(hqTimer); hqTimer = setTimeout(runLowlight, 400);
 }
 /**
- * 暗所補正・ブレ補正をした写真を作る（編集画面と、書き出しで編集中の結果がないときに使う）
- * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res} }）
- * @returns {Promise<{canvas, res}>} res: ブレ補正の差分（なければ null）
+ * 暗所補正・ブレ補正・顔 AI をした写真を作る（編集画面と、書き出しで編集中の結果がないときに使う）
+ * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res}, fa: {key, canvas, faces} }）
+ * @returns {Promise<{canvas, res, faces}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）
  */
-async function enhanceSource(src, adj, { signal, onProgress = () => {} } = {}) {
-  const ll = lowlightActive(adj) ? lowlightOptions(adj) : null; const db = deblurActive(adj);
+async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = null } = {}) {
+  const ll = lowlightActive(adj) ? lowlightOptions(adj) : null; const db = deblurActive(adj); const fa = !!state && faceaiActive(state);
   const cache = src.cache || {};
   // 粒はブレ補正の後に足す（ブレ補正があるときは、暗所補正では足さない）
   const llKey = ll ? JSON.stringify([adj.noise, adj.lowlight, db]) : null;
   const dbKey = JSON.stringify([adj.noise, adj.lowlight]);
-  const share = ll && db ? (cache.ll?.key === llKey ? 0 : 0.3) : ll ? 1 : 0; // 進捗のうち暗所補正の割合
+  const faKey = fa ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faceaiKey(state), state.faceai.amount]) : null;
+  if (fa && cache.fa?.key === faKey) { onProgress(1); return { canvas: cache.fa.canvas, res: db ? cache.db?.res || null : null, faces: cache.fa.faces }; }
+  // 進捗の割合（暗所補正・ブレ補正・顔 AI）。済んでいるものは 0
+  const w = [ll && cache.ll?.key !== llKey ? 0.3 : 0, db && cache.db?.key !== dbKey ? 0.6 : (db ? 0.05 : 0), fa ? 0.4 : 0];
+  const tot = w[0] + w[1] + w[2] || 1; const at = (k, t) => onProgress((w.slice(0, k).reduce((a, b) => a + b, 0) + w[k] * t) / tot);
   let canvas = src.base;
   if (ll) {
     if (cache.ll?.key !== llKey) {
       cache.ll = null;
       let grain = 0;
-      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, onProgress: (t) => onProgress(t * share), onGrain: (g) => { grain = g; } });
+      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, onProgress: (t) => at(0, t), onGrain: (g) => { grain = g; } });
       cache.ll = { key: llKey, canvas: c, grain };
     }
     canvas = cache.ll.canvas;
   }
-  if (!db) return { canvas, res: null };
-  if (cache.db?.key !== dbKey) {
-    cache.db = null;
-    const res = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => onProgress(share + (1 - share) * t) });
-    cache.db = { key: dbKey, res };
+  let res = null;
+  if (db) {
+    if (cache.db?.key !== dbKey) {
+      cache.db = null;
+      const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at(1, t) });
+      cache.db = { key: dbKey, res: r };
+    }
+    res = cache.db.res;
+    canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
   }
-  const res = cache.db.res;
-  const out = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
+  if (!fa) { onProgress(1); return { canvas, res, faces: null }; }
+  // 顔 AI（選んだ顔だけ。大まかな形と色・粒は変えない）
+  const r = await applyFaceAI(canvas, src.W, src.H, state.faceai, { signal, onProgress: (t) => at(2, t) });
+  cache.fa = { key: faKey, canvas: r.canvas, faces: r.faces };
   onProgress(1);
-  return { canvas: out, res };
+  return { canvas: r.canvas, res, faces: r.faces };
 }
 async function runLowlight() {
   if (!E) return;
@@ -577,16 +592,16 @@ async function runLowlight() {
   E.hqCache ||= {};
   hqBar(0);
   try {
-    const { canvas, res } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
-      signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
+    const { canvas, res, faces } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
+      state: E.state, signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
-    E.hq = { key, canvas, res, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
+    E.hq = { key, canvas, res, faces, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender();
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null);
-    if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正', err); toast(deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
+    if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
   }
 }
 /** 写真の上の進捗バー（t: 0〜1、null で隠す） */
@@ -595,7 +610,7 @@ function hqBar(t) {
   E.hqEl.hidden = t == null; if (t == null) return;
   const p = Math.min(99, Math.floor(t * 100));
   E.hqEl.querySelector('progress').value = p;
-  E.hqEl.querySelector('span').textContent = `${[lowlightActive(E.state.adj) && 'ノイズ除去と明るさ補正', deblurActive(E.state.adj) && 'ブレ補正'].filter(Boolean).join('・')}… 残り${100 - p}%`;
+  E.hqEl.querySelector('span').textContent = `${[lowlightActive(E.state.adj) && 'ノイズ除去と明るさ補正', deblurActive(E.state.adj) && 'ブレ補正', faceaiActive(E.state) && '顔 AI'].filter(Boolean).join('・')}… 残り${100 - p}%`;
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {
@@ -988,6 +1003,85 @@ const PANELS = {
       hint('写真の明るさの分布と、白・灰色らしい所の色から、露光・白黒レベル・ホワイトバランスを整えます（電球の部屋の暖かさは残します）。気に入らなければ「元に戻す」で戻せます。'),
     ];
   },
+  faceai() {
+    const fa = E.state.faceai;
+    const facesBox = h('div', { class: 'faceai-faces', 'aria-live': 'polite' }, h('p', { class: 'muted small' }, '写真の中の顔を探しています…'));
+    const peopleBox = h('div', { class: 'faceai-people' });
+    // 見つけた顔のうち、編集内容に入っているもの（なければ作る）
+    const entry = (g, make) => {
+      let f = fa.faces.find((q) => Math.hypot(q.x - g.x, q.y - g.y) < Math.max(g.w * 0.4, 0.01));
+      if (!f && make) { f = { x: g.x, y: g.y, on: false, person: '' }; fa.faces.push(f); }
+      return f;
+    };
+    const drawFaces = async () => {
+      let dets;
+      try { dets = await detectFaces(baseImageData()); } catch (e) { console.warn(e); render(facesBox, hint('顔を見つける AI を使えませんでした。')); return; }
+      if (!E || E.tool !== 'faceai') return;
+      const people = await loadPeople();
+      if (!dets.length) { render(facesBox, hint('顔が見つかりませんでした（小さすぎる顔・横を向いた顔には使えません）。')); return; }
+      const src = srcBase();
+      render(facesBox, dets.slice(0, S.MAX_FACEAI).map((g, i) => {
+        const f = entry(g, false);
+        const on = h('input', { type: 'checkbox', id: `fa-on-${i}`, checked: !!f?.on, onchange: () => { entry(g, true).on = on.checked; commit(); requestRender(); } });
+        const sel = h('select', { id: `fa-p-${i}`, 'aria-label': '本人の写真', onchange: async () => {
+          if (sel.value === '+') {
+            const list = await loadPeople(); const p = { id: uid(), name: `人${list.length + 1}`, refs: [] };
+            await savePeople([...list, p]); Object.assign(entry(g, true), { person: p.id }); commit(); buildPanel(); return;
+          }
+          entry(g, true).person = sel.value; commit(); requestRender();
+        } }, h('option', { value: '' }, '本人の写真なし'), people.map((p) => h('option', { value: p.id }, `${p.name}（${p.refs.length}枚）`)), h('option', { value: '+' }, '＋ 新しい人'));
+        sel.value = f?.person && people.some((p) => p.id === f.person) ? f.person : '';
+        return h('div', { class: 'faceai-face' }, faceThumb(src, E.W, E.H, g),
+          h('div', { class: 'faceai-face-ctl' }, h('label', { for: `fa-on-${i}` }, on, ' 顔 AI を使う'), sel));
+      }));
+    };
+    const drawPeople = async () => {
+      const list = await loadPeople();
+      if (!E || E.tool !== 'faceai') return;
+      const save = async (next) => { await savePeople(next); commit(); requestRender(); drawPeople(); drawFaces(); };
+      render(peopleBox, list.length ? list.map((p) => {
+        const file = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'vh', id: `fa-file-${p.id}` });
+        file.addEventListener('change', async () => {
+          const files = [...file.files]; file.value = ''; if (!files.length) return;
+          E.stageEl.classList.add('busy');
+          const add = [];
+          try {
+            for (const fl of files) {
+              let cands; try { cands = await facesFromPhoto(fl); } catch (e) { console.warn(e); toast(`${fl.name} を読み込めませんでした`); continue; }
+              if (!cands.length) { toast(`${fl.name} に顔が見つかりませんでした`); continue; }
+              const pick = cands.length === 1 ? cands : await pickFaces(cands, fl.name);
+              for (const c of pick) add.push({ id: uid(), crop: c.crop, pts: c.pts });
+              for (const c of cands) URL.revokeObjectURL(c.url);
+            }
+          } finally { E?.stageEl.classList.remove('busy'); }
+          // 読み込み中に別の写真を足したときも消えないよう、保存の直前の一覧に足す
+          if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました`); }
+        });
+        const name = h('input', { value: p.name, maxlength: 20, 'aria-label': '人の名前', onchange: () => save(list.map((q) => (q.id === p.id ? { ...q, name: name.value.trim().slice(0, 20) || q.name } : q))) });
+        return h('div', { class: 'faceai-person' },
+          h('div', { class: 'faceai-person-head' }, name, btn('この人を消す', (ev) => {
+            const b = ev.currentTarget; if (b.dataset.armed) { save(list.filter((q) => q.id !== p.id)); return; }
+            b.dataset.armed = '1'; b.textContent = 'もう一度押すと消えます'; setTimeout(() => { delete b.dataset.armed; b.textContent = 'この人を消す'; }, 3000);
+          }, 'small ghost')),
+          h('div', { class: 'faceai-refs' }, p.refs.map((r) => {
+            const url = URL.createObjectURL(r.crop);
+            return h('span', { class: 'faceai-ref' }, h('img', { src: url, alt: '本人の写真', width: 64, height: 64, onload: () => URL.revokeObjectURL(url) }),
+              h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id) } : q))) }, '×'));
+          }),
+          h('label', { for: `fa-file-${p.id}`, class: 'btn small' }, '＋ 写真を追加'), file));
+      }) : hint('まだいません。上の顔の「本人の写真」で「＋ 新しい人」を選ぶと作れます。'));
+    };
+    drawFaces(); drawPeople();
+    return [
+      h('h3', {}, '暗い写真・ブレの大きい写真の顔を、明るい所で撮ったように'),
+      hint('選んだ顔だけを、端末の中の顔専用 AI がくっきりさせます（目・まつげ・歯・鼻・輪郭）。顔の形と色は元の写真のまま、ティアラや背景には当てません。明るくはっきり写った写真には使わなくて大丈夫です（歯・目元の道具で十分です）。はじめて使うときに AI（約 170MB）を読み込みます。'),
+      facesBox,
+      slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
+      h('h3', {}, '本人の写真'),
+      hint(`その人が明るい所ではっきり写った写真を、できれば 10 枚以上（${MAX_REFS} 枚まで）追加してください。枚数が多いほど、表情や目線が合う写真が見つかりやすく、目元・歯並びが本人らしくなります（いろいろな表情・笑顔の写真があると効きます）。写真は端末の中に保存され、ほかの写真の顔にも選べます。`),
+      peopleBox,
+    ];
+  },
   looks() {
     const grid = h('div', { class: 'looks', role: 'group', 'aria-label': 'フィルター' });
     const amt = slider({ label: '強さ', min: 0, max: 100, value: E.state.look.amount, def: 100, unit: '%', onInput: live((v) => { E.state.look.amount = v; }), onChange: commit });
@@ -1107,6 +1201,24 @@ function buildPanel() {
   E.stageEl.dataset.tool = E.tool;
 }
 
+/** 本人の写真に顔が複数写っているとき、どれが本人かを選んでもらう。選んだものを返す */
+function pickFaces(cands, name) {
+  return new Promise((resolve) => {
+    const chosen = new Set();
+    const dlg = h('dialog', { class: 'dlg', 'aria-labelledby': 'pick-h' },
+      h('h2', { id: 'pick-h' }, '本人の顔を選んでください'),
+      h('p', { class: 'muted small' }, `${name} に ${cands.length} 人写っています。本人の顔を押してください（複数でも）。`),
+      h('div', { class: 'faceai-pick' }, cands.map((c, i) => {
+        const b = h('button', { type: 'button', class: 'faceai-pick-face', 'aria-pressed': 'false', 'aria-label': `${i + 1}人目`, onclick: () => { if (chosen.has(i)) chosen.delete(i); else chosen.add(i); b.setAttribute('aria-pressed', String(chosen.has(i))); } },
+          h('img', { src: c.url, alt: '', width: 96, height: 96 }));
+        return b;
+      })),
+      h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'この写真は使わない'),
+        h('button', { type: 'button', class: 'primary', onclick: () => { dlg.returnValue = 'ok'; dlg.close(); } }, '決定')));
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(dlg.returnValue === 'ok' ? cands.filter((_, i) => chosen.has(i)) : []); });
+    document.body.append(dlg); dlg.showModal();
+  });
+}
 function presetSaveRow(after) {
   const name = h('input', { id: 'preset-name', maxlength: 30, placeholder: 'プリセットの名前' });
   const file = h('input', { type: 'file', accept: 'application/json,.json', class: 'vh', id: 'preset-file' });
@@ -1896,12 +2008,13 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
   const st0 = S.validateState(src.state);
   const ll = lowlightActive(st0.adj) ? lowlightOptions(st0.adj) : null; // 暗所補正（ノイズ除去 → 明るさ）
   const db = deblurActive(st0.adj); // ブレ補正（明るさの後、粒の前）
+  const fa = faceaiActive(st0); // 顔 AI（いちばん後）
   // 暗所補正・ブレ補正をするときは、美肌の肌の判定・修復のコピー元も、補正した写真（編集用の大きさ）で決める。編集中と同じになる
-  let work = src.base; let pre = 0; let res = null; // pre: 進捗のうち、ここで使った割合
-  if (ll || db) {
-    if (!src.hqCanvas) pre = db ? 0.6 : 0.3;
-    if (src.hqCanvas) { work = src.hqCanvas; res = src.hqRes || null; } else {
-      ({ canvas: work, res } = await enhanceSource({ base: src.base, W: src.W, H: src.H, origW: src.origW || src.W, origH: src.origH || src.H }, st0.adj, { onProgress: (t) => onProgress?.(t * pre) }));
+  let work = src.base; let pre = 0; let res = null; let faces = null; // pre: 進捗のうち、ここで使った割合
+  if (ll || db || fa) {
+    if (!src.hqCanvas) pre = db || fa ? 0.6 : 0.3;
+    if (src.hqCanvas) { work = src.hqCanvas; res = src.hqRes || null; faces = src.hqFaces || null; } else {
+      ({ canvas: work, res, faces } = await enhanceSource({ base: src.base, W: src.W, H: src.H, origW: src.origW || src.W, origH: src.origH || src.H }, st0.adj, { state: st0, onProgress: (t) => onProgress?.(t * pre) }));
     }
     if (portraitActive(st0.portrait)) await ensureSkinSeg(ctx2d(toCanvas(work, src.W, src.H), { willReadFrequently: true }).getImageData(0, 0, src.W, src.H));
   }
@@ -1912,10 +2025,11 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
     try {
       return await exportFull({ full: src.full, work, lowlightFrom: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
         deblur: db ? { res, amount: deblurAmount(st0.adj), grain: 0 } : null, // 暗所補正があるときの粒は、書き出しで測ったノイズの量で決まる
+        faces: fa && faces?.length ? { list: faces, editW: src.W, amount: faceaiAmount(st0) } : null,
         onProgress: onProgress && ((t) => onProgress(pre + (1 - pre) * t)) });
     } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
   }
-  if (ll || db) src = { ...src, base: work, state: withoutLowlight(st0) };
+  if (ll || db || fa) src = { ...src, base: work, state: withoutLowlight(st0) };
   return canvasToBlob(renderToCanvas(src, { maxSide }), format, quality, space);
 }
 /**
@@ -1980,7 +2094,7 @@ function openExport({ batch }) {
     }
     const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
-    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), origW: E.proj.w || E.W, origH: E.proj.h || E.H }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), origW: E.proj.w || E.W, origH: E.proj.h || E.H }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };

@@ -417,3 +417,21 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .gaze-pad .gaze-arrow { font-size: 1.2rem; }
 .export progress { display: block; width: 100%; accent-color: var(--accent, #7d2ae8); }
 .export progress[hidden] { display: none; }
+
+/* 顔 AI */
+.faceai-faces { display: grid; gap: 8px; margin: 8px 0; }
+.faceai-face { display: flex; gap: 10px; align-items: center; }
+.faceai-face canvas { width: 72px; height: 72px; border-radius: 10px; flex: none; }
+.faceai-face-ctl { display: grid; gap: 6px; min-width: 0; flex: 1; }
+.faceai-face-ctl select { width: 100%; }
+.faceai-person { border: 1px solid var(--line); border-radius: 12px; padding: 8px; margin: 8px 0; display: grid; gap: 8px; }
+.faceai-person-head { display: flex; gap: 6px; align-items: center; }
+.faceai-person-head input { flex: 1; min-width: 0; }
+.faceai-refs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.faceai-ref { position: relative; display: inline-block; }
+.faceai-ref img { width: 64px; height: 64px; border-radius: 8px; display: block; }
+.faceai-ref .x { position: absolute; top: -6px; right: -6px; width: 24px; height: 24px; min-height: 24px; padding: 0; border-radius: 999px; font-size: .8rem; }
+.faceai-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.faceai-pick-face { padding: 2px; border-radius: 12px; }
+.faceai-pick-face img { width: 96px; height: 96px; border-radius: 10px; display: block; }
+.faceai-pick-face[aria-pressed="true"] { border: 3px solid var(--accent); }

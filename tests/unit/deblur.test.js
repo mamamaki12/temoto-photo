@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/deblur-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deblurSize, deblurResidual, deblurResidual2, applyResidual, gateMap, TILE } from '../../deblur.js';
+import { deblurSize, deblurResidual, deblurResidual2, deconvResidual, addDeconv, applyResidual, gateMap, TILE } from '../../deblur.js';
 import { addGrain } from '../../restoration-lowlight.js';
 
 /** 縮めた絵（RGB を並べたもの）。fn(x, y) は 0〜1 の明るさ */
@@ -111,4 +111,36 @@ test('deblur: 2 段の和も、元の絵の直してよい量までに抑える'
   const A = gateMap(img.data, 600, 540); let mx = 0;
   for (let i = 0; i < 600 * 540; i++) { assert.ok(Math.abs(res.data[i * 3]) <= A[i] + 1e-6); mx = Math.max(mx, Math.abs(res.data[i * 3])); }
   assert.ok(mx > 0.02, `縞の所は直す: ${mx}`);
+});
+
+test('deblur: にじんだ輪郭は、ぼけの形を仮定して戻すと急になる（外に縁は作らない）。なだらかな所・小さなムラはそのまま', () => {
+  // 縦の輪郭を、標準偏差 2.5 のガウスでぼかしたもの + 小さなムラ（ノイズのムラ）
+  const erf = (x) => { const t = 1 / (1 + 0.3275911 * Math.abs(x)); const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; };
+  const edge = (x) => 0.2 + 0.5 * 0.5 * (1 + erf((x - 64.5) / (2.5 * Math.SQRT2)));
+  const ripple = (x, y) => 0.004 * Math.sin(x * 1.3 + y * 0.7);
+  const img = small(160, 64, (x, y) => edge(x) + ripple(x, y));
+  const res = deconvResidual(img, { sigma: 2.5 });
+  const Y = (x, y) => { const i = (y * 160 + x) * 3; return 0.299 * (img.data[i] + res.data[i]) + 0.587 * (img.data[i + 1] + res.data[i + 1]) + 0.114 * (img.data[i + 2] + res.data[i + 2]); };
+  const Y0 = (x, y) => { const i = (y * 160 + x) * 3; return 0.299 * img.data[i] + 0.587 * img.data[i + 1] + 0.114 * img.data[i + 2]; };
+  // 輪郭の真ん中の傾きが急になる
+  assert.ok(Y(65, 32) - Y(64, 32) > (Y0(65, 32) - Y0(64, 32)) * 1.15, `傾き ${(Y(65, 32) - Y(64, 32)).toFixed(4)} / ${(Y0(65, 32) - Y0(64, 32)).toFixed(4)}`);
+  // 輪郭の外に、元の明るさの範囲を大きく超える縁を作らない
+  let mn = 1; let mx = 0; for (let x = 40; x < 90; x++) { mn = Math.min(mn, Y(x, 32)); mx = Math.max(mx, Y(x, 32)); }
+  const lo = Y0(40, 32); const hi = Y0(89, 32);
+  assert.ok(mn > lo - 0.05 * (hi - lo) && mx < hi + 0.05 * (hi - lo), `範囲 ${mn.toFixed(3)}〜${mx.toFixed(3)}`);
+  // 輪郭から離れた平らな所（ムラだけ）は変えない
+  let far = 0; for (let y = 0; y < 64; y++) for (let x = 120; x < 150; x++) far = Math.max(far, Math.abs(res.data[(y * 160 + x) * 3]));
+  assert.ok(far < 1e-3, `平らな所 ${far}`);
+});
+
+test('deblur: AI がもう直した所には、逆畳み込みの差分を上乗せしない（直してよい量を分け合う）', () => {
+  const img = small(64, 64, (x) => stripes(x));
+  const A = gateMap(img.data, 64, 64);
+  const full = { data: new Float32Array(64 * 64 * 3) }; const none = { data: new Float32Array(64 * 64 * 3) };
+  for (let i = 0; i < 64 * 64; i++) for (let c = 0; c < 3; c++) full.data[i * 3 + c] = A[i]; // AI が上限まで直した
+  const dc = { data: new Float32Array(64 * 64 * 3).fill(0.05) };
+  addDeconv(full, dc, img); addDeconv(none, dc, img);
+  const i = 32 * 64 + 8; // 縞の境目
+  assert.ok(Math.abs(full.data[i * 3] - A[i]) < 1e-6, 'AI が上限まで直した所は、そのまま');
+  assert.ok(none.data[i * 3] > 0.01, 'AI が直していない所には足す');
 });
