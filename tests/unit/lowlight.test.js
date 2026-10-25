@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/lowlight-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, fineScale, BAND_MARGIN } from '../../restoration-lowlight.js';
+import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, fineScale, grainFor, BAND_MARGIN } from '../../restoration-lowlight.js';
 
 function randomNormal(seed = 521) {
   const uniform = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
@@ -220,4 +220,15 @@ test('lowlight: 大きく明るくする写真ほど、戻す細かい粒を減�
   assert.equal(fineScale({ gain: 4.7 }), 1); // IMG_9365（そのままできれい）
   assert.ok(fineScale({ gain: 7.4 }) < 0.7); // IMG_9321
   assert.ok(fineScale({ gain: 13.5 }) < 0.4); // IMG_9348
+});
+
+test('lowlight: 消したノイズが多い写真ほど（ノイズの量 × 明るくした分）、足す粒を強くする（粒がないと、肌・髪が絵の具でなでたようでイラストっぽい）', () => {
+  const prof = (s) => [new Float32Array(12).fill(s / 255)];
+  assert.equal(grainFor(0, prof(2.6), { gain: 13.5 }), 0); // ノイズ軽減なし → 粒なし
+  assert.equal(grainFor(1), 1.5); // 測っていないときは、いちばん弱い粒
+  assert.equal(grainFor(1, prof(1), null), 1.5); // ノイズの少ない明るい写真は、いちばん弱い粒のまま
+  const a = grainFor(1, prof(2.6), { gain: 4.7 }); const b = grainFor(1, prof(2.6), { gain: 13.5 }); // IMG_9365・9348
+  assert.ok(a > 2 && b > a && b <= 4, `${a.toFixed(2)} ${b.toFixed(2)}`);
+  assert.equal(grainFor(1, prof(14), { gain: 13.5 }), 4); // 上限
+  assert.equal(grainFor(0.5, prof(2.6), { gain: 13.5 }), b / 2); // ノイズ軽減を弱めると、粒も弱く
 });

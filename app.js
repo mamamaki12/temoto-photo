@@ -20,14 +20,13 @@ import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull } from './fullres.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
-import { grainFor } from './restoration-lowlight.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.24.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.26.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -533,8 +532,9 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {} } = {}) {
   if (ll) {
     if (cache.ll?.key !== llKey) {
       cache.ll = null;
-      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, onProgress: (t) => onProgress(t * share) });
-      cache.ll = { key: llKey, canvas: c };
+      let grain = 0;
+      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, onProgress: (t) => onProgress(t * share), onGrain: (g) => { grain = g; } });
+      cache.ll = { key: llKey, canvas: c, grain };
     }
     canvas = cache.ll.canvas;
   }
@@ -545,7 +545,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {} } = {}) {
     cache.db = { key: dbKey, res };
   }
   const res = cache.db.res;
-  const out = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? grainFor(ll.nr) : 0 }, { signal });
+  const out = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
   onProgress(1);
   return { canvas: out, res };
 }
@@ -1837,7 +1837,7 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
     if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(work, st.retouch, null);
     try {
       return await exportFull({ full: src.full, work, lowlightFrom: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
-        deblur: db ? { res, amount: deblurAmount(st0.adj), grain: ll ? grainFor(ll.nr) : 0 } : null,
+        deblur: db ? { res, amount: deblurAmount(st0.adj), grain: 0 } : null, // 暗所補正があるときの粒は、書き出しで測ったノイズの量で決まる
         onProgress: onProgress && ((t) => onProgress(pre + (1 - pre) * t)) });
     } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
   }

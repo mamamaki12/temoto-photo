@@ -79,7 +79,6 @@ test('被写体ブレの補正: 元の大きさの書き出しでも、編集中
     const { exportFull } = await import('/fullres.js');
     const { enhanceCanvas, lowlightOptions } = await import('/restoration-photo.js');
     const { deblurResidualFor, finishCanvas, deblurAmount } = await import('/deblur-photo.js');
-    const { grainFor } = await import('/restoration-lowlight.js');
     const w = 300; const h = 700; // 帯が何本かに分かれる高さ
     const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d', { colorSpace: COLOR_SPACE });
     x.fillStyle = '#2a1c14'; x.fillRect(0, 0, w, h);
@@ -87,22 +86,24 @@ test('被写体ブレの補正: 元の大きさの書き出しでも、編集中
     const st = defaultState(); st.adj.lowlight = 50; st.adj.noise = 50; st.adj.deblur = 60;
     const ll = lowlightOptions(st.adj);
     // 編集中と同じ手順: 暗所補正（粒なし）→ ブレ補正の差分 → 粒
-    const lc = await enhanceCanvas(c, w, h, { ...ll, grain: false });
+    let grain = 0;
+    const lc = await enhanceCanvas(c, w, h, { ...ll, grain: false }, { onGrain: (g) => { grain = g; } });
     const res = await deblurResidualFor(lc, w, h, w, h);
-    const view = await finishCanvas(lc, w, h, { res, amount: deblurAmount(st.adj), grain: grainFor(ll.nr) });
+    const view = await finishCanvas(lc, w, h, { res, amount: deblurAmount(st.adj), grain });
     const vd = view.getContext('2d', { colorSpace: COLOR_SPACE }).getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }).data;
     let resMax = 0; for (const v of res.data) resMax = Math.max(resMax, Math.abs(v));
     const out = await exportFull({ full: c, work: view, lowlightFrom: c, mask: document.createElement('canvas'), state: st, format: 'image/png', space: COLOR_SPACE,
-      lowlight: ll, deblur: { res, amount: deblurAmount(st.adj), grain: grainFor(ll.nr) } });
+      lowlight: ll, deblur: { res, amount: deblurAmount(st.adj), grain: 0 } }); // 粒の強さは、書き出しでも同じように測る
     const bmp = await createImageBitmap(out.blob); const t = document.createElement('canvas'); t.width = w; t.height = h;
     const tx = t.getContext('2d', { colorSpace: COLOR_SPACE }); tx.drawImage(bmp, 0, 0);
     const ed = tx.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }).data;
     let diff = 0; for (let i = 0; i < ed.length; i++) if (i % 4 !== 3) diff = Math.max(diff, Math.abs(ed[i] - vd[i]));
-    return { diff, resMax, size: [bmp.width, bmp.height] };
+    return { diff, resMax, grain, size: [bmp.width, bmp.height] };
   });
   expect(r.resMax).toBeGreaterThan(0.002); // AI が何か直している
+  expect(r.grain).toBeGreaterThan(0);
   expect(r.size).toEqual([300, 700]);
-  expect(r.diff).toBeLessThanOrEqual(2);
+  expect(r.diff).toBeLessThanOrEqual(3); // 粒（暗い写真では最大 4 階調）は明るさで強さが変わるので、GPU を通した 1〜2 階調の違いが少し広がる
 });
 
 test('被写体ブレの補正（大きなブレ）: 人物の写真では強い AI も通すが、顔は今までと同じ', async ({ page }) => {
