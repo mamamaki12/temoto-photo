@@ -22,6 +22,10 @@ const LEVELS = 3;
 // 平らな所（カーテン・背景）は少なく戻す。平らな所に戻すと、それはただのノイズに見える
 const KEEP_FLAT = 0.1;
 const KEEP_TEXTURE = 0.6;
+// 取った成分のうち、ごく細かい粒（1〜2 画素。肌のきめ・生地の目）を戻す割合。人物（肌・衣装・髪）は全部、背景（壁・カーテン）は FINE_BACK だけ
+// （ユーザーの声「元の写真にあったきめ細やかさは残したい。ノイズはもちろん消す」。にじんだ大きな粒・色のムラは戻さないので、ノイズのムラは残らない）
+const FINE_KEEP = 1;
+const FINE_BACK = 0.35;
 // ノイズの代わりに足す、細かい粒（色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
 const FILM_GRAIN = 1.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
@@ -147,6 +151,16 @@ export function measureNoise(rgba, w, h) {
   }
   return out;
 }
+/**
+ * 取った成分を「模様」として戻すかを決めるときの、ノイズの量の下限（真っ暗に近い所だけ）。
+ * 黒に近い所は 0 で切れるので、測ったばらつきは本当より小さく出る。そこに残った JPEG の 1〜2 階調の塊を
+ * 「模様」とみなして戻すと、大きく明るくしたときに髪の中の黒い点（十字の染み）になる。1.5 階調（8bit）を下限にする。
+ * 明るい所（FLOOR_TO より上）は測った値のまま（低感度の写真の細かい模様を消さない）
+ */
+const NOISE_FLOOR = 1.5 / 255;
+const FLOOR_FULL = 0.05; // これより暗い所は下限をそのまま
+const FLOOR_TO = 0.12; // これより明るい所は下限なし
+const noiseFloor = (y) => NOISE_FLOOR * Math.min(1, Math.max(0, (FLOOR_TO - y) / (FLOOR_TO - FLOOR_FULL)));
 const noiseAt = (bins, y) => {
   const f = Math.min(NOISE_BINS - 1, Math.max(0, y * NOISE_BINS * 1.6 - 0.5)); const k = Math.floor(f); const t = f - k;
   return bins[k] * (1 - t) + bins[Math.min(NOISE_BINS - 1, k + 1)] * t;
@@ -372,7 +386,8 @@ function rank(src, w, h, r, pick) {
 const WB_PERSON = { tint: 0.3, temp: 0.3 };
 const WB_BACK = { tint: 1, temp: 0 };
 const SAT_EXP = 1; // 明るくした倍率 k に対して、色の濃さ（明るさとの差）を k^SAT_EXP 倍にする（1 で元の色のまま明るく）
-const TARGET = 0.16; // 自動の明るさの狙い（ベースの平均、リニア）
+const TARGET = 0.12; // 自動の明るさの狙い（ベースの平均、リニア）。0.16 では顔が同じ舞台を明るく撮った写真（IMG_9228）より 3 割明るく、光の頬が飛んで平らに見えた
+const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる（2 - KNEE で白に届く）
 function whiteBalance(data, n, amount) {
   const lum = new Float32Array(n); const lin = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -430,8 +445,10 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
         // 照明の色（舞台の暖かさ）は残す。色の濃さは SAT_EXP で決める
         const k = Lo / (L + 1e-4); const kc = k > 1 ? k ** tone.sat : k;
         r = Lo + (r - L) * kc; g = Lo + (g - L) * kc; bl = Lo + (bl - L) * kc;
+        // いちばん明るい色（舞台の照明の下の肌では赤）が白に近づいたら、3 色を同じ割合でなだらかに押さえる。
+        // 1 を超えた分を白に寄せると、光の当たった頬だけが白っぽく平らに抜けて、頬の丸み（立体感）が消える（IMG_9263）
         const mx = Math.max(r, g, bl);
-        if (mx > 1) { const Lc = Math.min(1, Lo); const t = Math.min(1, (mx - 1) / (mx - Lc + 1e-6)); r += (Lc - r) * t; g += (Lc - g) * t; bl += (Lc - bl) * t; }
+        if (mx > KNEE) { const u = Math.min(1, (mx - KNEE) / (2 * (1 - KNEE))); const q = (KNEE + (1 - KNEE) * u * (2 - u)) / mx; r *= q; g *= q; bl *= q; }
       }
       // 8bit にするとき、ごく弱いディザ（位置で決まるので、帯に分けても同じ）
       const p = (at.y0 + y) * at.fullW + x;
@@ -455,10 +472,12 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
  * @param {{width:number,height:number,data:Uint8ClampedArray}} band 上下に余分な行を含む帯
  * @param {{top:number,bottom:number,y0:number,fullW:number,fullH:number}} at
  *   top・bottom: 帯のうち、余分な行を除いた範囲（帯の中の行番号）。y0: 帯の 1 行目が写真全体の何行目か
- * @param {{nr:number,profile:Float32Array[]|null,tone:object|null}} o
+ * @param {{nr:number,profile:Float32Array[]|null,tone:object|null,grain?:boolean,fine?:boolean}} o
+ *   fine: false で、取った成分のうち細かい粒（肌のきめ）を戻さない。ブレ補正の AI は、戻した粒をブレの模様と見て、
+ *   頬に筋やゆがみを作る（IMG_9242・9345）。また、ブレ補正を効かせる所（まわりのばらつきが大きい所）が平らな肌にまで広がる
  * @returns {Uint8ClampedArray} top〜bottom の行の RGBA
  */
-export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onProgress = () => {}) {
+export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: keepFine = true }, onProgress = () => {}) {
   const { width: w, height: h, data } = band;
   let [Y, Cb, Cr] = toYCC(data, w, h);
   if (nr > 0 && profile) {
@@ -467,14 +486,27 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
     removeSpots(Y, Y0, w, h, profile, nr);
     smoothSteps(Y, w, h, profile[0], nr);
+    for (let k = 0; k < EDGE_PASSES; k++) smoothAlongEdges(Y, w, h, profile[0]);
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
     // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
     const res = new Float32Array(Y.length); for (let i = 0; i < Y.length; i++) { const d = Y0[i] - Y[i]; res[i] = d * d; }
     const energy = boxBlur(res, w, h, 3); const k = 1 / Math.max(1, nr);
-    for (let i = 0; i < Y.length; i++) {
-      const s = noiseAt(profile[0], Y[i]); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
-      Y[i] += (Y0[i] - Y[i]) * (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
+    // 取った成分のうち、1〜2 画素のごく細かい粒（肌のきめ）。にじんだ大きな粒（ノイズのムラ）は戻さない
+    for (let i = 0; i < Y.length; i++) res[i] = Y0[i] - Y[i];
+    const fine = boxBlur(boxBlur(res, w, h, 1), w, h, 1); for (let i = 0; i < Y.length; i++) fine[i] = res[i] - fine[i];
+    const pm = tone && tone.person; const px = pm ? pm.w / at.fullW : 0; const py = pm ? pm.h / at.fullH : 0;
+    for (let y = 0, i = 0; y < h; y++) {
+      const gy = (at.y0 + y + 0.5) * py - 0.5;
+      for (let x = 0; x < w; x++, i++) {
+        const s = Math.max(noiseFloor(Y[i]), noiseAt(profile[0], Y[i])); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
+        const kk = (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
+        // 細かい粒は戻す（人物は全部、背景は少し。人物の地図がなければその間）。真っ暗に近い所（髪・背景の影）は戻さない（黒い点に見える）。
+        // とび出た点は戻さない（ノイズの量の 1.5 倍で切る）
+        const p = pm ? sampleGrid(pm.m, pm.w, pm.h, (x + 0.5) * px - 0.5, gy) : 0.5;
+        const f = !keepFine ? 0 : Math.max(0, FINE_KEEP * (FINE_BACK + (1 - FINE_BACK) * p) * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
+        Y[i] += res[i] * kk + Math.min(1.5 * s, Math.max(-1.5 * s, fine[i])) * f;
+      }
     }
     sharpenDetail(Y, w, h, profile, nr, tone ? tone.hiY : HI_Y);
   }
@@ -504,6 +536,45 @@ function smoothSteps(Y, w, h, bins, nr) {
 }
 
 /**
+ * 輪郭のギザギザ（髪・耳・あごの縁が、細かい階段や、ちぎれたような縁になる）を、輪郭に沿ってならす。
+ * 暗い所のやわらかい輪郭は、ノイズに埋もれているので、Non-Local Means は縁の 1 画素ごとに違う模様を選んで、縁がガタガタになる。
+ * 輪郭の向き（明るさの傾きを、まわりで平均して求める）に沿った前後 2 画素の平均に寄せる。輪郭をまたぐ向きには平均しないので、
+ * 輪郭のくっきりさと、細い線（髪の毛 1 本）はそのまま残る。向きがそろっていない所（模様・角・平らな所）はそのまま
+ */
+const EDGE_K = 1; // 寄せる強さ（向きがそろった、はっきりした輪郭で）
+const EDGE_PASSES = 2; // 何回くり返すか（1 回では、前髪の縁などの大きな段が残る）
+function smoothAlongEdges(Y, w, h, bins) {
+  const n = w * h; const xx = new Float32Array(n); const xy = new Float32Array(n); const yy = new Float32Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    const gx = (Y[y * w + Math.min(w - 1, x + 1)] - Y[y * w + Math.max(0, x - 1)]) / 2;
+    const gy = (Y[Math.min(h - 1, y + 1) * w + x] - Y[Math.max(0, y - 1) * w + x]) / 2;
+    xx[i] = gx * gx; xy[i] = gx * gy; yy[i] = gy * gy;
+  }
+  const a = boxBlur(xx, w, h, 2); const b = boxBlur(xy, w, h, 2); const c = boxBlur(yy, w, h, 2);
+  const at = (fx, fy) => {
+    fx = Math.min(w - 1, Math.max(0, fx)); fy = Math.min(h - 1, Math.max(0, fy));
+    const x0 = Math.floor(fx); const y0 = Math.floor(fy); const x1 = Math.min(w - 1, x0 + 1); const y1 = Math.min(h - 1, y0 + 1); const tx = fx - x0; const ty = fy - y0;
+    return (Y[y0 * w + x0] * (1 - tx) + Y[y0 * w + x1] * tx) * (1 - ty) + (Y[y1 * w + x0] * (1 - tx) + Y[y1 * w + x1] * tx) * ty;
+  };
+  const out = new Float32Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const A = a[i]; const B = b[i]; const C = c[i];
+    const d = Math.sqrt((A - C) * (A - C) + 4 * B * B); const l1 = (A + C + d) / 2; const l2 = (A + C - d) / 2;
+    const coh = ((l1 - l2) / (l1 + l2 + 1e-12)) ** 2;
+    // 輪郭の強さ（傾きの大きさ ÷ ノイズの量）。ノイズと同じくらいの傾きは輪郭とみなさない
+    const s = Math.sqrt(l1) / (noiseAt(bins, Y[i]) + 1e-6); const str = Math.min(1, Math.max(0, (s - 0.5) / 1));
+    const k = EDGE_K * coh * str;
+    if (k < 0.02) { out[i] = Y[i]; continue; }
+    // 傾きの向き (A-C, 2B) の半分の角度 → それに直交する向きが輪郭に沿う向き
+    const th = 0.5 * Math.atan2(2 * B, A - C); const tx = -Math.sin(th); const ty = Math.cos(th);
+    const m = (Y[i] * 3 + (at(x + tx, y + ty) + at(x - tx, y - ty)) * 2 + at(x + 2 * tx, y + 2 * ty) + at(x - 2 * tx, y - 2 * ty)) / 9;
+    out[i] = Y[i] + k * (m - Y[i]);
+  }
+  Y.set(out);
+}
+
+/**
  * 輪郭と立体感を、元の写真より少しくっきりさせる（ノイズを取ると、髪・目・歯・指の輪郭がやわらかくなり、解像度が落ちたように見える）。
  * 2 つの細かさで、ぼかした絵との差を足す: 細かい輪郭（約 1 画素）と、中くらいの立体感（約 4 画素。髪の束・まぶた・指の境目）。
  * - ノイズの量よりはっきり強い模様だけ（平らな所・肌のなだらかな所にノイズを戻さない）
@@ -515,6 +586,9 @@ const SHARP_FINE = 0.8; // 細かい輪郭の強さ
 const SHARP_MID = 5; // 中くらいの立体感の強さ
 const SHARP_MID_R = 4;
 const SHARP_OVER = 0.15; // まわりの最小〜最大の幅の何割まではみ出してよいか
+// 中くらいの立体感で変えてよい明るさの割合（その画素の明るさの何割まで）。暗い所の小さな黒い部分（瞳・鼻の穴・口の端）は、
+// 少し暗くしただけでも明るくすると真っ黒につぶれ、白目は白く浮く（IMG_9263・9365 の目）
+const SHARP_MID_CAP = 0.1;
 const HI_Y = 0.77; // 明るさを変えないときの「明るい所」（輝度）
 function sharpenDetail(Y, w, h, profile, nr, hiY) {
   const amt = Math.min(1, nr); const n = w * h;
@@ -529,7 +603,8 @@ function sharpenDetail(Y, w, h, profile, nr, hiY) {
     const t1 = gate(Math.sqrt(g1[i]), noiseAt(profile[0], b1[i]), 0.8, 2, b1[i], 0.35);
     const t2 = gate(Math.sqrt(g2[i]), noiseAt(profile[1], b2[i]), 0.7, 1.5, b2[i], 0.5);
     const ph = Math.max(0.1, Math.min(1, (hiY - hi[i]) / (0.5 * hiY)));
-    const v = Y[i] + amt * ph * (SHARP_FINE * t1 * (Y[i] - b1[i]) + SHARP_MID * t2 * (b1[i] - b2[i]));
+    const c = SHARP_MID_CAP * Y[i]; const mid = Math.min(c, Math.max(-c, SHARP_MID * t2 * (b1[i] - b2[i])));
+    const v = Y[i] + amt * ph * (SHARP_FINE * t1 * (Y[i] - b1[i]) + mid);
     const o = (hi[i] - lo[i]) * SHARP_OVER;
     Y[i] = Math.min(hi[i] + o, Math.max(lo[i] - o, v));
   }

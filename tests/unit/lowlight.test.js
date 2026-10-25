@@ -146,3 +146,71 @@ test('lowlight: 足す粒は位置で決まり、となりの画素と少しつ�
   assert.ok(sd > 1.1 && sd < 1.9, `粒の強さ: ${sd.toFixed(2)}`);
   assert.ok(corr > 0.2 && corr < 0.8, `となりとのつながり: ${corr.toFixed(2)}`);
 });
+
+test('lowlight: 真っ暗に近い所の 1〜2 階調の塊（JPEG の名残り）は、模様として戻さない（大きく明るくすると髪の中の黒い点になる）', () => {
+  const w = 160; const h = 160; const rand = randomNormal(21);
+  // 明るさ 4/255 の髪のような暗い面に、2 階調暗い 3×3 の塊を 10 画素おきに置く。ノイズは 1/255 程度（0 で切れて小さく測れる所）。
+  // 大きく明るくする（前は、明るくした後で 2 階調の差が残った）
+  const blob = (x, y) => x % 10 >= 4 && x % 10 < 7 && y % 10 >= 4 && y % 10 < 7;
+  const data = rgba(w, h, (x, y) => { const v = 4 + 0.8 * rand() - (blob(x, y) ? 2 : 0); return [v, v, v]; });
+  const profile = measureNoise(rgba(w, h, (x, y) => { const v = 4 + 0.8 * rand() + (y > 80 ? 60 : 0); return [v, v, v]; }), w, h);
+  const tone = planTone({ width: w, height: h, data }, 50);
+  const out = whole(data, w, h, { nr: 1, profile, tone, grain: false });
+  let d = 0; let n = 0;
+  for (let y = 20; y < h - 20; y += 10) for (let x = 20; x < w - 20; x += 10) { d += out[((y + 1) * w + x + 9) * 4 + 1] - out[((y + 5) * w + x + 5) * 4 + 1]; n++; }
+  assert.ok(d / n < 1.6, `暗い塊が残っている: ${(d / n).toFixed(2)} 階調`);
+});
+
+test('lowlight: 暗い所のやわらかい輪郭が、ノイズを取ったあとガタガタ（階段・ちぎれた縁）にならない', () => {
+  const w = 160; const h = 160; const rand = randomNormal(33);
+  // 斜めの輪郭（暗 4 → 明 14）を 4 画素ほどの幅でなだらかにしたもの。高感度のにじんだノイズ（3〜5 画素の粒、標準偏差 1/255）
+  let grain = new Float32Array(w * h).map(() => rand()); grain = boxBlur(boxBlur(grain, w, h, 1), w, h, 1);
+  const sd = Math.sqrt(grain.reduce((s, v) => s + v * v, 0) / grain.length);
+  const edge = (x, y) => 4 + 10 / (1 + Math.exp(-(x - 0.5 * y - 40) / 2));
+  const data = rgba(w, h, (x, y) => { const v = edge(x, y) + grain[y * w + x] / sd; return [v, v, v]; });
+  const profile = measureNoise(data, w, h);
+  const tone = planTone({ width: w, height: h, data }, 50);
+  const out = whole(data, w, h, { nr: 1, profile, tone, grain: false });
+  // 行ごとに、輪郭の位置（明るさが両側の中ほどを超える所）を求め、となりの行とのずれ（まっすぐなら 0.5 画素）を測る
+  const pos = []; for (let y = 20; y < h - 20; y++) {
+    const at = (x) => out[(y * w + x) * 4 + 1]; const x0 = Math.round(0.5 * y + 40); const m = (at(x0 - 10) + at(x0 + 10)) / 2;
+    let p = x0; for (let x = x0 - 8; x < x0 + 8; x++) if (at(x) < m && at(x + 1) >= m) { p = x + (m - at(x)) / (at(x + 1) - at(x)); break; }
+    pos.push(p);
+  }
+  let wig = 0; for (let i = 1; i < pos.length; i++) wig += Math.abs(pos[i] - pos[i - 1] - 0.5);
+  // 前は 0.27 画素
+  assert.ok(wig / (pos.length - 1) < 0.255, `輪郭がガタガタ: 1 行ごとに平均 ${(wig / (pos.length - 1)).toFixed(3)} 画素ずれる`);
+});
+
+test('lowlight: 暗い所の小さな黒い部分（瞳・鼻の穴）は、くっきりさせるときに暗くしすぎない（明るくすると真っ黒につぶれる）', () => {
+  const w = 160; const h = 160; const rand = randomNormal(45);
+  // 肌（30/255）の中に、半径 4 画素の暗い丸（12/255）を 40 画素おきに置く。くっきりさせない場合（ノイズなしで明るさだけ）と比べる
+  const eye = (x, y) => ((x % 40) - 20) ** 2 + ((y % 40) - 20) ** 2 <= 16;
+  const data = rgba(w, h, (x, y) => { const v = (eye(x, y) ? 12 : 30) + 0.8 * rand(); return [v, v, v]; });
+  const flat = rgba(w, h, (x, y) => { const v = eye(x, y) ? 12 : 30; return [v, v, v]; });
+  const profile = measureNoise(rgba(w, h, (x, y) => { const v = 30 + 0.8 * rand() + (y > 80 ? 40 : 0); return [v, v, v]; }), w, h);
+  const tone = planTone({ width: w, height: h, data }, 50);
+  const out = whole(data, w, h, { nr: 1, profile, tone, grain: false });
+  const ref = whole(flat, w, h, { nr: 0, profile, tone, grain: false });
+  let d = 0; let n = 0;
+  for (let y = 20; y < h; y += 40) for (let x = 20; x < w; x += 40) { d += ref[(y * w + x) * 4 + 1] - out[(y * w + x) * 4 + 1]; n++; }
+  // 前は 13 階調暗くなった
+  assert.ok(d / n < 6, `暗い丸が ${(d / n).toFixed(1)} 階調暗くなった`);
+});
+
+test('lowlight: fine: false なら、取った細かい粒（肌のきめ）を戻さない（ブレ補正の AI が粒を筋に変えるため）', () => {
+  const w = 96; const h = 96; const rand = randomNormal(23);
+  const data = rgba(w, h, () => { const n = 6 * rand(); return [90 + n, 60 + n, 45 + n]; });
+  const profile = measureNoise(data, w, h);
+  const fine = (img) => { // 3×3 の平均との差のばらつき
+    let s2 = 0; let k = 0;
+    for (let y = 4; y < h - 4; y++) for (let x = 4; x < w - 4; x++) {
+      let m = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) m += img[((y + dy) * w + x + dx) * 4 + 1];
+      const d = img[(y * w + x) * 4 + 1] - m / 9; s2 += d * d; k++;
+    }
+    return Math.sqrt(s2 / k);
+  };
+  const on = whole(data, w, h, { nr: 1, profile, tone: null, grain: false });
+  const off = whole(data, w, h, { nr: 1, profile, tone: null, grain: false, fine: false });
+  assert.ok(fine(off) < fine(on) * 0.8, `粒 ${fine(off).toFixed(2)} / ${fine(on).toFixed(2)}`);
+});

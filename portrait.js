@@ -388,6 +388,9 @@ export function portraitMargin(S) {
   return { f, margin: Math.ceil(S / 25 / f) * f };
 }
 
+// なめらかにするとき、明るさの中くらいの差（陰影）をならす割合（色のむらをならす割合に対して）。
+// 全部ならすと、頬の丸み・鼻筋の陰影まで消えて、顔が平らに見える（ユーザーの声「立体感が消えた」）
+const SMOOTH_SHADE = 0.5;
 /** S: 元の写真の短い辺（切り出しても、効き方は写真全体の大きさで決める）。raw: 肌らしさ。stats: 肌の平均の色 */
 function portraitCore(img, p, S, raw, stats) {
   const { width: W, height: H, data: d } = img; const N = W * H;
@@ -401,11 +404,8 @@ function portraitCore(img, p, S, raw, stats) {
   // 肌の平均の色（色むらを整える目標）は写真全体で決めたもの
   const { cbAvg, crAvg } = stats;
 
-  let Ls = null; let Ll = null; let lw = 0; let lh = 0; let f = 1;
-  if (a > 0) {
-    // 細かい成分（きめ）: 小さいぼかしとの差
-    const rs = Math.max(1, Math.round(S / 700)); // 毛穴くらいの細かさまでを「きめ」として残す（これより小さいと毛穴まで消えてのっぺりする）
-    Ls = [boxBlur(R.slice(), W, H, rs, 2), boxBlur(G.slice(), W, H, rs, 2), boxBlur(B.slice(), W, H, rs, 2)];
+  let Ls = null; let Ll = null; let Lc = null; let lw = 0; let lh = 0; let f = 1;
+  if (a > 0 || ev > 0) {
     // 粗い成分: 縮めた画像で「肌の画素だけ」の平均（正規化畳み込み）。髪や眉の色が肌ににじまない
     const rl = Math.max(2, Math.round(S / 90));
     f = Math.max(1, Math.round(rl / 5)); lw = Math.ceil(W / f); lh = Math.ceil(H / f);
@@ -421,10 +421,19 @@ function portraitCore(img, p, S, raw, stats) {
       }
     }
     for (let j = 0; j < sm.length; j++) { sm[j] /= cnt[j]; for (let c = 0; c < 3; c++) sc[c][j] /= cnt[j]; }
-    const r2 = Math.max(1, Math.round(rl / f / 2));
-    const bm = boxBlur(sm, lw, lh, r2, 3);
-    Ll = sc.map((ch) => { const bl = boxBlur(ch, lw, lh, r2, 3); for (let j = 0; j < bl.length; j++) bl[j] = bm[j] > 1e-4 ? bl[j] / bm[j] : 0; return bl; });
-    Ll.push(bm);
+    const avg = (r2) => { const bm = boxBlur(sm.slice(), lw, lh, r2, 3); const L = sc.map((ch) => { const bl = boxBlur(ch.slice(), lw, lh, r2, 3); for (let j = 0; j < bl.length; j++) bl[j] = bm[j] > 1e-4 ? bl[j] / bm[j] : 0; return bl; }); L.push(bm); return L; };
+    if (a > 0) {
+      // 細かい成分（きめ）: 小さいぼかしとの差
+      const rs = Math.max(1, Math.round(S / 700)); // 毛穴くらいの細かさまでを「きめ」として残す（これより小さいと毛穴まで消えてのっぺりする）
+      Ls = [boxBlur(R.slice(), W, H, rs, 2), boxBlur(G.slice(), W, H, rs, 2), boxBlur(B.slice(), W, H, rs, 2)];
+      Ll = avg(Math.max(1, Math.round(rl / f / 2)));
+    }
+    if (ev > 0) {
+      // 頬のような広い範囲の赤み（チーク・血色）を測るための、もっと広い平均の赤み。これより赤い小さな所（ニキビ跡・小さな赤み）だけを抑える
+      // （書き出しで一部ずつ当てるときの余白 portraitMargin に収まる広さ）
+      const L = avg(Math.max(1, Math.round(S / 80 / f)));
+      Lc = new Float32Array(lw * lh); for (let j = 0; j < Lc.length; j++) Lc[j] = 128 + 0.5 * L[0][j] - 0.418688 * L[1][j] - 0.081312 * L[2][j];
+    }
   }
   // 縮めた画像の値を、なめらかに（双線形で）取り出すための表
   const tab = (len, ln) => {
@@ -432,7 +441,7 @@ function portraitCore(img, p, S, raw, stats) {
     for (let x = 0; x < len; x++) { const fx = Math.min(ln - 1, Math.max(0, (x + 0.5) / f - 0.5)); i0[x] = fx | 0; i1[x] = Math.min(ln - 1, i0[x] + 1); t[x] = fx - i0[x]; }
     return { i0, i1, t };
   };
-  const tx = a > 0 ? tab(W, lw) : null; const ty = a > 0 ? tab(H, lh) : null;
+  const tx = lw ? tab(W, lw) : null; const ty = lh ? tab(H, lh) : null;
   const up = [0, 0, 0, 0];
   const keepTex = 1 - 0.15 * a; // きめはほんの少しだけ弱める（残しすぎるとザラつき、消しすぎるとのっぺりする）
   const T = 34; // これより大きい差は「輪郭」とみなして平らにしない
@@ -450,7 +459,9 @@ function portraitCore(img, p, S, raw, stats) {
         const dl = Math.abs(0.299 * (lr - sr) + 0.587 * (lg - sg) + 0.114 * (lb - sb)) / T;
         const k = a * 0.92 * w * cov / (1 + dl * dl);
         const tex = 1 - (1 - keepTex) * w;
-        r = sr + (r - sr) * tex + (lr - sr) * k; g = sg + (g - sg) * tex + (lg - sg) * k; b = sb + (b - sb) * tex + (lb - sb) * k;
+        // 同じ色のまま明るさだけ違う差（陰影: 頬の丸み・鼻筋・あごの下の影）は控えめにならす。色の違う差（シミ・赤み）は k のまま
+        const q = ((lr - sr) * sr + (lg - sg) * sg + (lb - sb) * sb) / (sr * sr + sg * sg + sb * sb + 1) * k * (SMOOTH_SHADE - 1);
+        r = sr + (r - sr) * tex + (lr - sr) * k + sr * q; g = sg + (g - sg) * tex + (lg - sg) * k + sg * q; b = sb + (b - sb) * tex + (lb - sb) * k + sb * q;
       }
       if (ev > 0 || br > 0) {
         let Y = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -458,11 +469,18 @@ function portraitCore(img, p, S, raw, stats) {
         let cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
         if (ev > 0) {
           const t = ev * w;
-          // 赤みだけを抑える（血色は残す）。口紅・チークのようにはっきり赤い所（平均より 25 以上）はそのまま
-          const red = cr - crAvg; if (red > 0) cr -= red * t * 0.75 * Math.min(1, Math.max(0, (35 - red) / 10));
+          // 赤みだけを抑える（血色は残す）。口紅・チークのようにはっきり赤い所（平均より 25 以上）はそのまま。
+          // 頬の広いピンク（チーク・血色）もそのまま: まわりの広い範囲の赤みより赤い分だけを抑える
+          const c0 = tx.i0[x]; const c1 = tx.i1[x]; const wx = tx.t[x];
+          const top = Lc[r0 + c0] + (Lc[r0 + c1] - Lc[r0 + c0]) * wx; const bot = Lc[r1 + c0] + (Lc[r1 + c1] - Lc[r1 + c0]) * wx;
+          const red = cr - Math.max(crAvg, top + (bot - top) * wy); if (red > 0) cr -= red * t * 0.75 * Math.min(1, Math.max(0, (35 - (cr - crAvg)) / 10));
           cb += (cbAvg - cb) * t * 0.4; // 黄ぐすみ・青ぐすみをそろえる
         }
-        if (br > 0) Y += (255 - Y) * br * w * 0.35 * (Y / 255) ** 0.5; // 暗い影は持ち上げすぎない
+        if (br > 0) {
+          const Y0 = Y; Y += (255 - Y) * br * w * 0.35 * (Y / 255) ** 0.5; // 暗い影は持ち上げすぎない
+          // 頬のピンク（肌の平均より赤い分）は、明るくした分だけ濃くする（明るさだけ上げると、白っぽく抜けて見える）
+          const red = cr - crAvg; if (red > 0 && Y0 > 1) cr += red * (Y / Y0 - 1);
+        }
         r = Y + 1.402 * (cr - 128); g = Y - 0.344136 * (cb - 128) - 0.714136 * (cr - 128); b = Y + 1.772 * (cb - 128);
       }
       const k4 = i * 4; d[k4] = clamp255(r); d[k4 + 1] = clamp255(g); d[k4 + 2] = clamp255(b);
