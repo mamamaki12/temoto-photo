@@ -869,10 +869,15 @@ export function warpSegment(img, p0, p1, rad, amt, guard = null) {
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
+/** ブラシの形（中心からの距離 q 0〜1 → 動かす割合）。中ほどまでは全部動かし、縁に向かってなめらかに 0 に（尖った山だと輪郭がへこむ） */
+export const warpKernel = (q) => { if (q >= 1) return 0; const t = (1 - q * q); return t * t; };
+
 /**
- * 形を整える（2 版）: なぞった区間ごとに「どこから画素を持ってくるか」（ずらす量の地図）だけを重ねていき、
+ * 形を整える（2 版）: なぞった区間ごとに「どこから画素を持ってくるか」（ずらす量の地図 D）だけを重ねていき、
  * 画素は、なぞる前の写真から 1 回だけ読み直す（区間ごとに読み直すと、そのたびに少しずつぼける）。
- * protect（人物の地図。warpProtect）があれば、背景はほとんど動かさず、人物の側（髪・肌・服）でずれを受け止める。
+ * protect（人物の地図から作った、動かしてよい度合い。warpProtect）があれば:
+ *   - 背景（人物から離れた所）は動かさない。人物の側（髪・肌・服）でずれを受け止める
+ *   - 人物を外へ広げるときは、人物の画素を受け取る背景の画素も動かす（人物の地図は、動かした分だけずれた所で見る）
  * 色で混ぜ合わせない（背景を元の色に戻さない）ので、輪郭が透けたり二重になったりしない。
  * 返す物の seg(p0, p1, amt) で 1 区間を当て、書き換えた範囲 [x, y, w, h] を返す
  */
@@ -920,10 +925,16 @@ export function warpStroke(img, rad, protect = null) {
         const a = Math.floor(x); const b = Math.floor(y); const a1 = Math.min(a + 1, tw - 1); const b1 = Math.min(b + 1, th - 1); const fx = x - a; const fy = y - b;
         return (T[(b * tw + a) * 2 + c] * (1 - fx) + T[(b * tw + a1) * 2 + c] * fx) * (1 - fy) + (T[(b1 * tw + a) * 2 + c] * (1 - fx) + T[(b1 * tw + a1) * 2 + c] * fx) * fy;
       };
+      // 今の絵の中で、(x, y) にある物が人物の側かどうか（なぞる前の地図を、動かした分だけずらした所で見る）
+      const pw = (x, y) => protect(x - tAt(x, y, 0), y - tAt(x, y, 1));
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
         const q = Math.hypot(x - p1[0], y - p1[1]) / rad; if (q >= 1) continue;
-        const g = protect ? protect(x, y) : 1; if (g <= 0) continue;
-        const f = (1 - q * q) ** 2 * g; // 中心ほど大きく動かす。背景（g が小さい所）は動かさない
+        let f = warpKernel(q); // 中心ほど大きく動かす
+        if (protect) {
+          // 動かしてよいのは、人物の側にある画素と、人物の画素を受け取る（人物を外へ広げる先の）画素。それ以外の背景は動かさない
+          const g = Math.max(pw(x, y), pw(x - dx * f, y - dy * f)); if (g <= 0) continue;
+          f *= g;
+        }
         const ex = dx * f; const ey = dy * f;
         const nx = ex + tAt(x - ex, y - ey, 0); const ny = ey + tAt(x - ex, y - ey, 1);
         const j = ((y - ry) * rw + x - rx) * 2; D[j] = nx; D[j + 1] = ny;
@@ -938,16 +949,17 @@ export function warpStroke(img, rad, protect = null) {
 
 /**
  * 人物の地図（op.pm: なぞり始めのまわりの、人物らしさ 0〜1 を n×n に縮めたもの）から、動かしてよい度合いを返す関数を作る。
- * 人物の中は 1、背景は 0。人物のすぐ外（半径の 3 割まで）は、だんだん 0 に（人物の輪郭そのものを動かすとき、
- * 背景のすぐそばだけが少し伸びて、すき間を埋める）。人物がブラシの中にほとんどないときは null（ふつうに動かす）
+ * 人物の中は 1、背景は 0。人物の外は、人物から離れるほど（半径の band 倍で 0 に）だんだん動かさなくなる（人物の輪郭を内へ押すとき、
+ * 輪郭のそばの背景が少し伸びてすき間を埋める。帯が狭いと柵・柱などの線が急に折れ、全部止めると押した分だけ背景がずれて継ぎ目ができる。
+ * 半径 1 つ分の帯だと、線はゆるやかに曲がる程度）。
+ * 人物がブラシの中にほとんどないときは null（ふつうに動かす）
  */
-export function warpProtect(pm, rad, at, p0) {
+export function warpProtect(pm, rad, at, p0, band = 1) {
   if (!pm?.d) return null;
   const n = pm.n; const bin = atob(pm.d); if (bin.length !== n * n) return null;
   const P = new Float32Array(n * n); for (let i = 0; i < n * n; i++) P[i] = bin.charCodeAt(i) / 255;
   const bx0 = pm.b[0] * at.W - at.ox; const by0 = pm.b[1] * at.H - at.oy; const cw = (pm.b[2] - pm.b[0]) * at.W / n; const ch = (pm.b[3] - pm.b[1]) * at.H / n;
   if (!(cw > 0 && ch > 0)) return null;
-  const cell = (x, y) => [(x - bx0) / cw - 0.5, (y - by0) / ch - 0.5];
   // ブラシの中に人物がほとんどなければ、守らない
   let inside = 0; let tot = 0;
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
@@ -962,11 +974,11 @@ export function warpProtect(pm, rad, at, p0) {
   const up = [...Array(n).keys()]; const down = [...up].reverse();
   pass(up, up, [[-1, 0, 1], [0, -1, 1], [-1, -1, 1.414], [1, -1, 1.414]]);
   pass(down, down, [[1, 0, 1], [0, 1, 1], [1, 1, 1.414], [-1, 1, 1.414]]);
-  const band = Math.max(1, rad * 0.3 / Math.min(cw, ch));
+  const bw = Math.max(1, rad * band / Math.min(cw, ch));
   const G = new Float32Array(n * n);
-  for (let i = 0; i < n * n; i++) { const t = clamp01(1 - dist[i] / band); G[i] = P[i] > 0.5 ? 1 : t * t * (3 - 2 * t); }
+  for (let i = 0; i < n * n; i++) { const t = clamp01(1 - dist[i] / bw); G[i] = P[i] > 0.5 ? 1 : Math.max(P[i], t * t * (3 - 2 * t)); }
   return (x, y) => {
-    let [u, v] = cell(x, y); if (u < -1 || v < -1 || u > n || v > n) return 1; // 地図の外は、ふつうに動かす
+    let u = (x - bx0) / cw - 0.5; let v = (y - by0) / ch - 0.5; if (u < -1 || v < -1 || u > n || v > n) return 1; // 地図の外は、ふつうに動かす
     u = u < 0 ? 0 : u > n - 1 ? n - 1 : u; v = v < 0 ? 0 : v > n - 1 ? n - 1 : v;
     const a = Math.floor(u); const b = Math.floor(v); const a1 = Math.min(a + 1, n - 1); const b1 = Math.min(b + 1, n - 1); const fx = u - a; const fy = v - b;
     return (G[b * n + a] * (1 - fx) + G[b * n + a1] * fx) * (1 - fy) + (G[b1 * n + a] * (1 - fx) + G[b1 * n + a1] * fx) * fy;
@@ -986,6 +998,12 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
   if (op.type === 'warp') {
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
+    if (op.v === 2) {
+      // 2 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る
+      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0]));
+      for (let i = 1; i < pts.length; i++) st.seg(pts[i - 1], pts[i], amt);
+      return;
+    }
     const guard = op.keepBg === false || pts.length < 2 ? null : warpGuard(img, pts[0], pts[1], rad);
     for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt, guard);
     return;
@@ -1009,11 +1027,13 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
 /** 書き出しで読み出す範囲（全体の画素の座標 [x, y, w, h]）。ぼかし・動かす量のぶん、まわりも含める */
 export function brushBounds(op, W, H) {
   const S = Math.min(W, H); const rad = Math.max(1.5, op.r * S);
-  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity; let travel = 0;
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity; let travel = 0; let shift = 0;
   op.pts.forEach(([x, y], i) => {
     const px = x * W; const py = y * H; x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py);
-    if (i) travel = Math.max(travel, Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H));
+    if (i) { const l = Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H); travel = Math.max(travel, l); shift += Math.min(l * op.amt, rad * 0.2); }
   });
+  // 形を整える（2 版）は、なぞる前の画素を、区間ごとのずらした量の合計だけ遠くから読む
+  if (op.type === 'warp' && op.v === 2) travel = shift;
   // 範囲を自動で決めるときは、唇のまわりも読み出す（唇の高さの 5 割ほど外まで。色を覚える所とぼかしのぶん）
   if ((op.type === 'lip' || op.type === 'teeth') && op.whole) for (const l of op.lips || []) {
     const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.5 + 8;
