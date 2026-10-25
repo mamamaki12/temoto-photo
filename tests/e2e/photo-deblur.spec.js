@@ -106,6 +106,7 @@ test('被写体ブレの補正: 元の大きさの書き出しでも、編集中
 });
 
 test('被写体ブレの補正（大きなブレ）: 人物の写真では強い AI も通すが、顔は今までと同じ', async ({ page }) => {
+  test.setTimeout(420_000); // 強い AI を 2 周と、比べるための普通の補正を 1 回
   await page.goto('/');
   const r = await page.evaluate(async () => {
     const { deblurResidualFor } = await import('/deblur-photo.js');
