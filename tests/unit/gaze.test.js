@@ -46,8 +46,8 @@ test('目線: 寄せる量（amt）と微調整（tune）で動かす量が変�
   assert.deepEqual([...same.data], [...before.data]);
 });
 
-test('目線: 細い目（開きが黒目の半径より小さい）は動かさない。書き出しで読み出す範囲は両目のまわり', () => {
-  const narrow = lid.map(([x, y]) => [x, (CY + (y * H - CY) * 0.3) / H]);
+test('目線: 閉じかけの目（開きが黒目の半径の 7 割より小さい）は動かさない。書き出しで読み出す範囲は両目のまわり', () => {
+  const narrow = lid.map(([x, y]) => [x, (CY + (y * H - CY) * 0.2) / H]);
   const img = eyeImage(); const before = eyeImage();
   applyBrush(img, op({ eyes: [[{ lid: narrow, iris, pose: [0, 0] }]] }));
   assert.deepEqual([...img.data], [...before.data]);
