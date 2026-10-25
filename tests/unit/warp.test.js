@@ -19,7 +19,7 @@ const pm = (n = 32) => { let s = ''; for (let j = 0; j < n; j++) for (let i = 0;
 const run = (op, at) => { const im = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(im, op, at); return im.data; };
 const bgDiff = (d, x0 = 400) => { let m = 0; for (let y = 150; y < 250; y++) for (let x = x0; x < x0 + 100; x++) { const k = (y * W + x) * 4; m = Math.max(m, Math.abs(d[k] - base[k])); } return m; };
 const edge = (d, y = 200) => { for (let x = 150; x < 450; x++) { const k = (y * W + x) * 4; if (d[k + 2] > d[k]) return x; } return -1; }; // 背景（青みが赤より強い）が始まる所
-const push = { type: 'warp', v: 4, pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1, pm: pm() };
+const push = { type: 'warp', v: 5, pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1, pm: pm() };
 
 test('人物の地図があれば、押した所の背景（境目から半径以上離れた縞）はそのまま。人物の側は縮む（境目が左へ）', () => {
   const kept = run(push); const free = run({ ...push, pm: undefined });
@@ -58,9 +58,17 @@ test('3 版は、人物の外で背景を動かす帯が狭い（輪郭から半
 test('4 版は、押した輪郭が角ばらずになめらかに動く（ブラシの幅でへこまない）。保存済みの 3 版は今までどおり', () => {
   const prof = (d) => Array.from({ length: 41 }, (_, i) => edge(d, 100 + i * 5)); // 境目の位置を縦に並べる
   const curve = (e) => Math.max(...e.slice(2, -2).map((v, i) => Math.abs(e[i] - 2 * e[i + 2] + e[i + 4]))); // 曲がり方の強さ
-  const e4 = prof(run(push)); const e3 = prof(run({ ...push, v: 3 }));
+  const e4 = prof(run({ ...push, v: 4 })); const e3 = prof(run({ ...push, v: 3 }));
   assert.ok(Math.min(...e4) < 296, `4 版も境目は左へ: ${Math.min(...e4)}`);
   assert.ok(curve(e4) < curve(e3), `4 版の方がなめらか: ${curve(e4)} < ${curve(e3)}`);
   const moved = (e) => e.filter((v) => v < 299).length; // 動いた行の数（輪郭に沿って広く動くか）
   assert.ok(moved(e4) > moved(e3), `4 版の方が輪郭に沿って広く動く: ${moved(e4)} > ${moved(e3)}`);
+});
+
+test('5 版は、長くなぞっても 1 回で動く量に上限がある（半径 × 強さ × 0.3）。強さを上げると上限も上がる。保存済みの 4 版は今までどおり', () => {
+  const long = { ...push, pts: Array.from({ length: 30 }, (_, i) => [(330 - i * 4) / W, 200 / H]) }; // 120 画素なぞる
+  const e5 = edge(run(long)); const e4 = edge(run({ ...long, v: 4 })); const half = edge(run({ ...long, amt: 0.5 }));
+  assert.ok(e4 < 300 - 50, `4 版は上限なしで大きく動く: ${e4}`);
+  assert.ok(e5 >= 300 - 90 * 0.3 - 2 && e5 < 296, `5 版は半径 × 0.3 まで: ${e5}`);
+  assert.ok(half > e5 && half >= 300 - 90 * 0.15 - 2, `強さ 50% なら上限は半分: ${half}`);
 });

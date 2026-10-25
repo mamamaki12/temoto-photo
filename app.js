@@ -1616,7 +1616,7 @@ function fxAction(tool, c, p) {
       const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
-        op.v = 4;
+        op.v = 5;
         const e0 = E;
         const finish = () => {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'warp');
@@ -1672,7 +1672,7 @@ function fxAction(tool, c, p) {
     },
     cancel: () => {
       E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf);
-      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 4, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
+      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 5, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
       drawHandles();
     },
   };
