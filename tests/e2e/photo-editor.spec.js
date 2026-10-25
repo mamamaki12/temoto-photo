@@ -256,10 +256,10 @@ test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ね
   const FACE = [0.28, 0.57, 0.32, 0.63]; // テスト画像の肌色の円
   const f0 = lum(await viewMean(page, FACE)); const s0 = await viewMean(page, SKY);
   await tab(page, '美肌');
-  // 顔をタップする前に強さを選ぶと、タップを待つ
+  // 強さを選ぶとすぐかかる（AI で肌を見分ける）。顔をタップすると、その肌の色に絞れる
   await page.getByRole('button', { name: 'しっかり' }).click();
-  await expect(page.getByText('顔の肌をタップしてください')).toBeVisible();
-  expect(await page.evaluate(() => window.__temoto.state.portrait.smooth)).toBe(0);
+  await page.waitForFunction(() => window.__temoto.state.portrait.smooth === 75);
+  await skinDone(page);
   await tapAt(page, 0.3, 0.6);
   await page.waitForFunction(() => window.__temoto.state.portrait.smooth === 75 && window.__temoto.state.portrait.seeds.length === 1);
   await skinDone(page);
@@ -599,17 +599,17 @@ test('画面の色: 右上のアイコンを押すたびに 自動 → ライト
 
 test.describe('はじめて使う端末', () => {
   test.use({ storageState: { cookies: [], origins: [] } }); // 設定なし
-  test('調整・切り抜き・部分補正は最初は隠してあり、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
+  test('調整・部分補正は最初は隠してあり（切り抜きは出しておく）、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '⌗切り抜き', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     // 「ライト」を出す
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     const dlg = page.getByRole('dialog', { name: '表示する道具を選ぶ' });
     await dlg.getByLabel('ライト').check();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '⌗切り抜き', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     await rail.filter({ hasText: '調整' }).click();
     await expect(page.locator('.subtabs')).toHaveCount(0); // 中の道具が1つだけならタブは出さない
     await setSlider(page, '露光量', 40);
@@ -618,7 +618,7 @@ test.describe('はじめて使う端末', () => {
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     await dlg.getByLabel('ライト').uncheck();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '⌗切り抜き', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
     // 全部隠そうとすると止める
     await page.locator('.menu summary').click();
@@ -634,7 +634,7 @@ test.describe('はじめて使う端末', () => {
   test('スペシャリストモードをオンにすると、隠した道具も全部出る（オフで元に戻る・覚えている）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveCount(4);
+    await expect(rail).toHaveCount(5);
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').check();
     await expect(rail).toHaveText(['✦おまかせ', '☀調整', '⌗切り抜き', '◎部分補正', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
@@ -646,7 +646,7 @@ test.describe('はじめて使う端末', () => {
     // オフにすると隠した道具は消え、開いていた道具（調整）からフィルターに戻る
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').uncheck();
-    await expect(rail).toHaveCount(4);
+    await expect(rail).toHaveCount(5);
     await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
   });
 });

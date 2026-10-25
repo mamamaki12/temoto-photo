@@ -58,7 +58,7 @@ test('形を整える: なぞった向きに画素が動く（なぞっている
   expect((await ops(page))[0].v).toBe(5);
   const e1 = await viewMean(page, edge);
   expect(Math.abs(lum(e1) - lum(e0)) + Math.abs(e1[0] - e0[0])).toBeGreaterThan(3);
-  for (const [tool, mode, type] of [['しわ取り', null, 'wrinkle'], ['目元・歯', '目元', 'eyes'], ['目元・歯', '歯', 'teeth']]) {
+  for (const [tool, mode, type] of [['しわ取り', null, 'wrinkle'], ['顔', '目元', 'eyes'], ['顔', '歯', 'teeth']]) {
     await openTool(page, tool);
     if (mode) await page.getByRole('button', { name: mode, exact: true }).click();
     const n = (await ops(page)).length;
@@ -130,7 +130,7 @@ test('ブラシの大きさ: スライダーを動かすと写真の上に丸が
   await expect(size).toHaveValue('3'); // 暗くは別に覚える
   await page.getByRole('button', { name: '明るく', exact: true }).click();
   await expect(size).toHaveValue('5');
-  await openTool(page, '目元・歯');
+  await openTool(page, '顔');
   await expect(size).toHaveValue('1.5');
 });
 
