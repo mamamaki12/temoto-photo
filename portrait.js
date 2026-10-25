@@ -388,6 +388,9 @@ export function portraitMargin(S) {
   return { f, margin: Math.ceil(S / 25 / f) * f };
 }
 
+// なめらかにするとき、明るさの中くらいの差（陰影）をならす割合（色のむらをならす割合に対して）。
+// 全部ならすと、頬の丸み・鼻筋の陰影まで消えて、顔が平らに見える（ユーザーの声「立体感が消えた」）
+const SMOOTH_SHADE = 0.5;
 /** S: 元の写真の短い辺（切り出しても、効き方は写真全体の大きさで決める）。raw: 肌らしさ。stats: 肌の平均の色 */
 function portraitCore(img, p, S, raw, stats) {
   const { width: W, height: H, data: d } = img; const N = W * H;
@@ -456,7 +459,9 @@ function portraitCore(img, p, S, raw, stats) {
         const dl = Math.abs(0.299 * (lr - sr) + 0.587 * (lg - sg) + 0.114 * (lb - sb)) / T;
         const k = a * 0.92 * w * cov / (1 + dl * dl);
         const tex = 1 - (1 - keepTex) * w;
-        r = sr + (r - sr) * tex + (lr - sr) * k; g = sg + (g - sg) * tex + (lg - sg) * k; b = sb + (b - sb) * tex + (lb - sb) * k;
+        // 同じ色のまま明るさだけ違う差（陰影: 頬の丸み・鼻筋・あごの下の影）は控えめにならす。色の違う差（シミ・赤み）は k のまま
+        const q = ((lr - sr) * sr + (lg - sg) * sg + (lb - sb) * sb) / (sr * sr + sg * sg + sb * sb + 1) * k * (SMOOTH_SHADE - 1);
+        r = sr + (r - sr) * tex + (lr - sr) * k + sr * q; g = sg + (g - sg) * tex + (lg - sg) * k + sg * q; b = sb + (b - sb) * tex + (lb - sb) * k + sb * q;
       }
       if (ev > 0 || br > 0) {
         let Y = 0.299 * r + 0.587 * g + 0.114 * b;

@@ -280,9 +280,9 @@ test('photo: 美肌 — 肌のムラ・シミは整い、眉と背景はその�
   applyPortrait(img, { smooth: 0, even: 0, bright: 0 });
   assert.deepEqual(img.data, before.data); // 0 なら何もしない
   applyPortrait(img, { smooth: 80, even: 60, bright: 20 });
-  // シミ（緑が暗い円）がまわりに近づく
+  // シミ（緑が暗い円）がまわりに近づく（色の違いはならし、同じ色で暗い分は陰影として半分残すので、0.65 倍まで）
   const spot0 = regionStat(before, 98, 138, 102, 142, 1).mean; const spot1 = regionStat(img, 98, 138, 102, 142, 1).mean; const skinG = regionStat(before, 20, 80, 60, 120, 1).mean;
-  assert.ok(Math.abs(skinG - spot1) < Math.abs(skinG - spot0) * 0.6, `シミ ${spot0} → ${spot1}（肌 ${skinG}）`);
+  assert.ok(Math.abs(skinG - spot1) < Math.abs(skinG - spot0) * 0.65, `シミ ${spot0} → ${spot1}（肌 ${skinG}）`);
   // きめ（細かいノイズ）は残るが、少し穏やかになる
   const sd0 = regionStat(before, 20, 80, 60, 120).sd; const sd1 = regionStat(img, 20, 80, 60, 120).sd;
   assert.ok(sd1 < sd0 && sd1 > sd0 * 0.2, `きめ ${sd0} → ${sd1}`);
@@ -291,6 +291,24 @@ test('photo: 美肌 — 肌のムラ・シミは整い、眉と背景はその�
   // 眉は暗いまま、背景は変わらない
   assert.ok(regionStat(img, 60, 41, 140, 45).mean < 70);
   assert.deepEqual(regionStat(img, 220, 0, 300, 240), regionStat(before, 220, 0, 300, 240));
+});
+
+test('photo: 美肌 — なめらかにしても、同じ色のまま暗い陰影（頬の丸み・鼻筋の影）は残す', () => {
+  // 肌に、同じ色のまま 0.85 倍に暗いなだらかな影（陰影）と、同じ大きさの赤いシミを置く
+  const W = 300; const H = 240; const data = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const k = (y * W + x) * 4; const sh = 1 - 0.15 * Math.exp(-((x - 80) ** 2 + (y - 120) ** 2) / 8);
+    const sp = Math.exp(-((x - 180) ** 2 + (y - 120) ** 2) / 8);
+    data[k] = 225 * sh; data[k + 1] = 180 * sh - 24 * sp; data[k + 2] = 155 * sh - 20 * sp; data[k + 3] = 255;
+  }
+  const img = { width: W, height: H, data }; const before = { width: W, height: H, data: data.slice() };
+  applyPortrait(img, { smooth: 80, even: 0, bright: 0 });
+  // 陰影は緑の暗さ、シミは赤みの強さ（赤 − 緑）で、まわりの肌との差がどれだけ残ったか
+  const diff = (im, cx, f) => f(regionStat(im, cx - 2, 118, cx + 2, 122, 0).mean, regionStat(im, cx - 2, 118, cx + 2, 122, 1).mean) - f(regionStat(im, 20, 20, 60, 60, 0).mean, regionStat(im, 20, 20, 60, 60, 1).mean);
+  const G = (r, g) => -g; const RG = (r, g) => r - g;
+  const shade = diff(img, 80, G) / diff(before, 80, G); const spot = diff(img, 180, RG) / diff(before, 180, RG);
+  assert.ok(shade > 0.8, `陰影 ${shade.toFixed(2)}`);
+  assert.ok(spot < shade - 0.1, `シミ ${spot.toFixed(2)} / 陰影 ${shade.toFixed(2)}`);
 });
 
 test('photo: 美肌の値の検証・プリントの比率', () => {

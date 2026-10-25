@@ -386,7 +386,8 @@ function rank(src, w, h, r, pick) {
 const WB_PERSON = { tint: 0.3, temp: 0.3 };
 const WB_BACK = { tint: 1, temp: 0 };
 const SAT_EXP = 1; // 明るくした倍率 k に対して、色の濃さ（明るさとの差）を k^SAT_EXP 倍にする（1 で元の色のまま明るく）
-const TARGET = 0.16; // 自動の明るさの狙い（ベースの平均、リニア）
+const TARGET = 0.12; // 自動の明るさの狙い（ベースの平均、リニア）。0.16 では顔が同じ舞台を明るく撮った写真（IMG_9228）より 3 割明るく、光の頬が飛んで平らに見えた
+const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる（2 - KNEE で白に届く）
 function whiteBalance(data, n, amount) {
   const lum = new Float32Array(n); const lin = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -444,8 +445,10 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
         // 照明の色（舞台の暖かさ）は残す。色の濃さは SAT_EXP で決める
         const k = Lo / (L + 1e-4); const kc = k > 1 ? k ** tone.sat : k;
         r = Lo + (r - L) * kc; g = Lo + (g - L) * kc; bl = Lo + (bl - L) * kc;
+        // いちばん明るい色（舞台の照明の下の肌では赤）が白に近づいたら、3 色を同じ割合でなだらかに押さえる。
+        // 1 を超えた分を白に寄せると、光の当たった頬だけが白っぽく平らに抜けて、頬の丸み（立体感）が消える（IMG_9263）
         const mx = Math.max(r, g, bl);
-        if (mx > 1) { const Lc = Math.min(1, Lo); const t = Math.min(1, (mx - 1) / (mx - Lc + 1e-6)); r += (Lc - r) * t; g += (Lc - g) * t; bl += (Lc - bl) * t; }
+        if (mx > KNEE) { const u = Math.min(1, (mx - KNEE) / (2 * (1 - KNEE))); const q = (KNEE + (1 - KNEE) * u * (2 - u)) / mx; r *= q; g *= q; bl *= q; }
       }
       // 8bit にするとき、ごく弱いディザ（位置で決まるので、帯に分けても同じ）
       const p = (at.y0 + y) * at.fullW + x;
