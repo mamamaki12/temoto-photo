@@ -53,7 +53,9 @@ test('形を整える: なぞった向きに画素が動く（なぞっている
   const e0 = await viewMean(page, edge);
   await openTool(page, '形');
   await stroke(page, [[0.41, 0.72], [0.36, 0.72], [0.33, 0.72]]);
+  await page.waitForFunction(() => window.__temoto.state.retouch.length > 0 && !document.querySelector('.stage.busy'), null, { timeout: 60000 }); // 背景を見分ける AI を待ってから当てる
   expect((await ops(page))[0].type).toBe('warp');
+  expect((await ops(page))[0].v).toBe(2);
   const e1 = await viewMean(page, edge);
   expect(Math.abs(lum(e1) - lum(e0)) + Math.abs(e1[0] - e0[0])).toBeGreaterThan(3);
   for (const [tool, mode, type] of [['しわ取り', null, 'wrinkle'], ['目元・歯', '目元', 'eyes'], ['目元・歯', '歯', 'teeth']]) {
