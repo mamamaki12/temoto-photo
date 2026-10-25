@@ -1,5 +1,5 @@
 // Service Worker: 一度開いたら、オフラインでも開けるようにする（ネットワーク優先・失敗したらキャッシュ）
-const CACHE = 'temoto-photo-v31';
+const CACHE = 'temoto-photo-v32';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
