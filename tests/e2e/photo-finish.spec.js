@@ -75,20 +75,31 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
     const { applyBrush, brushBounds, BRUSH_TYPES } = await import('/brushfx.js');
     const W = 640; const H = 480; const base = new Uint8ClampedArray(W * H * 4);
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const k = (y * W + x) * 4; base[k] = (x * 7 + y * 3) % 256; base[k + 1] = (x * 2 + y * 5) % 256; base[k + 2] = 120 + 60 * Math.sin(x / 9) * Math.cos(y / 13); base[k + 3] = 255; }
+    // 目線用: 縞の上に作りものの目を 2 つ描く（白目は明るく、黒目は暗く。白目が見えない目は動かさないので）
+    const eyed = new Uint8ClampedArray(base);
+    for (const cx of [200, 300]) for (let y = 184; y < 217; y++) for (let x = cx - 40; x < cx + 40; x++) {
+      const u = (x - cx) / 40; const v = (y - 200) / 16; if (u * u + v * v >= 1) continue; const k = (y * W + x) * 4;
+      const ir = Math.hypot(x - cx - 12, y - 200) < 12; const t = base[k] % 16; eyed[k] = ir ? 40 + t : 220 + t; eyed[k + 1] = ir ? 30 + t : 215 + t; eyed[k + 2] = ir ? 25 + t : 210 + t;
+    }
     const out = {};
     for (const type of BRUSH_TYPES) {
       const op = { type, pts: [[0.3, 0.4], [0.36, 0.45], [0.42, 0.47]], r: 0.06, amt: 0.8 };
+      if (type === 'gaze') { // 目線は AI が見つけた両目（まぶたのふち 16 点と黒目）に当てる: 作りものの目を 2 つ
+        const eye = (cx) => ({ lid: Array.from({ length: 16 }, (_, i) => { const a = Math.PI - (i / 16) * Math.PI * 2; return [(cx + Math.cos(a) * 40) / W, (200 + Math.sin(a) * 16) / H]; }), iris: [[(cx + 12) / W, 200 / H], [(cx + 12) / W, 188 / H], [(cx + 24) / W, 200 / H], [(cx + 12) / W, 212 / H], [cx / W, 200 / H]], pose: [0, 0] });
+        op.eyes = [[eye(200), eye(300)]];
+      }
       // 鼻筋は、AI で見つけた顔の点から範囲を決める（作りものの鼻: まん中の線と、左右のふち・頬の境目）
       if (type === 'nose') { const col = (dx) => [0.2, 0.3, 0.4, 0.5].map((t) => [0.36 + dx, 0.3 + t * 0.4]); op.nose = { mid: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9].map((t) => [0.36, 0.3 + t * 0.4]), li: col(-0.02), ri: col(0.02), lo: col(-0.06), ro: col(0.06) }; }
-      const whole = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(whole, op);
+      const src = type === 'gaze' ? eyed : base;
+      const whole = { width: W, height: H, data: new Uint8ClampedArray(src) }; applyBrush(whole, op);
       const [rx, ry, rw, rh] = brushBounds(op, W, H); const part = { width: rw, height: rh, data: new Uint8ClampedArray(rw * rh * 4) };
-      for (let y = 0; y < rh; y++) part.data.set(base.subarray(((ry + y) * W + rx) * 4, ((ry + y) * W + rx + rw) * 4), y * rw * 4);
+      for (let y = 0; y < rh; y++) part.data.set(src.subarray(((ry + y) * W + rx) * 4, ((ry + y) * W + rx + rw) * 4), y * rw * 4);
       applyBrush(part, op, { W, H, ox: rx, oy: ry });
       let maxDiff = 0; let changed = 0; let outside = 0;
       for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
         const k = (y * W + x) * 4; const inside = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
         for (let c = 0; c < 3; c++) {
-          if (whole.data[k + c] !== base[k + c]) { changed++; if (!inside) outside++; }
+          if (whole.data[k + c] !== src[k + c]) { changed++; if (!inside) outside++; }
           if (inside) maxDiff = Math.max(maxDiff, Math.abs(whole.data[k + c] - part.data[((y - ry) * rw + x - rx) * 4 + c]));
         }
       }

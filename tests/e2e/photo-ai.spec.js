@@ -149,6 +149,57 @@ test('リップ: 2本指での拡大・移動はリップの範囲にしない�
   expect(await n()).toBe(1);
 });
 
+test('目線: 顔をタップすると AI で両目を見つけて黒目をカメラの方へ動かす。矢印で微調整でき、まぶたの外は変わらない', async ({ page }) => {
+  await open(page);
+  await openTool(page, '目元・歯');
+  await page.getByRole('button', { name: '目線', exact: true }).click();
+  await expect(page.getByLabel('カメラへ寄せる量', { exact: true })).toBeVisible();
+  const view = await page.locator('canvas.view').boundingBox();
+  const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
+  const at = (x, y) => [view.x + view.width * (L.ix + L.iw * x), view.y + view.height * (L.iy + L.ih * y)];
+  const brow0 = await srcPixel(page, 0.46, 0.37); const cheek0 = await srcPixel(page, 0.46, 0.44); // 目の上（まゆ）と下（ほお）
+  await page.mouse.click(...at(0.515, 0.40)); // 両目の間
+  await page.waitForFunction(() => window.__temoto.state.retouch.length === 1 && !document.querySelector('.stage.busy'), null, { timeout: 60000 });
+  await page.waitForTimeout(300);
+  const op = (await page.evaluate(() => window.__temoto.state.retouch))[0];
+  expect(op.type).toBe('gaze'); expect(op.eyes.length).toBe(1); expect(op.eyes[0].length).toBe(2); // 1 人の両目
+  for (const e of op.eyes[0]) { expect(e.lid.length).toBe(16); expect(e.iris.length).toBe(5); expect(e.pose.length).toBe(2); }
+  const brow1 = await srcPixel(page, 0.46, 0.37); const cheek1 = await srcPixel(page, 0.46, 0.44);
+  for (let c = 0; c < 3; c++) { expect(Math.abs(brow1[c] - brow0[c])).toBeLessThan(3); expect(Math.abs(cheek1[c] - cheek0[c])).toBeLessThan(3); }
+  // 矢印で微調整: 左へ押すと黒目が左へ、右へ押すと右へ動き、「戻す」で戻る
+  // 左目の黒目の高さの 3 行の明るさ（目頭〜目尻）。黒目の動きは、黒目の所の明るさの並びが何画素ずれたかで測る
+  // （暗い画素・明るい画素の重心は、まつげ・アイライン・黒目の中の光の点に引っぱられて当てにならない）
+  const row = () => page.evaluate(() => {
+    const E = window.__temoto.editor; const c = E.src || E.base; const cv = document.createElement('canvas'); cv.width = E.W; cv.height = E.H; const g = cv.getContext('2d'); g.drawImage(c, 0, 0);
+    const e = window.__temoto.state.retouch[0].eyes[0][0]; const cy = Math.round(e.iris[0][1] * E.H);
+    const xa = Math.round(Math.min(e.lid[0][0], e.lid[8][0]) * E.W); const xb = Math.round(Math.max(e.lid[0][0], e.lid[8][0]) * E.W);
+    const d = g.getImageData(xa, cy - 1, xb - xa, 3).data; const n = xb - xa; const L = new Array(n).fill(0);
+    for (let i = 0; i < d.length; i += 4) L[(i / 4) % n] += (d[i] + d[i + 1] + d[i + 2]) / 9;
+    return L;
+  });
+  const shift = (p0, p1) => { // p1 は p0 を何画素ずらしたものか（黒目のまわりで比べる）
+    let s0 = 0; let n0 = 0; p0.forEach((v, i) => { const w = Math.max(0, 110 - v); s0 += w * i; n0 += w; }); const c = s0 / n0;
+    const at = (p, x) => { const i = Math.max(0, Math.min(p.length - 2, Math.floor(x))); const t = x - i; return p[i] + (p[i + 1] - p[i]) * t; };
+    let best = 0; let bd = Infinity;
+    for (let s = -6; s <= 6; s += 0.25) { let e = 0; for (let x = c - 4; x <= c + 4; x++) e += (at(p1, x + s) - at(p0, x)) ** 2; if (e < bd) { bd = e; best = s; } }
+    return best;
+  };
+  const r0 = await row();
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: '黒目を左へ', exact: true }).click();
+  expect((await page.evaluate(() => window.__temoto.state.retouch[0].tune))).toEqual([-0.4, 0]);
+  const rl = await row();
+  for (let i = 0; i < 8; i++) await page.getByRole('button', { name: '黒目を右へ', exact: true }).click();
+  const rr = await row();
+  // 黒目の半径 7px の 4 割 ≒ 3px
+  expect(shift(r0, rl)).toBeLessThan(-1.5); expect(shift(r0, rr)).toBeGreaterThan(1.5);
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: '黒目を左へ', exact: true }).click();
+  await page.getByRole('button', { name: '戻す', exact: true }).click();
+  expect((await page.evaluate(() => window.__temoto.state.retouch[0].tune))).toBeUndefined();
+  expect((await row()).every((v, i) => Math.abs(v - r0[i]) < 0.5)).toBe(true); // 戻すと元どおり
+  await page.getByRole('button', { name: /元に戻す/ }).click(); // 微調整の 1 手ずつ戻せる
+  expect((await page.evaluate(() => window.__temoto.state.retouch[0].tune))).toBeTruthy();
+});
+
 test('鼻筋: 鼻をタップすると、AI で見つけた顔の点から、鼻筋は明るく・両脇は暗くなり、頬・髪は変わらない', async ({ page }) => {
   await open(page);
   // この写真の鼻: 鼻先 (0.51, 0.48)、頬 (0.42, 0.5)、髪 (0.3, 0.3)。鼻筋・横の面の位置は、見つけた顔の点から決める
