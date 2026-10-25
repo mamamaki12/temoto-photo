@@ -369,6 +369,7 @@ async function showLibrary() {
         h('b', {}, '写真を開く'),
         h('span', { class: 'muted small' }, 'タップして選ぶ・ドラッグ＆ドロップ・貼り付け（複数可）')),
       fileIn,
+      h('div', { id: 'install-slot' }, installCard()),
       projects.length ? h('div', { class: 'lib-bar' }, h('h2', {}, `写真（${projects.length}）`), h('button', { type: 'button', class: 'ghost small', onclick: () => { projects.forEach((p) => selecting.add(p.id)); showLibrary(); } }, 'すべて選択')) : null,
       bar,
       projects.length ? grid : h('div', { class: 'lib-empty' },
@@ -421,6 +422,18 @@ async function upgradeThumbs(list, imgs, gen) {
       if (img && gen === libGen) { const url = URL.createObjectURL(thumb); libUrls.push(url); img.src = url; }
     } catch (e) { console.warn('見本を作り直せませんでした', p.name, e); }
   }
+}
+
+// ── アプリとして入れる（パソコンの Chrome・Edge、Android）。入れると自分の窓で開き、写真を右クリック →「プログラムから開く」でも開ける ──
+let installEvt = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; const slot = $('#install-slot'); if (slot) render(slot, installCard()); });
+addEventListener('appinstalled', () => { installEvt = null; const slot = $('#install-slot'); if (slot) render(slot, null); toast('アプリとして入れました。デスクトップ・スタートメニューのアイコンから開けます', 5000); });
+function installCard() {
+  if (!installEvt || prefs.get('installHidden', false)) return null;
+  return h('div', { class: 'install-card' },
+    h('div', {}, h('b', {}, 'アプリとして入れる'), h('p', { class: 'muted small' }, 'デスクトップ・スタートメニュー（スマホはホーム画面）から、自分の窓で開けます。オフラインでも使え、写真を右クリック →「プログラムから開く」でも開けます。')),
+    h('button', { type: 'button', class: 'primary', onclick: async () => { const e = installEvt; if (!e) return; installEvt = null; render($('#install-slot'), null); await e.prompt().catch(() => {}); } }, '入れる'),
+    h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'このお知らせを出さない', title: 'このお知らせを出さない（ブラウザのメニューからも入れられます）', onclick: () => { prefs.set('installHidden', true); render($('#install-slot'), null); } }, '✕'));
 }
 
 function confirmBox(msg, okLabel, onOk) {
@@ -937,7 +950,18 @@ function adjSliders(group) {
   }).el);
 }
 const histo = () => { const c = h('canvas', { class: 'histo', width: 256, height: 64, role: 'img', 'aria-label': 'ヒストグラム（明るさの分布）' }); if (E.hist) drawHistogram(c, E.hist); return c; };
-const hint = (t) => h('p', { class: 'hint' }, t);
+/**
+ * 説明文。スマホでは写真の下のパネルが低いので、長い説明は最初の 1 文だけ見せて、残りは「続き」で開く
+ * （開いたかどうかは覚えておき、ほかの説明も同じにする）。パソコンの幅では全部見せる
+ */
+const narrow = matchMedia('(max-width: 599px)');
+const hint = (t) => {
+  const cut = t.indexOf('。') + 1;
+  if (!narrow.matches || cut <= 0 || cut >= t.length - 8 || t.length < 70) return h('p', { class: 'hint' }, t);
+  const d = h('details', { class: 'hint more-hint', open: prefs.get('hintsOpen', false) }, h('summary', {}, t.slice(0, cut), h('span', { class: 'hint-more' }, '続き')), h('span', {}, t.slice(cut)));
+  d.addEventListener('toggle', () => prefs.set('hintsOpen', d.open));
+  return d;
+};
 const row = (...k) => h('div', { class: 'btn-row' }, ...k);
 const btn = (label, onclick, cls = '', title = null) => h('button', { type: 'button', class: cls, onclick, ...(title ? { title, 'aria-label': title } : {}) }, label);
 
@@ -1957,7 +1981,7 @@ function openExport({ batch }) {
     let r;
     try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), origW: E.proj.w || E.W, origH: E.proj.h || E.H }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
-    status.textContent = `画像の生成完了（残り0%） ${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
+    status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
   };
   go.addEventListener('click', async () => {
@@ -1966,8 +1990,11 @@ function openExport({ batch }) {
       if (!batch) { const r = await one(); download(r.blob, r.file); toast('書き出しました'); }
       else {
         let i = 0;
+        // まとめて書き出すときも、全体の進み具合をバーに出す（暗所補正・ブレ補正のある写真は 1 枚に数分かかる）
+        exportProgress.hidden = false; exportProgress.value = 0;
+        const step = (t) => { exportProgress.value = Math.min(99, Math.floor(100 * (i - 1 + t) / batch.length)); };
         for (const p of batch) {
-          status.textContent = `書き出しています… ${++i}/${batch.length}`;
+          status.textContent = `書き出しています… ${++i}/${batch.length}`; step(0);
           const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
           if (portraitActive(S.validateState(p.state).portrait)) await ensureSkinSeg(ctx2d(toCanvas(prep.base, prep.W, prep.H), { willReadFrequently: true }).getImageData(0, 0, prep.W, prep.H)); // 美肌の肌を AI で見分ける
           if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
@@ -1975,11 +2002,11 @@ function openExport({ batch }) {
             try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
           }
           let r;
-          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
+          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: step }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
           download(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
           await new Promise((res) => setTimeout(res, 400));
         }
-        status.textContent = `${batch.length}枚を書き出しました`;
+        exportProgress.value = 100; status.textContent = `✓ ${batch.length}枚を書き出しました`;
       }
     } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });

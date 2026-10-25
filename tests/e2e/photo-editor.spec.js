@@ -753,3 +753,18 @@ test('写真一覧: スマホでは写真を 3 列に小さく敷き詰め、写
   await page.locator('.lib-open').first().click();
   await expect(page.locator('.lib-item').first()).not.toHaveClass(/selected/);
 });
+
+test('アプリとして入れられるブラウザでは、写真一覧に「アプリとして入れる」を出し、押すとブラウザの確認を出す', async ({ page }) => {
+  await page.goto(URL0);
+  await expect(page.locator('.install-card')).toHaveCount(0);
+  await page.evaluate(() => {
+    const e = new Event('beforeinstallprompt', { cancelable: true });
+    e.prompt = async () => { window.__prompted = true; }; e.userChoice = Promise.resolve({ outcome: 'accepted' });
+    dispatchEvent(e);
+  });
+  const card = page.locator('.install-card');
+  await expect(card).toContainText('アプリとして入れる');
+  await card.getByRole('button', { name: '入れる' }).click();
+  await expect.poll(() => page.evaluate(() => window.__prompted)).toBe(true);
+  await expect(card).toHaveCount(0);
+});
