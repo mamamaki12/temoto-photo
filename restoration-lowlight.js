@@ -147,6 +147,16 @@ export function measureNoise(rgba, w, h) {
   }
   return out;
 }
+/**
+ * 取った成分を「模様」として戻すかを決めるときの、ノイズの量の下限（真っ暗に近い所だけ）。
+ * 黒に近い所は 0 で切れるので、測ったばらつきは本当より小さく出る。そこに残った JPEG の 1〜2 階調の塊を
+ * 「模様」とみなして戻すと、大きく明るくしたときに髪の中の黒い点（十字の染み）になる。1.5 階調（8bit）を下限にする。
+ * 明るい所（FLOOR_TO より上）は測った値のまま（低感度の写真の細かい模様を消さない）
+ */
+const NOISE_FLOOR = 1.5 / 255;
+const FLOOR_FULL = 0.05; // これより暗い所は下限をそのまま
+const FLOOR_TO = 0.12; // これより明るい所は下限なし
+const noiseFloor = (y) => NOISE_FLOOR * Math.min(1, Math.max(0, (FLOOR_TO - y) / (FLOOR_TO - FLOOR_FULL)));
 const noiseAt = (bins, y) => {
   const f = Math.min(NOISE_BINS - 1, Math.max(0, y * NOISE_BINS * 1.6 - 0.5)); const k = Math.floor(f); const t = f - k;
   return bins[k] * (1 - t) + bins[Math.min(NOISE_BINS - 1, k + 1)] * t;
@@ -467,13 +477,14 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
     removeSpots(Y, Y0, w, h, profile, nr);
     smoothSteps(Y, w, h, profile[0], nr);
+    for (let k = 0; k < EDGE_PASSES; k++) smoothAlongEdges(Y, w, h, profile[0]);
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
     // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
     const res = new Float32Array(Y.length); for (let i = 0; i < Y.length; i++) { const d = Y0[i] - Y[i]; res[i] = d * d; }
     const energy = boxBlur(res, w, h, 3); const k = 1 / Math.max(1, nr);
     for (let i = 0; i < Y.length; i++) {
-      const s = noiseAt(profile[0], Y[i]); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
+      const s = Math.max(noiseFloor(Y[i]), noiseAt(profile[0], Y[i])); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
       Y[i] += (Y0[i] - Y[i]) * (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
     }
     sharpenDetail(Y, w, h, profile, nr, tone ? tone.hiY : HI_Y);
@@ -501,6 +512,45 @@ function smoothSteps(Y, w, h, bins, nr) {
   for (let i = 0; i < n; i++) { const v = Math.max(0, m2[i] - mean[i] * mean[i]); const s = noiseAt(bins, mean[i]) * STEP_K * nr; sq[i] = v / (v + s * s + 1e-10); }
   const a = boxBlur(sq, w, h, STEP_V, m2); const far = boxBlur(Y, w, h, STEP_R, mean);
   for (let i = 0; i < n; i++) Y[i] = a[i] * Y[i] + (1 - a[i]) * far[i];
+}
+
+/**
+ * 輪郭のギザギザ（髪・耳・あごの縁が、細かい階段や、ちぎれたような縁になる）を、輪郭に沿ってならす。
+ * 暗い所のやわらかい輪郭は、ノイズに埋もれているので、Non-Local Means は縁の 1 画素ごとに違う模様を選んで、縁がガタガタになる。
+ * 輪郭の向き（明るさの傾きを、まわりで平均して求める）に沿った前後 2 画素の平均に寄せる。輪郭をまたぐ向きには平均しないので、
+ * 輪郭のくっきりさと、細い線（髪の毛 1 本）はそのまま残る。向きがそろっていない所（模様・角・平らな所）はそのまま
+ */
+const EDGE_K = 1; // 寄せる強さ（向きがそろった、はっきりした輪郭で）
+const EDGE_PASSES = 2; // 何回くり返すか（1 回では、前髪の縁などの大きな段が残る）
+function smoothAlongEdges(Y, w, h, bins) {
+  const n = w * h; const xx = new Float32Array(n); const xy = new Float32Array(n); const yy = new Float32Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    const gx = (Y[y * w + Math.min(w - 1, x + 1)] - Y[y * w + Math.max(0, x - 1)]) / 2;
+    const gy = (Y[Math.min(h - 1, y + 1) * w + x] - Y[Math.max(0, y - 1) * w + x]) / 2;
+    xx[i] = gx * gx; xy[i] = gx * gy; yy[i] = gy * gy;
+  }
+  const a = boxBlur(xx, w, h, 2); const b = boxBlur(xy, w, h, 2); const c = boxBlur(yy, w, h, 2);
+  const at = (fx, fy) => {
+    fx = Math.min(w - 1, Math.max(0, fx)); fy = Math.min(h - 1, Math.max(0, fy));
+    const x0 = Math.floor(fx); const y0 = Math.floor(fy); const x1 = Math.min(w - 1, x0 + 1); const y1 = Math.min(h - 1, y0 + 1); const tx = fx - x0; const ty = fy - y0;
+    return (Y[y0 * w + x0] * (1 - tx) + Y[y0 * w + x1] * tx) * (1 - ty) + (Y[y1 * w + x0] * (1 - tx) + Y[y1 * w + x1] * tx) * ty;
+  };
+  const out = new Float32Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const A = a[i]; const B = b[i]; const C = c[i];
+    const d = Math.sqrt((A - C) * (A - C) + 4 * B * B); const l1 = (A + C + d) / 2; const l2 = (A + C - d) / 2;
+    const coh = ((l1 - l2) / (l1 + l2 + 1e-12)) ** 2;
+    // 輪郭の強さ（傾きの大きさ ÷ ノイズの量）。ノイズと同じくらいの傾きは輪郭とみなさない
+    const s = Math.sqrt(l1) / (noiseAt(bins, Y[i]) + 1e-6); const str = Math.min(1, Math.max(0, (s - 0.5) / 1));
+    const k = EDGE_K * coh * str;
+    if (k < 0.02) { out[i] = Y[i]; continue; }
+    // 傾きの向き (A-C, 2B) の半分の角度 → それに直交する向きが輪郭に沿う向き
+    const th = 0.5 * Math.atan2(2 * B, A - C); const tx = -Math.sin(th); const ty = Math.cos(th);
+    const m = (Y[i] * 3 + (at(x + tx, y + ty) + at(x - tx, y - ty)) * 2 + at(x + 2 * tx, y + 2 * ty) + at(x - 2 * tx, y - 2 * ty)) / 9;
+    out[i] = Y[i] + k * (m - Y[i]);
+  }
+  Y.set(out);
 }
 
 /**
