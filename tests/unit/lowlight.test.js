@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/lowlight-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, BAND_MARGIN } from '../../restoration-lowlight.js';
+import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, fineScale, BAND_MARGIN } from '../../restoration-lowlight.js';
 
 function randomNormal(seed = 521) {
   const uniform = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
@@ -213,4 +213,11 @@ test('lowlight: fine: false なら、取った細かい粒（肌のきめ）を�
   const on = whole(data, w, h, { nr: 1, profile, tone: null, grain: false });
   const off = whole(data, w, h, { nr: 1, profile, tone: null, grain: false, fine: false });
   assert.ok(fine(off) < fine(on) * 0.8, `粒 ${fine(off).toFixed(2)} / ${fine(on).toFixed(2)}`);
+});
+
+test('lowlight: 大きく明るくする写真ほど、戻す細かい粒を減らす（暗い写真の肌がカサカサに見えないように）', () => {
+  assert.equal(fineScale(null), 1); // 明るくしないときは、そのまま
+  assert.equal(fineScale({ gain: 4.7 }), 1); // IMG_9365（そのままできれい）
+  assert.ok(fineScale({ gain: 7.4 }) < 0.7); // IMG_9321
+  assert.ok(fineScale({ gain: 13.5 }) < 0.4); // IMG_9348
 });
