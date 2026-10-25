@@ -74,3 +74,14 @@ test('リップ: 上の歯の上に見える歯ぐきには色をのせない（
   for (const [x, y] of [[200, 138], [170, 139], [230, 138]]) { const a = px(img, x, y); const b = px(org, x, y); for (let c = 0; c < 3; c++) assert.ok(Math.abs(a[c] - b[c]) <= 3, `歯ぐき ${x},${y}`); }
   for (const [x, y] of [[200, 116], [200, 185]]) { const a = px(img, x, y); const b = px(org, x, y); assert.ok(Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 15, `唇 ${x},${y}`); }
 });
+
+test('歯: 色合いはそのままで色を抜き、明るくする（ピンク・灰色にくすまない）', () => {
+  const img = mouthImage(); const org = mouthImage();
+  applyBrush(img, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 1, whole: true, lips });
+  const ycc = ([r, g, b]) => [0.299 * r + 0.587 * g + 0.114 * b, -0.168736 * r - 0.331264 * g + 0.5 * b, 0.5 * r - 0.418688 * g - 0.081312 * b];
+  const [Y0, cb0, cr0] = ycc(px(org, 200, 150)); const [Y1, cb1, cr1] = ycc(px(img, 200, 150));
+  assert.ok(Y1 > Y0 + 8, `明るくなる ${Y0} → ${Y1}`);
+  assert.ok(Math.hypot(cb1, cr1) < Math.hypot(cb0, cr0) * 0.6, '色が抜ける');
+  const turn = Math.abs(Math.atan2(cr1, cb1) - Math.atan2(cr0, cb0)) * 180 / Math.PI;
+  assert.ok(turn < 12, `色合いが変わらない（${turn.toFixed(1)}°）`);
+});

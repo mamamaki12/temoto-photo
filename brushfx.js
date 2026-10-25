@@ -474,29 +474,52 @@ function lip(img, mk, amt, col, area) {
 }
 
 /**
- * 歯を白く: 黄ばみ（色）を減らし、少し明るく。赤い唇・歯ぐきはほとんど変えない。
- * area があれば（自動で決めた歯の範囲）、その範囲に当てる。黄ばみは消しきらず半分ほどにする
- * （照明の色がついた写真で歯だけ真っ白・青白くなると、浮いて見えるため）
+ * 歯を白く（範囲を自動で決めたとき）。area: { area: 歯らしさ 0〜1, skin: まわりの肌の Cb・Cr（明るさで割った値） }
+ * - 色: 色の濃さだけを、歯の平均が目安になるまで減らす（色合い＝角度はそのまま。歯全体で同じ倍率）。黄色だけ消すと赤みが残って
+ *   ピンク・灰色っぽくなるため。目安はまわりの肌の色の濃さの 0.22 倍（照明の色は少し残り、真っ白・青白くならない）
+ * - 明るさ: 色を抜くだけだと灰色にくすむので、歯の明るい所（上から 1 割）が 232 ほどになるまで、全体に同じ倍率で
+ *   明るくする（最大 1.22 倍）。同じ倍率なので、奥の歯の影・歯と歯のすき間の暗さは残る。明るい所はなだらかに抑える
+ * - 唇・歯ぐき（赤い所）は、範囲の縁にかかっても色を抜かない（灰色の縁が出ないように）
  */
+function teethWhole(img, mk, amt, area) {
+  const { m, bx, by, w, h } = mk; const d = img.data; const W = img.width; const A = area.area;
+  const rT = Math.hypot(area.skin[0], area.skin[1]) * 0.22; // 目安の色の濃さ（明るさに対する比）
+  const notRed = (r, g) => clamp01((g / Math.max(r, 1) - 0.62) / 0.12); // 唇や歯ぐきは 0.7 以下。歯と唇の境目の混ざった色（0.75 ほど）は抜く（抜かないと、白い歯のまわりに橙の縁が残る）
+  // 歯の明るさ（明るい方から 1 割の所）と、色の濃さの平均（明るさに対する比）
+  const ys = []; let sc = 0; let sy = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; if (m[i] * A[i] < 0.5) continue; const k = ((by + y) * W + bx + x) * 4;
+    const [Y, cb, cr] = ycc(d[k], d[k + 1], d[k + 2]); ys.push(Y);
+    if (notRed(d[k], d[k + 1]) > 0.5) { sc += Math.hypot(cb - 128, cr - 128); sy += Y; }
+  }
+  if (ys.length < 8) return;
+  ys.sort((p, q) => p - q); const top = ys[Math.floor(ys.length * 0.9)];
+  // 色の濃さは、歯全体で同じ倍率で減らす（画素ごとに揃えると、根もとの黄みと先の透けた所の差が消えて、のっぺりする）
+  const f = sy && sc / sy > rT ? Math.max(0.25, rT / (sc / sy)) : 1;
+  const gain = Math.min(1.25, Math.max(1, 232 / Math.max(top, 1)));
+  const knee = 225; const roll = (v) => (v <= knee ? v : knee + (255 - knee) * (1 - Math.exp(-(v - knee) / (255 - knee)))); // 白飛びさせない
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const s = m[i] * amt * A[i]; if (s <= 0.002) continue;
+    const k = ((by + y) * W + bx + x) * 4; const r = d[k]; const g = d[k + 1]; const b = d[k + 2];
+    const [Y, cb, cr] = ycc(r, g, b);
+    const t = s * notRed(r, g);
+    const fc = 1 + (f - 1) * t;
+    const cb1 = 128 + (cb - 128) * fc; const cr1 = 128 + (cr - 128) * fc;
+    const Y1 = Y + (roll(Y * gain) - Y) * s;
+    d[k] = Math.max(0, Math.min(255, Y1 + 1.402 * (cr1 - 128)));
+    d[k + 1] = Math.max(0, Math.min(255, Y1 - 0.344136 * (cb1 - 128) - 0.714136 * (cr1 - 128)));
+    d[k + 2] = Math.max(0, Math.min(255, Y1 + 1.772 * (cb1 - 128)));
+  }
+}
+
+/** 歯を白く（ブラシでなぞった所）: 黄ばみ（色）を減らし、少し明るく。赤い唇・歯ぐきはほとんど変えない */
 function teeth(img, mk, amt, area) {
+  if (area) { teethWhole(img, mk, amt, area); return; }
   const { m, bx, by, w, h } = mk; const d = img.data; const W = img.width;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const a = m[y * w + x]; if (!a) continue;
     const k = ((by + y) * W + bx + x) * 4;
     const r = d[k]; const g = d[k + 1]; const b = d[k + 2];
-    if (area) {
-      const s = a * amt * area.area[y * w + x]; if (s <= 0.002) continue;
-      const [Y, cb, cr] = ycc(r, g, b);
-      // 色（黄ばみ）を、まわりの肌の色の半分くらいの淡い色に寄せる（照明の色は残る。真っ白・青白くはしない）
-      const t = 0.75 * s; const tb = area.skin[0] * 0.55 * Y; const tr = area.skin[1] * 0.55 * Y;
-      const cb1 = cb - 128 < tb ? cb + (tb - (cb - 128)) * t : cb; // 黄色み（青の不足）が目安より強いときだけ減らす
-      const cr1 = cr - 128 > tr ? cr + (tr - (cr - 128)) * t : cr; // 赤みも同じ
-      const Y1 = Y + Math.min(Y * 0.16, 255 - Y) * s * (1 - Y / 300); // 少し明るく（もともと明るい所は控えめ）
-      d[k] = Math.max(0, Math.min(255, Y1 + 1.402 * (cr1 - 128)));
-      d[k + 1] = Math.max(0, Math.min(255, Y1 - 0.344136 * (cb1 - 128) - 0.714136 * (cr1 - 128)));
-      d[k + 2] = Math.max(0, Math.min(255, Y1 + 1.772 * (cb1 - 128)));
-      continue;
-    }
     const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     // 黄色っぽい（赤と緑が近く、青が少ない）・暗すぎない所ほど強く
     const yellow = Math.max(0, (r + g) / 2 - b) / 255;
