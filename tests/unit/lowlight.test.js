@@ -197,3 +197,20 @@ test('lowlight: 暗い所の小さな黒い部分（瞳・鼻の穴）は、く�
   // 前は 13 階調暗くなった
   assert.ok(d / n < 6, `暗い丸が ${(d / n).toFixed(1)} 階調暗くなった`);
 });
+
+test('lowlight: fine: false なら、取った細かい粒（肌のきめ）を戻さない（ブレ補正の AI が粒を筋に変えるため）', () => {
+  const w = 96; const h = 96; const rand = randomNormal(23);
+  const data = rgba(w, h, () => { const n = 6 * rand(); return [90 + n, 60 + n, 45 + n]; });
+  const profile = measureNoise(data, w, h);
+  const fine = (img) => { // 3×3 の平均との差のばらつき
+    let s2 = 0; let k = 0;
+    for (let y = 4; y < h - 4; y++) for (let x = 4; x < w - 4; x++) {
+      let m = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) m += img[((y + dy) * w + x + dx) * 4 + 1];
+      const d = img[(y * w + x) * 4 + 1] - m / 9; s2 += d * d; k++;
+    }
+    return Math.sqrt(s2 / k);
+  };
+  const on = whole(data, w, h, { nr: 1, profile, tone: null, grain: false });
+  const off = whole(data, w, h, { nr: 1, profile, tone: null, grain: false, fine: false });
+  assert.ok(fine(off) < fine(on) * 0.8, `粒 ${fine(off).toFixed(2)} / ${fine(on).toFixed(2)}`);
+});

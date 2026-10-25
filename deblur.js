@@ -43,7 +43,7 @@ export function denoiseSmall(small, onProgress = () => {}) {
   const crop = new Uint8ClampedArray(cw * chh * 4);
   for (let y = 0; y < chh; y++) crop.set(rgba.subarray(((y0 + y) * w + x0) * 4, ((y0 + y) * w + x0 + cw) * 4), y * cw * 4);
   const profile = measureNoise(crop, cw, chh);
-  const out = enhanceBand({ width: w, height: h, data: rgba }, { top: 0, bottom: h, y0: 0, fullW: w, fullH: h }, { nr: 1, profile, tone: null, grain: false }, onProgress);
+  const out = enhanceBand({ width: w, height: h, data: rgba }, { top: 0, bottom: h, y0: 0, fullW: w, fullH: h }, { nr: 1, profile, tone: null, grain: false, fine: false }, onProgress);
   const rgb = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) { rgb[i * 3] = out[i * 4] / 255; rgb[i * 3 + 1] = out[i * 4 + 1] / 255; rgb[i * 3 + 2] = out[i * 4 + 2] / 255; }
   return { width: w, height: h, data: rgb };

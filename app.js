@@ -533,7 +533,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {} } = {}) {
   if (ll) {
     if (cache.ll?.key !== llKey) {
       cache.ll = null;
-      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db }, { signal, onProgress: (t) => onProgress(t * share) });
+      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, onProgress: (t) => onProgress(t * share) });
       cache.ll = { key: llKey, canvas: c };
     }
     canvas = cache.ll.canvas;

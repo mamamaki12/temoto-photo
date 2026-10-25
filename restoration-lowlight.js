@@ -472,10 +472,12 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
  * @param {{width:number,height:number,data:Uint8ClampedArray}} band 上下に余分な行を含む帯
  * @param {{top:number,bottom:number,y0:number,fullW:number,fullH:number}} at
  *   top・bottom: 帯のうち、余分な行を除いた範囲（帯の中の行番号）。y0: 帯の 1 行目が写真全体の何行目か
- * @param {{nr:number,profile:Float32Array[]|null,tone:object|null}} o
+ * @param {{nr:number,profile:Float32Array[]|null,tone:object|null,grain?:boolean,fine?:boolean}} o
+ *   fine: false で、取った成分のうち細かい粒（肌のきめ）を戻さない。ブレ補正の AI は、戻した粒をブレの模様と見て、
+ *   頬に筋やゆがみを作る（IMG_9242・9345）。また、ブレ補正を効かせる所（まわりのばらつきが大きい所）が平らな肌にまで広がる
  * @returns {Uint8ClampedArray} top〜bottom の行の RGBA
  */
-export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onProgress = () => {}) {
+export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: keepFine = true }, onProgress = () => {}) {
   const { width: w, height: h, data } = band;
   let [Y, Cb, Cr] = toYCC(data, w, h);
   if (nr > 0 && profile) {
@@ -502,7 +504,7 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
         // 細かい粒は戻す（人物は全部、背景は少し。人物の地図がなければその間）。真っ暗に近い所（髪・背景の影）は戻さない（黒い点に見える）。
         // とび出た点は戻さない（ノイズの量の 1.5 倍で切る）
         const p = pm ? sampleGrid(pm.m, pm.w, pm.h, (x + 0.5) * px - 0.5, gy) : 0.5;
-        const f = Math.max(0, FINE_KEEP * (FINE_BACK + (1 - FINE_BACK) * p) * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
+        const f = !keepFine ? 0 : Math.max(0, FINE_KEEP * (FINE_BACK + (1 - FINE_BACK) * p) * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
         Y[i] += res[i] * kk + Math.min(1.5 * s, Math.max(-1.5 * s, fine[i])) * f;
       }
     }

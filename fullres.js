@@ -161,7 +161,7 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
  * 明るさの曲線は編集用の大きさの写真から決めるので、編集中と同じ明るさになる
  */
 async function lowlightFull(eng, src, work, FW, FH, options, deblur, onProgress) {
-  await enhancePhoto({ width: FW, height: FH, read: bandReader(src, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur }, {
+  await enhancePhoto({ width: FW, height: FH, read: bandReader(src, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur, fine: !deblur }, {
     onProgress, onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, deblur ? finishBand(data, rows, { y0: y, fullW: FW, fullH: FH }, deblur) : data),
   });
 }
