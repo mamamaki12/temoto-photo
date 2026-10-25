@@ -2,7 +2,7 @@ name: PC 版（Windows）
 # PC 版（desktop/）を作り、GitHub の Windows の機械で実際に起動して確かめる。できた PC 版は、この実行の Artifacts からダウンロードできる。
 on:
   push:
-    paths: ['desktop/**', 'deblur-worker.js', 'restoration-photo.js', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'deblur-worker.js', '.github/workflows/desktop.yml']
   workflow_dispatch:
 permissions:
   contents: read
