@@ -256,3 +256,102 @@ export function applyResidual(data, rows, at, res, amount) {
   }
   return data;
 }
+
+/**
+ * ピントのぼけ・小さな被写体ブレで、輪郭がにじんだ写真を、ぼけの形（ガウスぼかし）を仮定して戻す（Richardson–Lucy の逆畳み込み）。
+ * AI は 10〜20 画素のなだらかなにじみ（暗い舞台で動く顔のあご・前髪・歯）をほとんど直せない（IMG_9313・9321）。
+ * - 明るさ（輝度）だけを戻す（色はそのまま）。くり返しの回数を少なくして、ノイズのムラを育てない
+ * - まわり（5×5）の最小〜最大から少ししかはみ出させない（輪郭の外の白い縁・黒い縁、波打つ線を作らない）
+ * - はっきりした輪郭（ぼかした絵の明るさの差が大きい所）だけに効かせる。肌のなだらかな所・ノイズのムラはそのまま
+ * @param {{width:number,height:number,data:Float32Array}} small RGB を並べたもの（0〜1）。deblurSize の大きさ
+ * @returns {{width:number,height:number,data:Float32Array}} 差分（RGB を並べたもの。3 色とも同じ値）
+ */
+const DECONV_SIGMA = 2.5; // 仮定するぼけの大きさ（長い辺 2592 の絵での、ガウスぼかしの標準偏差）
+const DECONV_ITERS = 12;
+const DECONV_OVER = 0.3; // まわりの最小〜最大の幅の何割まではみ出してよいか
+const DECONV_EDGE = 0.03; // これより明るさの差が小さい輪郭には効かせない（その 2 倍で全部）
+const DECONV_MAX = 0.3; // 直す量の上限（まわりの最小〜最大の幅に対して）
+export function deconvResidual(small, { sigma = DECONV_SIGMA * Math.max(small.width, small.height) / 2592, iters = DECONV_ITERS } = {}) {
+  const { width: w, height: h, data } = small; const n = w * h;
+  const Y = new Float32Array(n);
+  for (let i = 0; i < n; i++) Y[i] = 0.299 * data[i * 3] + 0.587 * data[i * 3 + 1] + 0.114 * data[i * 3 + 2];
+  const out = new Float32Array(n * 3);
+  if (!(sigma > 0.3)) return { width: w, height: h, data: out };
+  const g = gaussKernel(sigma); const tmp = new Float32Array(n);
+  // Richardson–Lucy（暗い所で割り算が暴れないよう、少し持ち上げてから）
+  const B = 0.02; const obs = new Float32Array(n); for (let i = 0; i < n; i++) obs[i] = Y[i] + B;
+  const X = Float32Array.from(obs); const c = new Float32Array(n);
+  for (let k = 0; k < iters; k++) {
+    gaussBlur(X, w, h, g, c, tmp);
+    for (let i = 0; i < n; i++) c[i] = obs[i] / Math.max(c[i], 1e-4);
+    gaussBlur(c, w, h, g, c, tmp);
+    for (let i = 0; i < n; i++) X[i] *= c[i];
+  }
+  const lo = minMax(Y, w, h, 2, Math.min); const hi = minMax(Y, w, h, 2, Math.max);
+  // 輪郭の明るさの差（ぼかした絵の傾き × ぼけの幅）
+  const Bl = new Float32Array(n); gaussBlur(Y, w, h, g, Bl, tmp);
+  const range = new Float32Array(n); for (let i = 0; i < n; i++) range[i] = hi[i] - lo[i];
+  gaussBlur(range, w, h, gaussKernel(1), range, tmp);
+  const at = (x, y) => Bl[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1) - at(x - 1, y - 1) - 2 * at(x - 1, y) - at(x - 1, y + 1)) / 8;
+      const gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1) - at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1)) / 8;
+      const edge = Math.hypot(gx, gy) * sigma * 2.5;
+      const A = Math.min(1, Math.max(0, (edge - DECONV_EDGE) / DECONV_EDGE)) * DECONV_MAX * range[i];
+      const o = (hi[i] - lo[i]) * DECONV_OVER;
+      const v = Math.min(hi[i] + o, Math.max(lo[i] - o, X[i] - B));
+      const r = Math.min(A, Math.max(-A, v - Y[i]));
+      out[i * 3] = r; out[i * 3 + 1] = r; out[i * 3 + 2] = r;
+    }
+  }
+  return { width: w, height: h, data: out };
+}
+
+/** ガウスぼかしの重み（半分。中心から 3σ まで） */
+function gaussKernel(s) {
+  const r = Math.max(1, Math.ceil(3 * s)); const k = new Float32Array(r + 1); let sum = 0;
+  for (let i = 0; i <= r; i++) { k[i] = Math.exp(-0.5 * (i / s) ** 2); sum += i ? 2 * k[i] : k[i]; }
+  for (let i = 0; i <= r; i++) k[i] /= sum;
+  return k;
+}
+/** 縦横に分けたガウスぼかし（端は折り返す）。out は src と同じでもよい */
+function gaussBlur(src, w, h, k, out, tmp) {
+  const r = k.length - 1;
+  const ref = (v, m) => { if (v < 0) v = -v - 1; if (v >= m) v = 2 * m - v - 1; return Math.max(0, Math.min(m - 1, v)); };
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = src[o + x] * k[0];
+      if (x >= r && x < w - r) for (let j = 1; j <= r; j++) s += (src[o + x - j] + src[o + x + j]) * k[j];
+      else for (let j = 1; j <= r; j++) s += (src[o + ref(x - j, w)] + src[o + ref(x + j, w)]) * k[j];
+      tmp[o + x] = s;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    if (y >= r && y < h - r) {
+      for (let x = 0; x < w; x++) out[o + x] = tmp[o + x] * k[0];
+      for (let j = 1; j <= r; j++) { const a = o - j * w; const b = o + j * w; const kj = k[j]; for (let x = 0; x < w; x++) out[o + x] += (tmp[a + x] + tmp[b + x]) * kj; }
+    } else {
+      for (let x = 0; x < w; x++) {
+        let s = tmp[o + x] * k[0];
+        for (let j = 1; j <= r; j++) s += (tmp[ref(y - j, h) * w + x] + tmp[ref(y + j, h) * w + x]) * k[j];
+        out[o + x] = s;
+      }
+    }
+  }
+  return out;
+}
+/** まわり（(2r+1)×(2r+1)）の最小・最大 */
+function minMax(src, w, h, r, pick) {
+  const t = new Float32Array(w * h); const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let v = src[y * w + x]; for (let j = Math.max(0, x - r); j <= Math.min(w - 1, x + r); j++) v = pick(v, src[y * w + j]); t[y * w + x] = v;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let v = t[y * w + x]; for (let j = Math.max(0, y - r); j <= Math.min(h - 1, y + r); j++) v = pick(v, t[j * w + x]); out[y * w + x] = v;
+  }
+  return out;
+}
