@@ -950,7 +950,7 @@ function moveIris(img, eye, delta) {
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
     if (!P[y * bw + x] && E[y * bw + x] <= 0) continue;
     const X = x + 0.5; const Y = y + 0.5; const rx = X - nc[0]; const ry = Y - nc[1]; const r = Math.hypot(rx, ry);
-    let f = 1; let wm = 0; let wf = 0; let t = 0; let mx = 0; let my = 0;
+    let f = 1; let wm = 0; let wf = 0; let t = 0; let mx = 0; let my = 0; let ge = 6 * R;
     if (r > Ri) {
       // 進む側の白目は、押しつぶさず、黒目といっしょにまぶたの下へすべり込む（実際の目もそう動く。まぶたのふちで切れる）。
       // 反対側（黒目が離れた所）の白目は、ふちまでの間で伸ばして埋める
@@ -958,7 +958,7 @@ function moveIris(img, eye, delta) {
       if (ahead < 1) {
         let g = 0; // この画素からまぶたのふちまでの距離（黒目の中心から見た向きに）
         while (g < 6 * R && inside(X + ux * g, Y + uy * g)) g += 0.5;
-        f = ahead + (1 - ahead) * g / (r - Ri + g);
+        f = ahead + (1 - ahead) * g / (r - Ri + g); ge = g;
         // 黒目が離れた側は、まぶたのきわの影を伸ばすだけだと白目に見えない（黒目がまだそちらにあるように見える）ので、白目で埋める:
         // 反対側（黒目が向かう側）の元の白目を、黒目の中心で左右に折り返して持ってくる（黒目のふちからの横の距離はそのまま。
         // 縦は、上まぶたと下まぶたの間の同じ割合の所から。まぶたのきわの影・まつげが白目の真ん中に来ないように）。
@@ -986,6 +986,8 @@ function moveIris(img, eye, delta) {
         const q = scl[Math.max(0, Math.min(NB - 1, Math.floor(t * NB)))]; const sh = 0.8 + 0.2 * smooth(D[y * bw + x] / (0.5 * R)); const nz = (hash((bx + x) >> 1, (by + y) >> 1) - 0.5) * sclN * 0.4;
         f0 += (q[0] * sh + nz) * (1 - wm); f1 += (q[1] * sh + nz) * (1 - wm); f2 += (q[2] * sh + nz) * (1 - wm);
       }
+      // 埋めた白目は、目尻・目頭のきわへ向かって暗くする（実際の白目もきわは影になる。明るいまま角まで白いと、反対へ目をそらしたように見える）
+      const gs = 0.72 + 0.28 * smooth(ge / (0.5 * R)); f0 *= gs; f1 *= gs; f2 *= gs;
       tmp[0] = t0 + (f0 - t0) * wf; tmp[1] = t1 + (f1 - t1) * wf; tmp[2] = t2 + (f2 - t2) * wf;
     }
     out[o] = tmp[0]; out[o + 1] = tmp[1]; out[o + 2] = tmp[2];
@@ -1020,10 +1022,12 @@ function scleraVisible(img, lid, c, R) {
 }
 /**
  * 目線（両目）。eyes: 写真全体に対する 0〜1 の座標（{ lid, iris, pose }）、amt: カメラの方へ寄せる割合（1 で全部）、tune: [dx, dy] 微調整（黒目の半径に対する割合）
- * カメラを見ている黒目の位置は、黒目の左右に見えている白目が同じ量になる所（白目がはっきりしない目は、目頭と目尻の真ん中を顔の向きで少しずらした所）。
+ * カメラを見ているかどうかは、白目の左右の釣り合いと顔の向きで決める（カメラを見ている人は、顔の向きと反対へ黒目が寄る）。もともとカメラを見ている顔は自動では動かさない。
+ * 動かす先は、黒目の左右に見えている白目が同じ量になる所（白目がはっきりしない目は、目頭と目尻の真ん中を顔の向きで少しずらした所）。
  * 黒目が離れた側は、反対側の白目を折り返して埋める（影のまま伸ばすと、まだそちらを見ているように見える）。
  * 戻り値は顔ごとの目の並び（{ lid, iris, R, open, auto: 自動の動かす量（R 単位）, delta: 実際に動かす量（画素） }）
  */
+const GAZE_YAW = 1.8; const GAZE_YAW_MOVE = 0.3; const GAZE_KEEP = 0.38;
 export function gazePlan(img, op, at) {
   const toP = (poly) => poly.map(([x, y]) => [x * at.W - at.ox, y * at.H - at.oy]);
   const plan = [];
@@ -1045,21 +1049,27 @@ export function gazePlan(img, op, at) {
       const good = sb && sb.contrast >= 1.4 && sb.wl + sb.wr >= 0.15;
       // AI の黒目の位置が実際の黒目からずれているとき（目線をそらした写真で多い）は、写真から探し直した位置で動かす
       if (good) { const dc = sb.xc - c[0]; for (const q of ir) q[0] += dc; }
-      const ex = good ? sb.b * R : (lid[0][0] + lid[8][0]) / 2 - 0.55 * R * Math.sin(yaw) + 0.08 * R - c[0];
+      // カメラを見ている人は、顔が横を向いているぶん、黒目は白目の真ん中からカメラ側へ寄る（顔が右を向けば黒目は左へ）。
+      // 白目を左右同じにすると、かえって顔の向きの方を見ているように見えるので、その寄りを残す（テスト写真でカメラを見ている 27 人で合わせた値: 1.8R × sin(yaw)）
+      const ex = good ? (sb.b - GAZE_YAW * Math.sin(yaw)) * R : (lid[0][0] + lid[8][0]) / 2 - 0.55 * R * Math.sin(yaw) + 0.08 * R - c[0];
       // 縦: 目の開きの真ん中より少し上
       const ey = (lid[4][1] + lid[12][1]) / 2 - 0.03 * R - c[1];
-      eyes.push({ lid, iris: ir, R, open, ex, ey });
+      // 動かす先は、白目の真ん中から顔の向きのぶんを少しだけ寄せた所（全部寄せると、写真ではかえって反対へ目をそらしたように見える。顔の向きの推定もぶれる）
+      const mv = good ? (sb.b - GAZE_YAW_MOVE * Math.sin(yaw)) * R : ex;
+      eyes.push({ lid, iris: ir, R, open, ex, ey, mv });
     }
     if (!eyes.length || skip) continue;
     // 両目の動かす量は、それぞれの目で測った量と 2 つの平均の半々（片方の測り間違いで寄り目・離れ目にならないように）。縦は平均
-    const n = eyes.length; const Rm = eyes.reduce((a, e) => a + e.R, 0) / n; const mx = eyes.reduce((a, e) => a + e.ex, 0) / n; const my = eyes.reduce((a, e) => a + e.ey, 0) / n;
+    const n = eyes.length; const Rm = eyes.reduce((a, e) => a + e.R, 0) / n; const mx = eyes.reduce((a, e) => a + e.ex, 0) / n; const my = eyes.reduce((a, e) => a + e.ey, 0) / n; const mv = eyes.reduce((a, e) => a + e.mv, 0) / n;
     // 笑って細くなった目（開きが黒目の直径より小さい）は、黒目の大半がまぶたに隠れていて、AI の黒目・まぶたの点がずれやすく、
     // 大きく動かすと黒い影が目尻・目頭へはみ出すので、自動で動かす量を減らす（開き 0.9R で 0 → 1.4R で全部。足りなければ矢印で）
-    const k = smooth((eyes.reduce((a, e) => a + e.open / e.R, 0) / n - 0.9) / 0.5);
+    let k = smooth((eyes.reduce((a, e) => a + e.open / e.R, 0) / n - 0.9) / 0.5);
+    // ずれが小さい顔（黒目の半径の 4 割ほどまで）は、もともとカメラを見ている（測ったずれは、カメラを見ている人でも 1.5 割ほどばらつく）ので、自動では動かさない
+    k *= smooth((Math.abs(mx) / Rm - GAZE_KEEP) / 0.08);
     for (const e of eyes) {
       // 2 つの目で向きが食い違うとき（顔が横向きで片目のまぶたの点がずれやすい）は平均だけにする
-      const own = 0.5 * Math.max(0, 1 - Math.abs(eyes[0].ex - eyes[eyes.length - 1].ex) / (0.4 * Rm));
-      let ax = e.ex * own + mx * (1 - own); let ay = my; const al = Math.hypot(ax, ay);
+      const own = 0.5 * Math.max(0, 1 - Math.abs(eyes[0].mv - eyes[eyes.length - 1].mv) / (0.4 * Rm));
+      let ax = e.mv * own + mv * (1 - own); let ay = my; const al = Math.hypot(ax, ay);
       // 自動で動かす量は黒目の半径の 1.5 倍まで（それより大きいのは測り間違い。もっと動かしたいときは矢印で）
       if (al > 1.5 * e.R) { ax *= 1.5 * e.R / al; ay *= 1.5 * e.R / al; }
       e.auto = [ax * k / e.R, ay * k / e.R];
@@ -1415,8 +1425,9 @@ export function scleraBalance(img, lid, c, R) {
     if (cost < best) { best = cost; xc = X0 + i + 0.5; }
   }
   if (Math.abs(xc - c[0]) > 1.2 * R) xc = c[0];
+  // 白目の幅: 黒目の外で、白い画素が多い列の数（目尻・目頭へ向かって目が細くなっても、横の幅として数える）
   let wl = 0; let wr = 0;
-  for (let i = 0; i < nx; i++) { const dx = X0 + i + 0.5 - xc; if (dx < -0.9 * R) wl += wc[i]; else if (dx > 0.9 * R) wr += wc[i]; }
-  const rows = Math.round(0.8 * R) + 1; wl /= rows * R; wr /= rows * R;
+  for (let i = 0; i < nx; i++) { if (!nc[i]) continue; const dx = X0 + i + 0.5 - xc; const w = smooth((wc[i] / nc[i] - 0.25) / 0.3); if (dx < -0.9 * R) wl += w; else if (dx > 0.9 * R) wr += w; }
+  wl /= R; wr /= R;
   return { b: (wr - wl) / 2, wl, wr, xc, contrast: hi / Math.max(1, iris) };
 }
