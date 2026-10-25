@@ -2,6 +2,7 @@ import { restoreInWorker } from './restoration-client.js';
 import { measureNoise, planTone, grainFor, BAND_MARGIN } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 import { personSeg } from './skinseg.js';
+import { workerCount } from './cores.js';
 
 // 一度にWorkerへ送る範囲を限定する。3画素の探索+1画素のパッチ分を重ねて継ぎ目を防ぐ。
 export async function restorePhotoBanded(input, options = {}, hooks = {}) {
@@ -76,12 +77,6 @@ export const withoutLowlight = (state) => ({ ...state, adj: { ...state.adj, nois
 const NOISE_SAMPLE = 2048; // ノイズの量は、写真の中央のこの大きさの範囲で測る
 const TONE_SIDE = 512; // 明るさの流れは、この長い辺に縮めた絵で決める
 const abortError = () => new DOMException('処理を中止しました', 'AbortError');
-function workerCount() {
-  const nav = globalThis.navigator || {};
-  // iPhone・iPad は 1 本の帯でも 100MB ほど使うので、同時に 2 本まで
-  const ios = /iP(hone|ad|od)/.test(nav.userAgent || '') || (nav.maxTouchPoints > 1 && /Mac/.test(nav.userAgent || ''));
-  return Math.max(1, Math.min(ios ? 2 : 4, (nav.hardwareConcurrency || 2) - 1));
-}
 
 /**
  * 写真全体を補正する
