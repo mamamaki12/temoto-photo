@@ -62,3 +62,21 @@ test('目線: 白目が見えない目（暗くて目全体が黒くつぶれて
   applyBrush(img, op());
   assert.deepEqual([...img.data], [...before]);
 });
+
+test('目線: 黒目が離れた側は白目で埋める（影になった側も白目に見えるように）', () => {
+  // 黒目の右側（目尻側）の白目が影で暗い目。左側にだけ白目が見えている = 右を見ているように見える
+  const img = eyeImage(); const d = img.data;
+  for (let y = 0; y < H; y++) for (let x = IX + R; x < W; x++) { const k = (y * W + x) * 4; if (d[k] === WHITE[0]) { d[k] = 120; d[k + 1] = 100; d[k + 2] = 95; } }
+  applyBrush(img, op());
+  const cx = irisCenterX(img); assert.ok(cx < IX - 4, `黒目が左へ動く（${cx}）`);
+  // 動かしたあとの黒目の右側（黒目のふちと目尻の間）は、影の色でなく白目の色に近い
+  const x = Math.round(cx + R * 1.5); const p = px(img, x, CY); const L = (p[0] + p[1] + p[2]) / 3;
+  assert.ok(L > 190, `黒目の右の白目の明るさ ${L}`);
+});
+
+test('目線: AI の黒目の位置が実際とずれていても、写真の黒目ごと動かす（黒目の端が元の場所に残らない）', () => {
+  const img = eyeImage(); const off = 6 / W; // AI の点が 6 画素左にずれている
+  applyBrush(img, op({ eyes: [[{ lid, iris: iris.map(([x, y]) => [x - off, y]), pose: [0, 0] }]] }));
+  let left = 0; for (let x = IX + R - 5; x < IX + R; x++) if (dark(img, x, CY)) left++;
+  assert.ok(Math.abs(irisCenterX(img) - CX) < 4 && left === 0, `黒目の中心 ${irisCenterX(img)}、元の右端に残った暗い画素 ${left}`);
+});
