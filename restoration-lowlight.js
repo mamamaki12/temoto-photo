@@ -31,8 +31,12 @@ const FINE_BACK = 0.35;
 const FINE_GAIN = 5;
 /** 戻す細かい粒の割合（明るくする倍率で決める）。tone は planTone の結果（null なら明るくしない） */
 export const fineScale = (tone) => (tone ? Math.min(1, FINE_GAIN / tone.gain) : 1);
-// ノイズの代わりに足す、細かい粒（色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
+// ノイズの代わりに足す、細かい粒（色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差。
+// ノイズを取りきって粒もないと、肌・髪・衣装が絵の具でなでたような面になり、写真全体がイラストのように見える（IMG_9348・9321・9250）。
+// 消したノイズが多い写真ほど（ノイズの量 × 明るくした分）、粒を強くする: 明るくしたあとのノイズの GRAIN_REL 倍。FILM_GRAIN〜GRAIN_MAX
 const FILM_GRAIN = 1.5;
+const GRAIN_REL = 0.45;
+const GRAIN_MAX = 4;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
@@ -310,8 +314,9 @@ function removeSpots(Y, Y0, w, h, profile, nr) {
  */
 export function denoise(ch, w, h, { profile, nr = 1, level = 0, onProgress = () => {} }) {
   const bins = profile[level]; const sm = boxBlur(ch[0], w, h, 3); const sig = new Float32Array(w * h);
-  // 粗い段ほど控えめに（細部を薄くしない）
-  const k = nr * [0.75, 0.6, 0.5][level];
+  // 粗い段ほど控えめに（細部を薄くしない）。粗い段（半分・4 分の 1）を強くならすと、肌のゆるやかなむら・髪の束・生地のしわまで消えて、
+  // 縮めて見たときに絵の具でなでたような面になる（イラストのように見える）。残った大きな粒は、足す粒にまぎれて写真らしく見える
+  const k = nr * [0.75, 0.4, 0.25][level];
   for (let i = 0; i < sig.length; i++) sig[i] = noiseAt(bins, sm[i]) * k;
   const last = level >= LEVELS - 1 || Math.min(w, h) < 32;
   const share = last ? 1 : 0.75;
@@ -518,7 +523,7 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: k
   }
   onProgress(0.95);
   const rows = at.bottom - at.top; const o = at.top * w;
-  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: grain ? grainFor(nr) : 0 });
+  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: grain ? grainFor(nr, profile, tone) : 0 });
   onProgress(1);
   return out;
 }
@@ -628,8 +633,19 @@ function grainAt(p, W) {
   return s * GRAIN_NORM;
 }
 
-/** ノイズ軽減の強さ → 足す粒の強さ */
-export const grainFor = (nr) => (nr > 0 ? FILM_GRAIN * Math.min(1, nr) : 0);
+/**
+ * 足す粒の強さ（8bit の標準偏差）。ノイズ軽減の強さ・写真で測ったノイズの量・明るくする倍率で決める
+ * @param {Float32Array[]|null} profile measureNoise の結果
+ * @param {object|null} tone planTone の結果（null なら明るくしない）
+ */
+export function grainFor(nr, profile = null, tone = null) {
+  if (!(nr > 0)) return 0;
+  let s = 0;
+  if (profile) { const b = profile[0]; for (let k = 4; k < 8; k++) s += b[k] / 4; } // 中くらいの明るさ（0.21〜0.42）のノイズの量
+  // 明るくしたあとのノイズ（8bit）: リニアで gain 倍すると、暗い所の sRGB の値はおよそ gain^0.45 倍になる
+  const out = s * 255 * (tone ? tone.gain : 1) ** 0.45;
+  return Math.min(1, nr) * Math.min(GRAIN_MAX, Math.max(FILM_GRAIN, GRAIN_REL * out));
+}
 
 /**
  * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）

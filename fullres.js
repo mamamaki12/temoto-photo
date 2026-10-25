@@ -45,7 +45,8 @@ async function iccFor(space) {
  * @param {'image/jpeg'|'image/png'} a.format
  * @param {'display-p3'|'srgb'} a.space 書き出す色空間
  * @param {{nr:number,light:number}|null} [a.lowlight] 暗所補正（ノイズ除去 → 明るさ）。元の大きさの写真に、いちばん先に当てる
- * @param {{res:object|null,amount:number,grain:number}|null} [a.deblur] ブレ補正（暗所補正の後に、編集中に AI で求めた差分を足し、そのあと細かい粒を足す）
+ * @param {{res:object|null,amount:number,grain:number}|null} [a.deblur] ブレ補正（暗所補正の後に、編集中に AI で求めた差分を足し、そのあと細かい粒を足す）。
+ *   暗所補正があるときの粒の強さは、grain ではなく、暗所補正で測ったノイズの量で決まる（grainFor）
  * @param {HTMLCanvasElement|ImageBitmap} [a.lowlightFrom] 暗所補正の明るさの曲線を決める、補正する前の編集用の写真（work が補正済みのとき）
  * @param {(t:number)=>void} [a.onProgress] 0〜1
  */
@@ -161,8 +162,11 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
  * 明るさの曲線は編集用の大きさの写真から決めるので、編集中と同じ明るさになる
  */
 async function lowlightFull(eng, src, work, FW, FH, options, deblur, onProgress) {
+  // ブレ補正があるときは、粒をそのあとに足す（強さは、この写真で測ったノイズの量で決まる）
+  let after = deblur;
   await enhancePhoto({ width: FW, height: FH, read: bandReader(src, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur, fine: !deblur }, {
-    onProgress, onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, deblur ? finishBand(data, rows, { y0: y, fullW: FW, fullH: FH }, deblur) : data),
+    onProgress, onGrain: (grain) => { if (deblur) after = { ...deblur, grain }; },
+    onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, after ? finishBand(data, rows, { y0: y, fullW: FW, fullH: FH }, after) : data),
   });
 }
 
