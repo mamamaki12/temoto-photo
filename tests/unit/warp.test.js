@@ -1,4 +1,4 @@
-// 形を整える（2 版）: ずらす量を重ねて 1 回だけ読み直す。人物の地図で背景を守る
+// 形を整える（2 版・3 版）: ずらす量を重ねて 1 回だけ読み直す。人物の地図で背景を守る
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyBrush, brushBounds } from '../../brushfx.js';
@@ -19,7 +19,7 @@ const pm = (n = 32) => { let s = ''; for (let j = 0; j < n; j++) for (let i = 0;
 const run = (op, at) => { const im = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(im, op, at); return im.data; };
 const bgDiff = (d, x0 = 400) => { let m = 0; for (let y = 150; y < 250; y++) for (let x = x0; x < x0 + 100; x++) { const k = (y * W + x) * 4; m = Math.max(m, Math.abs(d[k] - base[k])); } return m; };
 const edge = (d, y = 200) => { for (let x = 150; x < 450; x++) { const k = (y * W + x) * 4; if (d[k + 2] > d[k]) return x; } return -1; }; // 背景（青みが赤より強い）が始まる所
-const push = { type: 'warp', v: 2, pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1, pm: pm() };
+const push = { type: 'warp', v: 3, pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1, pm: pm() };
 
 test('人物の地図があれば、押した所の背景（境目から半径以上離れた縞）はそのまま。人物の側は縮む（境目が左へ）', () => {
   const kept = run(push); const free = run({ ...push, pm: undefined });
@@ -46,4 +46,11 @@ test('何回なぞっても、人物の模様がぼけない（点の濃さが�
   const whole = run(push); let md = 0;
   for (let y = 0; y < g[3]; y++) for (let x = 0; x < g[2]; x++) for (let c = 0; c < 3; c++) md = Math.max(md, Math.abs(part.data[(y * g[2] + x) * 4 + c] - whole[((g[1] + y) * W + g[0] + x) * 4 + c]));
   assert.ok(md <= 1, `全体と一部の差: ${md}`);
+});
+
+test('3 版は、人物の外で背景を動かす帯が狭い（輪郭から半径の 0.4 倍より外の柱は動かない）。保存済みの 2 版は今までどおり', () => {
+  const v3 = run(push); const v2 = run({ ...push, v: 2 });
+  assert.ok(bgDiff(v3, 300 + 90 * 0.45) < 6, `3 版: 帯の外の縞は変わらない: ${bgDiff(v3, 300 + 90 * 0.45)}`);
+  assert.ok(bgDiff(v2, 300 + 90 * 0.45) > 20, '2 版は半径 1 つ分まで背景も動く（保存した編集の見た目を変えない）');
+  assert.ok(edge(v3) < 296 && edge(v3) > 0, `境目は左へ: ${edge(v3)}`);
 });
