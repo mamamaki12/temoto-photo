@@ -10,14 +10,14 @@ const LOWER = [120, 80, 75]; const SHADED = TOOTH.map((v) => Math.round(v * 0.45
 const GLOSS = [245, 225, 215];
 // back: 口の左端の奥に、影に入った歯 / pale: 歯のすぐ上まで、日の当たった淡い上唇がかぶさっている / gum: 上の歯の上に歯ぐき
 // lower: 上の歯のすぐ下に、上の歯の陰で暗く赤みがかった下の歯 / gloss: 下唇のつや（明るく色の薄い点）と、鼻の下の赤い点
-function mouthImage({ open = true, back = false, pale = false, gum = false, lower = false, gloss = false } = {}) {
+function mouthImage({ open = true, back = false, pale = false, gum = false, lower = false, gloss = false, skin = SKIN, tooth = TOOTH } = {}) {
   const d = new Uint8ClampedArray(W * H * 4);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const u = (x - 200) / 90; const v = (y - 150) / 45; const r = u * u + v * v;
     const ui = (x - 200) / 70; const vi = (y - 150) / 18; const ri = ui * ui + vi * vi;
-    let c = SKIN;
+    let c = skin;
     if (r < 1) c = LIP;
-    if (open && ri < 1) c = Math.abs(y - 150) < 9 && Math.abs(x - 200) < 60 ? TOOTH : DARK;
+    if (open && ri < 1) c = Math.abs(y - 150) < 9 && Math.abs(x - 200) < 60 ? tooth : DARK;
     if (back && ri < 1 && Math.abs(y - 150) < 7 && x >= 142 && x < 156) c = SHADED;
     if (pale && ri < 1 && y < 142) c = PALE;
     if (gum && ri < 1 && y >= 134 && y < 142 && Math.abs(x - 200) < 58) c = GUM;
@@ -44,6 +44,18 @@ test('歯: 輪郭が少しずれていても、歯だけを白くし、唇・口
   }
   // 唇・口の奥・肌は変わらない
   for (const [x, y] of [[200, 185], [200, 118], [265, 150], [200, 250], [20, 20]]) assert.deepEqual(px(img, x, y), px(org, x, y), `${x},${y}`);
+});
+
+test('歯: 日焼けなどで肌の色が濃い人でも、黄ばみは同じように抜く（舞台の照明ほど濃くなければ）', () => {
+  const tooth = [222, 205, 175]; // 少し黄ばんだ歯
+  const drop = (skin) => {
+    const img = mouthImage({ skin, tooth }); const org = mouthImage({ skin, tooth });
+    applyBrush(img, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 1, whole: true, lips });
+    return chroma(px(img, 200, 150)) / chroma(px(org, 200, 150));
+  };
+  const fair = drop([215, 175, 155]); const tan = drop([195, 138, 105]);
+  assert.ok(tan < 0.8, `肌の色が濃い人の歯も黄ばみが減る ${tan.toFixed(2)}`);
+  assert.ok(tan < fair + 0.15, `肌の色の濃さで差がつきすぎない 白 ${fair.toFixed(2)} / 濃 ${tan.toFixed(2)}`);
 });
 
 test('リップ: 唇の全体に色がのり、歯（内側の輪郭からはみ出た所も）と肌には付かない', () => {
