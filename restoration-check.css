@@ -1,0 +1,9 @@
+body { margin: 0; color: #24242b; background: #f5f5fa; font: 16px/1.6 system-ui, sans-serif; }
+main { max-width: 1400px; margin: auto; padding: 20px; }
+button, input { font: inherit; } button { padding: 8px 14px; margin: 6px; cursor: pointer; }
+.controls { margin: 16px 0; padding: 16px; background: white; border-radius: 12px; }
+.controls label { display: block; margin: 10px 0; } output { display: inline-block; min-width: 32px; }
+progress { width: 100%; } .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.comparison section { min-width: 0; } .viewport { overflow: auto; height: 65vh; background: #222; }
+canvas { display: block; width: 100%; height: auto; } .actual canvas { width: auto; max-width: none; }
+@media(max-width: 650px) { .comparison { grid-template-columns: 1fr; } .viewport { height: 42vh; } }

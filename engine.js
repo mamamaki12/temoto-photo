@@ -68,7 +68,7 @@ precision highp float;
 in vec2 vUv; out vec4 outColor;
 uniform sampler2D uGeo, uBlur, uBlurMid, uLut, uMask;
 uniform vec2 uTexel; uniform float uDetailStep; uniform vec2 uOutSize; uniform vec2 uSrcSize;
-uniform float uExposure, uBrightness, uContrast, uHighlights, uShadows, uWhites, uBlacks;
+uniform float uLowlight, uExposure, uBrightness, uContrast, uHighlights, uShadows, uWhites, uBlacks;
 uniform float uTemp, uTint, uVibrance, uSaturation, uClarity, uDehaze, uSharpen, uNoise;
 uniform float uVignette, uVignetteMid, uGrain, uGrainSize, uFade, uBloom, uHalation;
 uniform int uUseLut; uniform vec3 uHsl[8]; uniform float uHslHue[8];
@@ -101,6 +101,15 @@ vec3 liftLuma(vec3 c, float l0, float l1) {
   if (l0 <= 1e-4) return vec3(l1);
   float r = l1 / l0; float k = r > 1.0 ? sqrt(r) : r;
   return vec3(l1) + (c - vec3(l0)) * k;
+}
+// リニアRGBを共通倍率で持ち上げ、明部をなめらかに保護する。
+// 黒は黒、白は白のまま。色成分別のクリップによる色相ずれを避ける。
+vec3 lowlight(vec3 c) {
+  if (uLowlight <= 0.0) return c;
+  vec3 lin = toLin(max(c, vec3(0.0)));
+  float peak = max(lin.r, max(lin.g, lin.b));
+  float gain = exp2(uLowlight * 4.0);
+  return toSrgb(lin * gain / (1.0 + (gain - 1.0) * peak));
 }
 // ディザ用の乱数（画素の位置で決まる。帯ごとに描いても同じ）
 float dither(vec2 p) {
@@ -170,6 +179,10 @@ void main() {
     avg /= 9.0;
     if (uNoise > 0.0) c = mix(c, sum / wsum, uNoise * 0.9);
   }
+
+  c = lowlight(c);
+  blur = lowlight(blur);
+  blurMid = lowlight(blurMid);
 
   // 色温度・色かぶり・露光（リニアで計算）
   float gain = exp2(uExposure * 4.0);
@@ -448,7 +461,7 @@ export class Engine {
     gl.uniform2f(L.uOutSize, outW, outH); gl.uniform2f(L.uSrcSize, this.srcW, this.srcH);
     this.setGeo(pm, state.geo);
     const a = state.adj; const f = (k) => (a[k] || 0) / 100;
-    for (const k of ['exposure', 'brightness', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'temp', 'tint', 'vibrance', 'saturation', 'clarity', 'dehaze', 'sharpen', 'noise', 'vignette', 'vignetteMid', 'grain', 'grainSize', 'fade', 'bloom', 'halation']) {
+    for (const k of ['lowlight', 'exposure', 'brightness', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'temp', 'tint', 'vibrance', 'saturation', 'clarity', 'dehaze', 'sharpen', 'noise', 'vignette', 'vignetteMid', 'grain', 'grainSize', 'fade', 'bloom', 'halation']) {
       gl.uniform1f(L[`u${k[0].toUpperCase()}${k.slice(1)}`], f(k));
     }
     gl.uniform3fv(L.uHsl, HSL_BANDS.flatMap(([k]) => [state.hsl[k].h / 100, state.hsl[k].s / 100, state.hsl[k].l / 100]));
