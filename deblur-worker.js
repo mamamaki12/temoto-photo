@@ -2,7 +2,7 @@
 // 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか }
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
-import { deblurResidual, denoiseSmall, TILE } from './deblur.js';
+import { deblurResidual2, denoiseSmall, TILE } from './deblur.js';
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
 
@@ -95,7 +95,7 @@ self.onmessage = async ({ data }) => {
   try {
     const be = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
     const input = data.denoise ? denoiseSmall(data.small, (t) => self.postMessage({ type: 'progress', phase: 'denoise', t })) : data.small;
-    const res = await deblurResidual(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t }) });
+    const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t }) });
     self.postMessage({ type: 'result', res }, [res.data.buffer]);
   } catch (error) {
     self.postMessage({ type: 'error', message: error?.message || String(error) });

@@ -80,6 +80,17 @@ export function gateMap(rgb, w, h) {
   return A;
 }
 
+/** 差分を、直してよい量 A までに抑える（境目でいきなり変わらないよう、抑える割合を少しぼかしてから小さい方を使う） */
+function limitResidual(acc, A, w, h) {
+  const s = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const mag = Math.max(Math.abs(acc[i * 3]), Math.abs(acc[i * 3 + 1]), Math.abs(acc[i * 3 + 2])) + 1e-6;
+    s[i] = Math.min(1, A[i] / mag);
+  }
+  const sb = boxBlur(boxBlur(s, w, h, 1), w, h, 1);
+  for (let i = 0; i < w * h; i++) { const k = Math.min(s[i], sb[i]); acc[i * 3] *= k; acc[i * 3 + 1] *= k; acc[i * 3 + 2] *= k; }
+}
+
 /**
  * 縮めた絵で、AI が直した差分を求める
  * @param {{width:number,height:number,data:Float32Array}} small RGB を並べたもの（0〜1）
@@ -149,14 +160,7 @@ export async function deblurResidual(small, infer, { onProgress = () => {}, sign
     const lo = blur3(ch, w, h, LOW_R);
     for (let i = 0; i < w * h; i++) acc[i * 3 + c] -= lo[i];
   }
-  // 直してよい量で抑える（境目でいきなり変わらないよう、抑える割合を少しぼかしてから小さい方を使う）
-  const s = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const mag = Math.max(Math.abs(acc[i * 3]), Math.abs(acc[i * 3 + 1]), Math.abs(acc[i * 3 + 2])) + 1e-6;
-    s[i] = Math.min(1, A[i] / mag);
-  }
-  const sb = boxBlur(boxBlur(s, w, h, 1), w, h, 1);
-  for (let i = 0; i < w * h; i++) { const k = Math.min(s[i], sb[i]); acc[i * 3] *= k; acc[i * 3 + 1] *= k; acc[i * 3 + 2] *= k; }
+  limitResidual(acc, A, w, h);
   onProgress(1);
   return { width: w, height: h, data: acc };
 }
@@ -178,6 +182,47 @@ function taps(n, N) {
     for (let k = 0; k < 4; k++) wt[X * 4 + k] /= sum;
   }
   return { idx, wt };
+}
+
+/**
+ * 2 段で直す。まず半分に縮めた絵で大きなブレを直し、それを足した絵で、もう一度細かいブレを直す
+ * （前に伸ばした手のような、縮めた絵で 15 画素を超えるブレは 1 段では直りきらない）
+ * @returns 差分（small と同じ大きさ。2 段の和）
+ */
+export async function deblurResidual2(small, infer, { onProgress = () => {}, signal, concurrency = 1 } = {}) {
+  const { width: w, height: h, data } = small;
+  if (Math.min(w, h) < 2 * TILE) return deblurResidual(small, infer, { onProgress, signal, concurrency });
+  const w2 = Math.ceil(w / 2); const h2 = Math.ceil(h / 2); const half = new Float32Array(w2 * h2 * 3);
+  for (let y = 0; y < h2; y++) {
+    for (let x = 0; x < w2; x++) {
+      const xs = [2 * x, Math.min(w - 1, 2 * x + 1)]; const ys = [2 * y, Math.min(h - 1, 2 * y + 1)];
+      for (let c = 0; c < 3; c++) { let v = 0; for (const yy of ys) for (const xx of xs) v += data[(yy * w + xx) * 3 + c]; half[(y * w2 + x) * 3 + c] = v / 4; }
+    }
+  }
+  // 進捗: 半分の大きさの段は区画が 4 分の 1 なので 2 割
+  const r1 = await deblurResidual({ width: w2, height: h2, data: half }, infer, { signal, concurrency, onProgress: (t) => onProgress(0.2 * t) });
+  const up = resizeRGB(r1, w, h).data;
+  const pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
+  const r2 = await deblurResidual({ width: w, height: h, data: pre }, infer, { signal, concurrency, onProgress: (t) => onProgress(0.2 + 0.8 * t) });
+  for (let i = 0; i < data.length; i++) r2.data[i] += up[i];
+  // 2 段の和も、元の絵の直してよい量までに抑える（頬のやわらかい光の境目が、角ばった形にならないように）
+  limitResidual(r2.data, gateMap(data, w, h), w, h);
+  return r2;
+}
+
+/** RGB を並べた絵（差分など）を、3 次補間で別の大きさにする */
+export function resizeRGB(src, W, H) {
+  const { width: w, height: h, data: R } = src;
+  const tx = taps(w, W); const ty = taps(h, H); const out = new Float32Array(W * H * 3); const line = new Float32Array(w * 3);
+  for (let Y = 0; Y < H; Y++) {
+    line.fill(0);
+    for (let k = 0; k < 4; k++) { const wy = ty.wt[Y * 4 + k]; const o = ty.idx[Y * 4 + k] * w * 3; for (let i = 0; i < w * 3; i++) line[i] += R[o + i] * wy; }
+    for (let X = 0; X < W; X++) {
+      const q = (Y * W + X) * 3;
+      for (let k = 0; k < 4; k++) { const j = tx.idx[X * 4 + k] * 3; const wx = tx.wt[X * 4 + k]; out[q] += line[j] * wx; out[q + 1] += line[j + 1] * wx; out[q + 2] += line[j + 2] * wx; }
+    }
+  }
+  return { width: W, height: H, data: out };
 }
 
 /**

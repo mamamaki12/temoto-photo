@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/deblur-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deblurSize, deblurResidual, applyResidual, gateMap, TILE } from '../../deblur.js';
+import { deblurSize, deblurResidual, deblurResidual2, applyResidual, gateMap, TILE } from '../../deblur.js';
 import { addGrain } from '../../restoration-lowlight.js';
 
 /** 縮めた絵（RGB を並べたもの）。fn(x, y) は 0〜1 の明るさ */
@@ -91,4 +91,24 @@ test('deblur: 粒は位置で決まる（帯に分けても同じ）。真っ黒
   assert.ok(all.some((v, i) => i % 4 !== 3 && v !== 128));
   const black = new Uint8ClampedArray(W * 4).fill(0); for (let i = 3; i < black.length; i += 4) black[i] = 255;
   assert.deepEqual(addGrain(black.slice(), W, 1, { y0: 0, fullW: W }, 1.5), black);
+});
+
+test('deblur: 2 段（半分の大きさ → 元の大きさ）でも、AI が何も変えなければ差分は 0。大きさは入力と同じ', async () => {
+  const img = small(600, 540, stripes); let calls = 0;
+  const res = await deblurResidual2(img, async (input) => { calls++; return Float32Array.from(input); });
+  assert.equal(res.width, 600); assert.equal(res.height, 540);
+  assert.ok(res.data.every((v) => Math.abs(v) < 1e-7));
+  assert.ok(calls > 9, '半分の大きさの段と、元の大きさの段の両方で AI に通す');
+});
+
+test('deblur: 2 段の和も、元の絵の直してよい量までに抑える', async () => {
+  const img = small(600, 540, (x) => (x < 300 ? stripes(x) : 0.5 + x / 6000));
+  const res = await deblurResidual2(img, async (input) => {
+    const out = Float32Array.from(input);
+    for (let i = 0; i < out.length; i++) { const x = i % TILE; if (x > 0 && x < TILE - 1) out[i] += 0.5 * (2 * input[i] - input[i - 1] - input[i + 1]); }
+    return out;
+  });
+  const A = gateMap(img.data, 600, 540); let mx = 0;
+  for (let i = 0; i < 600 * 540; i++) { assert.ok(Math.abs(res.data[i * 3]) <= A[i] + 1e-6); mx = Math.max(mx, Math.abs(res.data[i * 3])); }
+  assert.ok(mx > 0.02, `縞の所は直す: ${mx}`);
 });

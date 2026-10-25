@@ -3,7 +3,7 @@
 // onnxruntime-node は、このリポジトリの外に入れて NODE_PATH で渡す（例: NODE_PATH=/tmp/ortw/node_modules）
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { deblurSize, deblurResidual, applyResidual, denoiseSmall, TILE } from '../deblur.js';
+import { deblurSize, deblurResidual2, applyResidual, denoiseSmall, TILE } from '../deblur.js';
 const require = createRequire(import.meta.url);
 const ort = require('onnxruntime-node');
 const [model, inPath, W0, H0, outPath, amt = '50', dn = '0'] = process.argv.slice(2); // dn=1: AI に渡す前に縮めた絵のノイズを取る
@@ -22,7 +22,7 @@ for (let i = 0; i < w * h; i++) for (let c = 0; c < 3; c++) small[i * 3 + c] /= 
 const session = await ort.InferenceSession.create(model);
 const t0 = Date.now(); let last = 0;
 const input = +dn ? denoiseSmall({ width: w, height: h, data: small }) : { width: w, height: h, data: small };
-const res = await deblurResidual(input, async (input, n) => {
+const res = await deblurResidual2(input, async (input, n) => {
   const r = await session.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) });
   return r.output.data;
 }, { onProgress: (t) => { if (t - last > 0.1 || t === 1) { last = t; process.stderr.write(`${Math.round(t * 100)}% `); } } });
