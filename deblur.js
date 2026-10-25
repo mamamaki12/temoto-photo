@@ -309,6 +309,26 @@ export function deconvResidual(small, { sigma = DECONV_SIGMA * Math.max(small.wi
   return { width: w, height: h, data: out };
 }
 
+/**
+ * AI の差分に、逆畳み込みの差分を足す。2 つで「直してよい量」（gateMap）を分け合い、AI がもう直した所には、残りの分しか足さない。
+ * また、変える量はその画素の明るさの DECONV_REL 倍まで（暗い所を大きく暗くしない）。
+ * 大きくブレた写真（IMG_9345）では、ブレたままの目の縁だけを戻すと、目が縁だけくっきりした黒い切り抜きのようになった（ユーザーの声「これだけ不自然。特に目」）
+ * @param {{data:Float32Array}} res AI の差分（書き換える） @param {{data:Float32Array}} dc deconvResidual の結果
+ * @param {{width:number,height:number,data:Float32Array}} small AI に渡した縮めた絵
+ */
+const DECONV_REL = 0.06;
+export function addDeconv(res, dc, small) {
+  const { width: w, height: h, data } = small; const A = gateMap(data, w, h); const R = res.data;
+  for (let i = 0; i < w * h; i++) {
+    const a = Math.abs(0.299 * R[i * 3] + 0.587 * R[i * 3 + 1] + 0.114 * R[i * 3 + 2]);
+    const Y = 0.299 * data[i * 3] + 0.587 * data[i * 3 + 1] + 0.114 * data[i * 3 + 2];
+    const room = Math.min(Math.max(0, A[i] - a), DECONV_REL * Y);
+    const d = Math.max(-room, Math.min(room, dc.data[i * 3]));
+    R[i * 3] += d; R[i * 3 + 1] += d; R[i * 3 + 2] += d;
+  }
+  return res;
+}
+
 /** ガウスぼかしの重み（半分。中心から 3σ まで） */
 function gaussKernel(s) {
   const r = Math.max(1, Math.ceil(3 * s)); const k = new Float32Array(r + 1); let sum = 0;

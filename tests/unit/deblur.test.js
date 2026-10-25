@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/deblur-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deblurSize, deblurResidual, deblurResidual2, deconvResidual, applyResidual, gateMap, TILE } from '../../deblur.js';
+import { deblurSize, deblurResidual, deblurResidual2, deconvResidual, addDeconv, applyResidual, gateMap, TILE } from '../../deblur.js';
 import { addGrain } from '../../restoration-lowlight.js';
 
 /** 縮めた絵（RGB を並べたもの）。fn(x, y) は 0〜1 の明るさ */
@@ -131,4 +131,16 @@ test('deblur: にじんだ輪郭は、ぼけの形を仮定して戻すと急に
   // 輪郭から離れた平らな所（ムラだけ）は変えない
   let far = 0; for (let y = 0; y < 64; y++) for (let x = 120; x < 150; x++) far = Math.max(far, Math.abs(res.data[(y * 160 + x) * 3]));
   assert.ok(far < 1e-3, `平らな所 ${far}`);
+});
+
+test('deblur: AI がもう直した所には、逆畳み込みの差分を上乗せしない（直してよい量を分け合う）', () => {
+  const img = small(64, 64, (x) => stripes(x));
+  const A = gateMap(img.data, 64, 64);
+  const full = { data: new Float32Array(64 * 64 * 3) }; const none = { data: new Float32Array(64 * 64 * 3) };
+  for (let i = 0; i < 64 * 64; i++) for (let c = 0; c < 3; c++) full.data[i * 3 + c] = A[i]; // AI が上限まで直した
+  const dc = { data: new Float32Array(64 * 64 * 3).fill(0.05) };
+  addDeconv(full, dc, img); addDeconv(none, dc, img);
+  const i = 32 * 64 + 8; // 縞の境目
+  assert.ok(Math.abs(full.data[i * 3] - A[i]) < 1e-6, 'AI が上限まで直した所は、そのまま');
+  assert.ok(none.data[i * 3] > 0.01, 'AI が直していない所には足す');
 });
