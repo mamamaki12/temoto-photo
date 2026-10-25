@@ -1,6 +1,6 @@
 // 人物の肌（顔・体）を見分ける Worker（MediaPipe の「Selfie Multiclass」モデル。端末の中だけで動く）。
-// 受け取る: { id, kind: 'skin' | 'person' | 'lips', w, h, data: Uint8ClampedArray（RGBA） }
-// 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }
+// 受け取る: { id, kind: 'skin' | 'person' | 'lips' | 'face', w, h, data: Uint8ClampedArray（RGBA） }
+// 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }／face → { id, faces: [[[x, y, z], …478 点], …] }
 // クラシックな Worker にしているのは、MediaPipe が読み込み用のスクリプトを importScripts で読むため
 /* eslint-disable no-undef */
 var exports = {};
@@ -31,6 +31,12 @@ self.onmessage = async (e) => {
       const fl = await initFace(); const r = fl.detect(new ImageData(data, w, h));
       const lips = (r.faceLandmarks || []).map((f) => ({ outer: OUTER.map((i) => [f[i].x, f[i].y]), inner: INNER.map((i) => [f[i].x, f[i].y]) }));
       self.postMessage({ id, lips }); return;
+    }
+    if (kind === 'face') {
+      // 顔ごとの 478 点（x, y は 0〜1、z は顔の幅くらいを 1 とした奥行き）。鼻筋など、唇のほかの部位に使う
+      const fl = await initFace(); const r = fl.detect(new ImageData(data, w, h));
+      const faces = (r.faceLandmarks || []).map((f) => f.map((q) => [q.x, q.y, q.z]));
+      self.postMessage({ id, faces }); return;
     }
     const seg = await init();
     const res = seg.segment(new ImageData(data, w, h));

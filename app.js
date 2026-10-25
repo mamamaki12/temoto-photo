@@ -9,9 +9,9 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpSegment, warpGuard, LIP_COLORS } from './brushfx.js';
+import { warpSegment, warpGuard, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findMouth } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth, findFaceAt } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -27,7 +27,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.18.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.19.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -1482,8 +1482,8 @@ function localHandles(l) {
 const FX = {
   shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
     hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは動かしたい所が丸ごと入るくらいにして、少しずつ何回かに分けると自然です（小さすぎると、へこみができます）。' },
-  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 } },
-    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
+  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ'], ['nose', '鼻筋']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 }, nose: { size: 1, amt: 50 } },
+    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。', nose: '鼻をタップするか、鼻筋を軽くなぞってください。AI が顔を見つけて、鼻筋にほそいハイライト、両脇に影を入れ、鼻を高く見せます（メイクのノーズシャドウと同じ）。幅・長さは顔に合わせて自動で決まり、横向きの顔は奥側を控えめにします。強さは 50% くらいが自然です。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
   dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
     hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
   wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
@@ -1598,6 +1598,18 @@ function fxAction(tool, c, p) {
             const what = type === 'lip' ? '唇' : '歯';
             toast(lips ? `口が見つからなかったので、なぞった所の${what}の色の所だけを補正しました（横顔・顔が隠れているときは見つかりません）` : `口を見つける AI を使えないので、なぞった所の${what}の色の所だけを補正しました`);
           }
+          addRetouch(op); commit(); buildPanel(); requestRender();
+        });
+        return;
+      } else if (type === 'nose') {
+        // タップした所の顔を AI で見つけ、鼻の点（鼻筋のまん中・ふち・頬の境目）から範囲をアプリが決める。顔が見つからなければ何もしない
+        drawHandles();
+        E.stageEl.classList.add('busy', 'face');
+        const e0 = E;
+        findFaceAt(baseImageData(), pts, r).then((face) => {
+          if (E !== e0) return; E.stageEl.classList.remove('busy', 'face');
+          if (!face) { toast(face === null ? '顔を見つける AI を使えないので、鼻筋は補正できませんでした' : '顔が見つからなかったので、鼻筋は補正できませんでした（横顔・顔が隠れているときは見つかりません。小さい顔は 2 本指で拡大してからタップしてください）'); return; }
+          op.nose = {}; for (const [k, ids] of Object.entries(NOSE_POINTS)) op.nose[k] = ids.map((i) => [+face[i][0].toFixed(5), +face[i][1].toFixed(5)]);
           addRetouch(op); commit(); buildPanel(); requestRender();
         });
         return;
