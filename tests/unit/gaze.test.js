@@ -80,3 +80,32 @@ test('目線: AI の黒目の位置が実際とずれていても、写真の黒
   let left = 0; for (let x = IX + R - 5; x < IX + R; x++) if (dark(img, x, CY)) left++;
   assert.ok(Math.abs(irisCenterX(img) - CX) < 4 && left === 0, `黒目の中心 ${irisCenterX(img)}、元の右端に残った暗い画素 ${left}`);
 });
+
+// 黒目の位置（x）を変えた作りものの目
+function eyeAt(ix) {
+  const img = eyeImage(); const d = img.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const u = (x - CX) / EW; const v = (y - CY) / EH; if (u * u + v * v >= 1) continue;
+    const c = Math.hypot(x - ix, y - CY) < R ? IRIS : WHITE; const k = (y * W + x) * 4; d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2];
+  }
+  return img;
+}
+const irisAt = (ix) => [[ix / W, CY / H], [ix / W, (CY - R) / H], [(ix + R) / W, CY / H], [ix / W, (CY + R) / H], [(ix - R) / W, CY / H]];
+
+test('目線: ずれが小さい目（黒目の半径の 3 割）は、もともとカメラを見ているとして自動では動かさない（矢印では動く）', () => {
+  const ix = CX + 0.3 * R; const img = eyeAt(ix); const before = eyeAt(ix);
+  const eyes = [[{ lid, iris: irisAt(ix), pose: [0, 0] }]];
+  applyBrush(img, op({ eyes }));
+  assert.deepEqual([...img.data], [...before.data]);
+  const tuned = eyeAt(ix); applyBrush(tuned, op({ eyes, tune: [-0.5, 0] }));
+  assert.ok(irisCenterX(tuned) < ix - 0.3 * R, '矢印の微調整では動く');
+});
+
+test('目線: 顔が横を向いた人は、黒目が顔の向きと反対へ寄っていてもカメラを見ているとして動かさない。顔が正面なら同じ目は動かす', () => {
+  // 顔が右（yaw > 0）を向いて、黒目が左へ寄っている = カメラを見ている
+  const ix = CX - 0.6 * R; const eyes = (yaw) => [[{ lid, iris: irisAt(ix), pose: [yaw, 0] }]];
+  const turned = eyeAt(ix); const before = eyeAt(ix); applyBrush(turned, op({ eyes: eyes(0.35) }));
+  assert.deepEqual([...turned.data], [...before.data]);
+  const front = eyeAt(ix); applyBrush(front, op({ eyes: eyes(0) }));
+  assert.ok(irisCenterX(front) > ix + 0.3 * R, `正面の顔では真ん中の方へ動く（${irisCenterX(front)}）`);
+});
