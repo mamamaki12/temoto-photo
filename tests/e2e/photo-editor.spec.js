@@ -85,8 +85,7 @@ test('露光・彩度で画素が変わり、元に戻す／やり直す／編�
   await expect.poll(async () => lum(await viewMean(page)), { timeout: 5000 }).toBeGreaterThan(lum(before) + 20); // 描き直しを待つ
   await tab(page, 'カラー');
   await setSlider(page, '彩度', -100);
-  const [r, g, b] = await viewMean(page, SKY);
-  expect(Math.max(Math.abs(r - g), Math.abs(g - b))).toBeLessThan(4);
+  await expect.poll(async () => { const [r, g, b] = await viewMean(page, SKY); return Math.max(Math.abs(r - g), Math.abs(g - b)); }, { timeout: 5000 }).toBeLessThan(4); // 描き直しを待つ
   // 編集前を長押ししている間だけ元の画像
   const cmp = page.getByRole('button', { name: /編集前を表示/ });
   const edited = lum(await viewMean(page));
