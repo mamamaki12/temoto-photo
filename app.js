@@ -9,9 +9,9 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
+import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, WARP_SHAPE, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findMouth, findFaceAt, personMap, warmPersonSeg } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -896,7 +896,7 @@ function adjSliders(group) {
 const histo = () => { const c = h('canvas', { class: 'histo', width: 256, height: 64, role: 'img', 'aria-label': 'ヒストグラム（明るさの分布）' }); if (E.hist) drawHistogram(c, E.hist); return c; };
 const hint = (t) => h('p', { class: 'hint' }, t);
 const row = (...k) => h('div', { class: 'btn-row' }, ...k);
-const btn = (label, onclick, cls = '') => h('button', { type: 'button', class: cls, onclick }, label);
+const btn = (label, onclick, cls = '', title = null) => h('button', { type: 'button', class: cls, onclick, ...(title ? { title, 'aria-label': title } : {}) }, label);
 
 const PANELS = {
   auto() {
@@ -1482,8 +1482,8 @@ function localHandles(l) {
 const FX = {
   shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
     hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは動かしたい所が丸ごと入るくらいにして、少しずつ何回かに分けると自然です（小さすぎると、へこみができます）。' },
-  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ'], ['nose', '鼻筋']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 }, nose: { size: 1, amt: 50 } },
-    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。', nose: '鼻をタップするか、鼻筋を軽くなぞってください。AI が顔を見つけて、鼻筋にほそいハイライト、両脇に影を入れ、鼻を高く見せます（メイクのノーズシャドウと同じ）。幅・長さは顔に合わせて自動で決まり、横向きの顔は奥側を控えめにします。強さは 50% くらいが自然です。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
+  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ'], ['nose', '鼻筋'], ['gaze', '目線']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 }, nose: { size: 1, amt: 50 }, gaze: { size: 1, amt: 100 } },
+    hint: { gaze: '目線をカメラに向けたい人の顔（目のあたり）をタップしてください。AI がその人の両目を見つけて、黒目をカメラの方へ動かします（まぶた・まつげは変えません）。集合写真で 1 人だけ目線がそれているときに。動かしたあとは、下の矢印で少しずつ直せます。小さく写った顔は、2 本指で拡大してからタップすると確実です。', eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。', nose: '鼻をタップするか、鼻筋を軽くなぞってください。AI が顔を見つけて、鼻筋にほそいハイライト、両脇に影を入れ、鼻を高く見せます（メイクのノーズシャドウと同じ）。幅・長さは顔に合わせて自動で決まり、横向きの顔は奥側を控えめにします。強さは 50% くらいが自然です。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
   dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
     hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
   wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
@@ -1515,11 +1515,29 @@ function fxPanel(tool) {
     d.modes ? chips(d.modes, f.mode, (v) => { prefs.set(`fx2:${tool}:mode`, v); buildPanel(); }, { label: '種類' }).el : null,
     f.mode === 'lip' ? lipColorPicker() : null,
     slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
-    slider({ label: '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
+    slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
+    f.mode === 'gaze' ? gazeTuner() : null,
     h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
     n ? row(btn(`${TOOL_LABEL[tool]}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small')) : null,
     hint('うまくいかなかったら「元に戻す」で 1 回ずつ戻せます。2 本指で広げると、拡大して細かい所をなぞれます（ブラシの大きさは写真に対する大きさなので、拡大しても変わりません）。'),
   ];
+}
+/** 目線の微調整: 最後に直した人の黒目を、矢印で少しずつ（黒目の半径の 1 割ずつ）動かす */
+function gazeTuner() {
+  const op = E.state.retouch.findLast?.((o) => o.type === 'gaze') ?? [...E.state.retouch].reverse().find((o) => o.type === 'gaze');
+  if (!op) return null;
+  const nudge = (dx, dy) => {
+    const t = op.tune || [0, 0]; op.tune = [+(t[0] + dx).toFixed(2), +(t[1] + dy).toFixed(2)];
+    rebuildSource(); commit(); buildPanel(); requestRender();
+  };
+  const arrow = (label, dx, dy, title) => btn(label, () => nudge(dx, dy), 'ghost small gaze-arrow', title);
+  const t = op.tune || [0, 0];
+  return h('div', { class: 'gaze-tune' },
+    h('p', { class: 'muted small' }, `黒目の微調整（最後にタップした人）${t[0] || t[1] ? `: 横 ${t[0] > 0 ? '+' : ''}${t[0]}・縦 ${t[1] > 0 ? '+' : ''}${t[1]}` : ''}`),
+    h('div', { class: 'gaze-pad', role: 'group', 'aria-label': '黒目を動かす' },
+      h('span'), arrow('↑', 0, -0.1, '黒目を上へ'), h('span'),
+      arrow('←', -0.1, 0, '黒目を左へ'), btn('戻す', () => { if (op.tune) { delete op.tune; rebuildSource(); commit(); buildPanel(); requestRender(); } }, 'ghost small'), arrow('→', 0.1, 0, '黒目を右へ'),
+      h('span'), arrow('↓', 0, 0.1, '黒目を下へ'), h('span')));
 }
 /** リップの色（選んだもの） */
 // 色は「色合い（色相）・濃さ（彩度）・明るさ」で持つ。見本の色を選ぶと 3 つがその色になり、スライダーで好みに調整できる
@@ -1543,7 +1561,10 @@ function lipColorPicker() {
     slider({ label: '色の明るさ', min: 15, max: 75, value: cur[2], def: cur[2], unit: '%', onInput: upd(2), onChange: upd(2) }).el);
 }
 /** AI で見つけた口の輪郭を、保存する形に（座標は 5 桁まで） */
-const roundLips = (lips) => lips.map((l) => ({ outer: l.outer.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]), inner: l.inner.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]) }));
+const round5 = (pts) => pts.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]);
+const roundLips = (lips) => lips.map((l) => ({ outer: round5(l.outer), inner: round5(l.inner) }));
+/** AI で見つけた両目を、保存する形に */
+const roundEyes = (faces) => faces.map((f) => f.map((e) => ({ lid: round5(e.lid), iris: round5(e.iris), pose: (e.pose || [0, 0]).map((v) => +v.toFixed(4)) })));
 /** なぞる操作。形を整えるは、なぞりながらその場で動かす。ほかは指を離したときに当てる */
 function fxAction(tool, c, p) {
   const f = fxPrefs(tool); const type = FX[tool].type(f.mode);
@@ -1568,7 +1589,7 @@ function fxAction(tool, c, p) {
     const e0 = E;
     live.ready = personMap(E.srcData, warpProtectBox(pts[0], r, E.W, E.H), WARP_MAP_N).then((pm) => {
       if (E !== e0) return; live.pm = pm || undefined;
-      live.stroke = warpStroke(E.srcData, rp, warpProtect(live.pm, rp, { W: E.W, H: E.H, ox: 0, oy: 0 }, p0));
+      live.stroke = warpStroke(E.srcData, rp, warpProtect(live.pm, rp, { W: E.W, H: E.H, ox: 0, oy: 0 }, p0), WARP_SHAPE);
       live.apply();
     });
     live.apply = () => {
@@ -1595,7 +1616,7 @@ function fxAction(tool, c, p) {
       const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
-        op.v = 3;
+        op.v = 4;
         const e0 = E;
         const finish = () => {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'warp');
@@ -1606,6 +1627,17 @@ function fxAction(tool, c, p) {
         };
         if (live.stroke) finish();
         else { E.stageEl.classList.add('busy', 'warp'); live.ready.then(finish); } // 人物の地図がまだなら、届いてから当てる
+        return;
+      } else if (type === 'gaze') {
+        // タップした所は目印。そのそばの顔の両目を AI で見つけ、黒目をカメラの方へ動かす（見つからなければ何もしない）
+        drawHandles(); E.stageEl.classList.add('busy', 'lips');
+        const e0 = E;
+        findEyes(baseImageData(), pts, r).then((eyes) => {
+          if (E !== e0) return; E.stageEl.classList.remove('busy', 'lips');
+          if (!eyes?.length) { toast(eyes ? '顔が見つかりませんでした。目のあたりをタップしてください（横顔・顔が隠れているときは見つかりません）' : '顔を見つける AI を使えないので、目線は直せません'); return; }
+          op.eyes = roundEyes(eyes);
+          addRetouch(op); commit(); buildPanel(); requestRender();
+        });
         return;
       } else if (type === 'lip' || type === 'teeth') {
         // なぞった所・タップした所は目印。そのそばの口を AI で見つけ、唇・歯の範囲はアプリが決める（はじめての 1 回は少し時間がかかる）
@@ -1640,7 +1672,7 @@ function fxAction(tool, c, p) {
     },
     cancel: () => {
       E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf);
-      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 3, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
+      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 4, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
       drawHandles();
     },
   };

@@ -395,5 +395,9 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .lip-picker { display: grid; gap: 8px; }
 .lip-now { display: flex; align-items: center; gap: 8px; }
 .lip-dot.big { width: 28px; height: 28px; }
+.gaze-tune { display: grid; gap: 6px; }
+.gaze-pad { display: grid; grid-template-columns: repeat(3, 48px); gap: 4px; justify-content: center; }
+.gaze-pad button { min-height: 40px; padding: 0; }
+.gaze-pad .gaze-arrow { font-size: 1.2rem; }
 .export progress { display: block; width: 100%; accent-color: var(--accent, #7d2ae8); }
 .export progress[hidden] { display: none; }

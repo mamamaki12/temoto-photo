@@ -5,7 +5,7 @@
 // 書き出し（元の大きさ）では、写真全体ではなく「なぞった所のまわり」だけを読み出して当てるので、
 // 画像の一部 img が、全体（W×H）の (ox, oy) の位置にあるとして計算する（at = { W, H, ox, oy }）。
 
-export const BRUSH_TYPES = ['warp', 'eyes', 'teeth', 'lip', 'nose', 'dodge', 'burn', 'wrinkle'];
+export const BRUSH_TYPES = ['warp', 'eyes', 'teeth', 'lip', 'nose', 'gaze', 'dodge', 'burn', 'wrinkle'];
 /**
  * 鼻筋に使う顔の点（MediaPipe の 478 点の番号）。mid: 鼻筋のまん中（眉間→鼻先→鼻先の下）、
  * li/ri: 鼻筋の左右のふち（鼻の上の面と横の面の境目）、lo/ro: 鼻の横の面と頬の境目（小鼻の上まで）
@@ -874,6 +874,135 @@ export function warpSegment(img, p0, p1, rad, amt, guard = null) {
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
+/** 双一次補間で 1 画素の色を読む（Float32 の RGB 配列 src、画像の外は端の色） */
+function px3(src, W, H, x, y, out) {
+  x = x < 0 ? 0 : x > W - 1 ? W - 1 : x; y = y < 0 ? 0 : y > H - 1 ? H - 1 : y;
+  const x0 = x | 0; const y0 = y | 0; const x1 = x0 + 1 < W ? x0 + 1 : x0; const y1 = y0 + 1 < H ? y0 + 1 : y0; const tx = x - x0; const ty = y - y0;
+  const a = (y0 * W + x0) * 3; const b = (y0 * W + x1) * 3; const c = (y1 * W + x0) * 3; const e = (y1 * W + x1) * 3;
+  for (let i = 0; i < 3; i++) { const t = src[a + i] + (src[b + i] - src[a + i]) * tx; const u = src[c + i] + (src[e + i] - src[c + i]) * tx; out[i] = t + (u - t) * ty; }
+  return out;
+}
+const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+/**
+ * 目線: 黒目（虹彩と瞳）を目の中で動かして、カメラの方を見ているようにする。
+ * eye: { lid: まぶたのふち 16 点, iris: 黒目の中心と上右下左, R: 黒目の半径, open: 目の開き }（この画像の画素の座標）、delta: 動かす量 [dx, dy]（画素）
+ * 切り貼りではなく「ゆがめる」: 黒目はそのまま動かし、まわりの白目を伸ばす・縮める。つなぎ目ができず、黒目のふちのにじみ・光の点もそのまま動く。まぶた・まつげは変えない（まぶたのふちの内側だけを書き換える。ふちはなめらかに）。
+ * 黒目がまぶたに隠れる所は、隠れたまま（白目だけが縮む）
+ */
+const BAND = 0.35; const FEATHER = 0.1; // ふちのそばで暗い方にする幅・まぶたのふちをなめらかにする幅（黒目の半径に対する割合）
+function moveIris(img, eye, delta) {
+  const d = img.data; const W = img.width; const H = img.height; const lid = eye.lid; const c = eye.iris[0]; const R = eye.R;
+  const [dx, dy] = delta; if (Math.hypot(dx, dy) < 0.25) return null;
+  const Ri = R * 1.1; // 黒目のふちのにじみまで含めて動かす
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const [x, y] of lid) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const pad = 3; const bx = Math.max(0, Math.floor(x0 - pad)); const by = Math.max(0, Math.floor(y0 - pad));
+  const bw = Math.min(W, Math.ceil(x1 + pad)) - bx; const bh = Math.min(H, Math.ceil(y1 + pad)) - by;
+  if (bw <= 0 || bh <= 0) return null;
+  // まぶたの内側（1/0）と、そのふちをなめらかにしたもの（書き戻すときの混ぜ具合。ふちの 1 画素ほどは元のまま）
+  const P = new Uint8Array(bw * bh);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) P[y * bw + x] = inPoly(bx + x + 0.5, by + y + 0.5, lid) ? 1 : 0;
+  const Pf = new Float32Array(bw * bh); for (let i = 0; i < Pf.length; i++) Pf[i] = P[i];
+  const E = blur(Pf, bw, bh, 1, Math.max(1, Math.round(FEATHER * R))); for (let i = 0; i < E.length; i++) E[i] = smooth((E[i] - 0.35) / 0.5);
+  // 元の画素（Float32 の RGB）
+  const src = new Float32Array(bw * bh * 3);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) { const k = ((by + y) * W + bx + x) * 4; const o = (y * bw + x) * 3; src[o] = d[k]; src[o + 1] = d[k + 1]; src[o + 2] = d[k + 2]; }
+  // 行き先の画素ごとに、元の位置を決める（逆向きの写像）。動かしたあとの黒目の中は、そのまま (dx, dy) ずらして読む。
+  // 黒目の外（白目）は、黒目のふちからまぶたのふち（黒目の中心から見た向きに進んだ先）までの間で、ずらす量を 1 → 0 になだらかに減らす
+  // （白目が伸び縮みする）。まぶたのふちでは 0 なので、ふちの外とつながる
+  // まぶたのふちからの距離（内側の画素だけ）。ふちのそば（黒目の半径の 3〜4 割）は、元の画素と動かした画素の暗い方にする:
+  // AI のまぶたの線は実際のふちと 1〜2 画素ずれるので、ふちの内側に入っていたまつげ・アイラインを動かすと二重の線に見える。
+  // 暗い方なら、元のまつげの線は残り、黒目が来た所は黒目になる（白目の細い線が残らない）
+  const band = Math.max(1, BAND * R); const D = new Float32Array(bw * bh); const lp = lid.map(([x, y]) => [x - bx, y - by]);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    if (!P[y * bw + x]) continue; const X = x + 0.5; const Y = y + 0.5; let m = Infinity;
+    for (let i = 0; i < lp.length; i++) {
+      const [ax, ay] = lp[i]; const [qx, qy] = lp[(i + 1) % lp.length]; const vx = qx - ax; const vy = qy - ay; const l2 = vx * vx + vy * vy || 1e-6;
+      const t = Math.max(0, Math.min(1, ((X - ax) * vx + (Y - ay) * vy) / l2)); m = Math.min(m, Math.hypot(X - ax - vx * t, Y - ay - vy * t));
+    }
+    D[y * bw + x] = m;
+  }
+  const nc = [c[0] + dx - bx, c[1] + dy - by]; const out = new Float32Array(src); const tmp = [0, 0, 0];
+  const inside = (x, y) => { const ix = x | 0; const iy = y | 0; return ix >= 0 && iy >= 0 && ix < bw && iy < bh && P[iy * bw + ix]; };
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    if (!P[y * bw + x] && E[y * bw + x] <= 0) continue;
+    const X = x + 0.5; const Y = y + 0.5; const rx = X - nc[0]; const ry = Y - nc[1]; const r = Math.hypot(rx, ry);
+    let f = 1;
+    if (r > Ri) {
+      // 進む側の白目は、押しつぶさず、黒目といっしょにまぶたの下へすべり込む（実際の目もそう動く。まぶたのふちで切れる）。
+      // 反対側（黒目が離れた所）の白目は、ふちまでの間で伸ばして埋める
+      const ux = rx / r; const uy = ry / r; const dl = Math.hypot(dx, dy); const ahead = smooth(((ux * dx + uy * dy) / dl + 0.3) / 0.6);
+      if (ahead < 1) {
+        let g = 0; // この画素からまぶたのふちまでの距離（黒目の中心から見た向きに）
+        while (g < 6 * R && inside(X + ux * g, Y + uy * g)) g += 0.5;
+        f = ahead + (1 - ahead) * g / (r - Ri + g);
+      }
+    }
+    px3(src, bw, bh, X - dx * f - 0.5, Y - dy * f - 0.5, tmp); const o = (y * bw + x) * 3; out[o] = tmp[0]; out[o + 1] = tmp[1]; out[o + 2] = tmp[2];
+    const sb = smooth(D[y * bw + x] / band);
+    if (sb < 1 && src[o] + src[o + 1] + src[o + 2] < tmp[0] + tmp[1] + tmp[2]) for (let i = 0; i < 3; i++) out[o + i] = src[o + i] + (tmp[i] - src[o + i]) * sb;
+  }
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    const e = E[y * bw + x]; if (e <= 0) continue; const k = ((by + y) * W + bx + x) * 4; const o = (y * bw + x) * 3;
+    for (let i = 0; i < 3; i++) d[k + i] = d[k + i] + (out[o + i] - d[k + i]) * e;
+  }
+  return [dx, dy];
+}
+/**
+ * まぶたの中に白目が見えているか: 黒目のまわり（黒目の外）の明るい所（上から 15%）が、黒目より 1.4 倍以上明るい（暗い写真でも同じように判定できるよう、比で見る）。
+ * 黒目が目いっぱいで白目の画素がほとんどないときは、見えているとみなす
+ */
+function scleraVisible(img, lid, c, R) {
+  const d = img.data; const W = img.width; const H = img.height;
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const [x, y] of lid) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const out = []; let si = 0; let ni = 0;
+  for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) for (let x = Math.max(0, Math.floor(x0)); x < Math.min(W, Math.ceil(x1)); x++) {
+    // まぶたのふちのそば（まぶたの肌・まつげ）は外す: 目の中心から 1.3 倍に広げた点もまぶたの内側にある画素だけ
+    const ex = (lid[0][0] + lid[8][0]) / 2; const ey = (lid[4][1] + lid[12][1]) / 2;
+    if (!inPoly(ex + (x + 0.5 - ex) * 1.3, ey + (y + 0.5 - ey) * 1.3, lid)) continue;
+    const k = (y * W + x) * 4; const L = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2]; const r = Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1]);
+    if (r < 0.7 * R) { si += L; ni++; } else if (r > 1.1 * R) out.push(L);
+  }
+  if (!ni || out.length < 8) return true;
+  out.sort((a, b) => b - a); const scl = out.slice(0, Math.max(1, Math.round(out.length * 0.15))).reduce((a, v) => a + v, 0) / Math.max(1, Math.round(out.length * 0.15));
+  const iris = si / ni; return scl >= iris * 1.4 + 1;
+}
+/**
+ * 目線（両目）。eyes: 写真全体に対する 0〜1 の座標（{ lid, iris, pose }）、amt: カメラの方へ寄せる割合（1 で全部）、tune: [dx, dy] 微調整（黒目の半径に対する割合）
+ * カメラを見ている黒目の位置は、目頭と目尻の真ん中から、顔の向き（yaw）のぶん手前側へ寄った所（黒目の半径の 1.3 倍 × sin(yaw)。
+ * 集合写真などでカメラを見ている 30 人の顔で合わせた値。残りのずれは黒目の半径の 1 割ほど）。
+ * 両目は同じだけ動かす（2 つの目で測った動かす量の平均。片方のまぶたの点がずれていても、寄り目にならない）
+ */
+function gaze(img, op, at) {
+  const toP = (poly) => poly.map(([x, y]) => [x * at.W - at.ox, y * at.H - at.oy]);
+  for (const face of op.eyes || []) {
+    const eyes = []; let sx = 0; let sy = 0; let sR = 0; let sO = 0;
+    for (const e of face) {
+      const lid = toP(e.lid); const ir = toP(e.iris); const c = ir[0]; let R = 0; for (let i = 1; i < 5; i++) R += Math.hypot(ir[i][0] - c[0], ir[i][1] - c[1]) / 4;
+      if (R < 1.5) continue;
+      // 目の開き（目頭と目尻の真ん中で、上まぶたと下まぶたの間）。閉じかけの目（笑って細い・まばたき）は動かしても見えず、まぶたの点も当てにならないので飛ばす。
+      // 片目だけ少し細いときは両目とも動かす（片方だけ動かすと寄り目・離れ目になる）
+      const open = lid[4][1] - lid[12][1]; if (open < 0.7 * R) continue;
+      const yaw = e.pose?.[0] || 0;
+      const tx = (lid[0][0] + lid[8][0]) / 2 - 1.3 * R * Math.sin(yaw); const ty = (lid[4][1] + lid[12][1]) / 2 - 0.03 * R;
+      // 白目が見えない目（暗い所で目全体が黒くつぶれている・まぶたの点が目からずれている）は、黒目の位置が当てにならず、動かすと黒い影が広がるので、この顔は動かさない
+      if (!scleraVisible(img, lid, c, R)) { sx = NaN; break; }
+      eyes.push({ lid, iris: ir, R, open }); sx += tx - c[0]; sy += ty - c[1]; sR += R; sO += open / R;
+    }
+    if (!eyes.length || Number.isNaN(sx)) continue;
+    // 自動で動かす量は黒目の半径の 1.5 倍まで（それより大きいのは、顔の向きの推定がずれている。もっと動かしたいときは矢印で）
+    const n = eyes.length; const Rm = sR / n; let ax = sx / n; let ay = sy / n; const al = Math.hypot(ax, ay);
+    if (al > 1.5 * Rm) { ax *= 1.5 * Rm / al; ay *= 1.5 * Rm / al; }
+    // 笑って細くなった目（開きが黒目の直径より小さい）は、黒目の大半がまぶたに隠れていて、AI の黒目・まぶたの点がずれやすく、
+    // 大きく動かすと黒い影が目尻・目頭へはみ出すので、自動で動かす量を減らす（開き 0.9R で 0 → 1.4R で全部。足りなければ矢印で）
+    const k = smooth((sO / n - 0.9) / 0.5); ax *= k; ay *= k;
+    const delta = [ax * op.amt + (op.tune?.[0] || 0) * Rm, ay * op.amt + (op.tune?.[1] || 0) * Rm];
+    for (const e of eyes) moveIris(img, e, delta);
+  }
+}
+
 /** ブラシの形（中心からの距離 q 0〜1 → 動かす割合）。中ほどまでは全部動かし、縁に向かってなめらかに 0 に（尖った山だと輪郭がへこむ） */
 export const warpKernel = (q) => { if (q >= 1) return 0; const t = (1 - q * q); return t * t; };
 
@@ -886,7 +1015,8 @@ export const warpKernel = (q) => { if (q >= 1) return 0; const t = (1 - q * q); 
  * 色で混ぜ合わせない（背景を元の色に戻さない）ので、輪郭が透けたり二重になったりしない。
  * 返す物の seg(p0, p1, amt) で 1 区間を当て、書き換えた範囲 [x, y, w, h] を返す
  */
-export function warpStroke(img, rad, protect = null) {
+export function warpStroke(img, rad, protect = null, shape = null) {
+  const side = shape?.side || 1; // なぞる向きと直角の方向（輪郭に沿う向き）に、ブラシを何倍まで広げるか
   const W = img.width; const H = img.height; const d = img.data;
   let rx = 0; let ry = 0; let rw = 0; let rh = 0; let D = new Float32Array(0); let O = new Uint8ClampedArray(0); let maxD = 0;
   // ずらす量の地図 D（x, y の 2 つずつ）と、なぞる前の画素 O を持つ四角を、必要なだけ広げる
@@ -915,8 +1045,11 @@ export function warpStroke(img, rad, protect = null) {
       if (!dx && !dy) return null;
       // 1 区間で動かすのは半径の 2 割まで（速くなぞっても、画素がちぎれない）
       const lim = rad * 0.2; const len = Math.hypot(dx, dy); if (len > lim) { dx *= lim / len; dy *= lim / len; }
-      const x0 = Math.max(0, Math.floor(p1[0] - rad - 1)); const y0 = Math.max(0, Math.floor(p1[1] - rad - 1));
-      const x1 = Math.min(W, Math.ceil(p1[0] + rad + 2)); const y1 = Math.min(H, Math.ceil(p1[1] + rad + 2));
+      // 当てる範囲: なぞる向きに半径、直角の向きに半径 × side の楕円
+      const ux = dx / Math.hypot(dx, dy); const uy = dy / Math.hypot(dx, dy); const R = rad * side;
+      const hx = Math.hypot(rad * ux, R * uy); const hy = Math.hypot(rad * uy, R * ux);
+      const x0 = Math.max(0, Math.floor(p1[0] - hx - 1)); const y0 = Math.max(0, Math.floor(p1[1] - hy - 1));
+      const x1 = Math.min(W, Math.ceil(p1[0] + hx + 2)); const y1 = Math.min(H, Math.ceil(p1[1] + hy + 2));
       if (x1 <= x0 || y1 <= y0) return null;
       const m = Math.hypot(dx, dy); const pad = Math.ceil(m + maxD) + 2;
       grow(x0 - pad, y0 - pad, x1 + pad, y1 + pad);
@@ -933,8 +1066,9 @@ export function warpStroke(img, rad, protect = null) {
       // 今の絵の中で、(x, y) にある物が人物の側かどうか（なぞる前の地図を、動かした分だけずらした所で見る）
       const pw = (x, y) => protect(x - tAt(x, y, 0), y - tAt(x, y, 1));
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-        const q = Math.hypot(x - p1[0], y - p1[1]) / rad; if (q >= 1) continue;
-        let f = warpKernel(q); // 中心ほど大きく動かす
+        const vx = x - p1[0]; const vy = y - p1[1];
+        const q = side === 1 ? Math.hypot(vx, vy) / rad : Math.hypot((vx * ux + vy * uy) / rad, (vy * ux - vx * uy) / R); if (q >= 1) continue;
+        let f = shape?.cos ? 0.5 + 0.5 * Math.cos(Math.PI * q) : warpKernel(q); // 中心ほど大きく動かす
         if (protect) {
           // 動かしてよいのは、人物の側にある画素と、人物の画素を受け取る（人物を外へ広げる先の）画素。それ以外の背景は動かさない
           const g = Math.max(pw(x, y), pw(x - dx * f, y - dy * f)); if (g <= 0) continue;
@@ -997,10 +1131,16 @@ export function warpProtect(pm, rad, at, p0, band = WARP_BAND) {
  */
 export const WARP_BAND = 0.4;
 export const WARP_MAP_N = 128;
+/**
+ * 形を整える（4 版）のブラシの形。2・3 版は丸く、中心だけが強く動く尖った山（(1 − q²)²）だったので、輪郭を押すと
+ * ブラシの幅の所だけが角ばってへこみ、顔の線が折れて見えた。4 版は、なぞる向きと直角の向き（輪郭に沿う向き）に 1.7 倍の楕円にして、
+ * なだらかな山（cos）にする。輪郭が長い範囲でなめらかに動き、へこみ・角ができない
+ */
+export const WARP_SHAPE = { side: 1.7, cos: true };
 
 /** 人物の地図を作る範囲（なぞり始めのまわり。写真全体に対する 0〜1 の [x0, y0, x1, y1]） */
 export function warpProtectBox(p0, r, W, H) {
-  const S = Math.min(W, H); const h = r * S * 3;
+  const S = Math.min(W, H); const h = r * S * 4; // 楕円（直角の向きに 1.7 倍）でなぞっても、地図の外に出ないように
   return [Math.max(0, p0[0] * W - h) / W, Math.max(0, p0[1] * H - h) / H, Math.min(W, p0[0] * W + h) / W, Math.min(H, p0[1] * H + h) / H];
 }
 
@@ -1099,8 +1239,8 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
     if (op.v >= 2) {
-      // 2 版・3 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅だけが違う）
-      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1));
+      // 2〜4 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅・ブラシの形だけが違う）
+      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1), op.v >= 4 ? WARP_SHAPE : null);
       for (let i = 1; i < pts.length; i++) st.seg(pts[i - 1], pts[i], amt);
       return;
     }
@@ -1108,6 +1248,7 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
     for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt, guard);
     return;
   }
+  if (op.type === 'gaze') { gaze(img, op, at); return; }
   if ((op.type === 'lip' || op.type === 'teeth') && op.whole && op.lips?.length) {
     // 範囲を自動で: なぞった所は目印。AI で見つけた唇（上唇・下唇）・歯の全体に当てる
     const mk = lipBoxMask(img, op.lips, at); if (!mk) return;
@@ -1138,6 +1279,11 @@ export function brushBounds(op, W, H) {
   if ((op.type === 'lip' || op.type === 'teeth') && op.whole) for (const l of op.lips || []) {
     const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.5 + 8;
     for (const [x, y] of l.outer) { x0 = Math.min(x0, x * W - m); y0 = Math.min(y0, y * H - m); x1 = Math.max(x1, x * W + m); y1 = Math.max(y1, y * H + m); }
+  }
+  // 目線は、両目のまわり（黒目の 2 つ分ほど外まで）を読み出す
+  if (op.type === 'gaze') for (const f of op.eyes || []) for (const e of f) {
+    const R = Math.hypot(e.iris[1][0] - e.iris[0][0], e.iris[1][1] - e.iris[0][1]) * Math.max(W, H) * 2.5 + 6;
+    for (const [x, y] of e.lid) { x0 = Math.min(x0, x * W - R); y0 = Math.min(y0, y * H - R); x1 = Math.max(x1, x * W + R); y1 = Math.max(y1, y * H + R); }
   }
   // 鼻筋: 鼻の点ぜんぶと、その高さの 4 割ほど外まで
   if (op.type === 'nose' && op.nose) {
