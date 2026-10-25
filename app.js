@@ -9,7 +9,7 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
+import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, WARP_SHAPE, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
 import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg } from './skinseg.js';
 import { compose, layout } from './compose.js';
@@ -1589,7 +1589,7 @@ function fxAction(tool, c, p) {
     const e0 = E;
     live.ready = personMap(E.srcData, warpProtectBox(pts[0], r, E.W, E.H), WARP_MAP_N).then((pm) => {
       if (E !== e0) return; live.pm = pm || undefined;
-      live.stroke = warpStroke(E.srcData, rp, warpProtect(live.pm, rp, { W: E.W, H: E.H, ox: 0, oy: 0 }, p0));
+      live.stroke = warpStroke(E.srcData, rp, warpProtect(live.pm, rp, { W: E.W, H: E.H, ox: 0, oy: 0 }, p0), WARP_SHAPE);
       live.apply();
     });
     live.apply = () => {
@@ -1616,7 +1616,7 @@ function fxAction(tool, c, p) {
       const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
-        op.v = 3;
+        op.v = 4;
         const e0 = E;
         const finish = () => {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'warp');
@@ -1672,7 +1672,7 @@ function fxAction(tool, c, p) {
     },
     cancel: () => {
       E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf);
-      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 3, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
+      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 4, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
       drawHandles();
     },
   };
