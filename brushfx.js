@@ -950,6 +950,26 @@ function moveIris(img, eye, delta) {
   return [dx, dy];
 }
 /**
+ * まぶたの中に白目が見えているか: 黒目のまわり（黒目の外）の明るい所（上から 15%）が、黒目より 1.4 倍以上明るい（暗い写真でも同じように判定できるよう、比で見る）。
+ * 黒目が目いっぱいで白目の画素がほとんどないときは、見えているとみなす
+ */
+function scleraVisible(img, lid, c, R) {
+  const d = img.data; const W = img.width; const H = img.height;
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const [x, y] of lid) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const out = []; let si = 0; let ni = 0;
+  for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) for (let x = Math.max(0, Math.floor(x0)); x < Math.min(W, Math.ceil(x1)); x++) {
+    // まぶたのふちのそば（まぶたの肌・まつげ）は外す: 目の中心から 1.3 倍に広げた点もまぶたの内側にある画素だけ
+    const ex = (lid[0][0] + lid[8][0]) / 2; const ey = (lid[4][1] + lid[12][1]) / 2;
+    if (!inPoly(ex + (x + 0.5 - ex) * 1.3, ey + (y + 0.5 - ey) * 1.3, lid)) continue;
+    const k = (y * W + x) * 4; const L = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2]; const r = Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1]);
+    if (r < 0.7 * R) { si += L; ni++; } else if (r > 1.1 * R) out.push(L);
+  }
+  if (!ni || out.length < 8) return true;
+  out.sort((a, b) => b - a); const scl = out.slice(0, Math.max(1, Math.round(out.length * 0.15))).reduce((a, v) => a + v, 0) / Math.max(1, Math.round(out.length * 0.15));
+  const iris = si / ni; return scl >= iris * 1.4 + 1;
+}
+/**
  * 目線（両目）。eyes: 写真全体に対する 0〜1 の座標（{ lid, iris, pose }）、amt: カメラの方へ寄せる割合（1 で全部）、tune: [dx, dy] 微調整（黒目の半径に対する割合）
  * カメラを見ている黒目の位置は、目頭と目尻の真ん中から、顔の向き（yaw）のぶん手前側へ寄った所（黒目の半径の 1.3 倍 × sin(yaw)。
  * 集合写真などでカメラを見ている 30 人の顔で合わせた値。残りのずれは黒目の半径の 1 割ほど）。
@@ -958,7 +978,7 @@ function moveIris(img, eye, delta) {
 function gaze(img, op, at) {
   const toP = (poly) => poly.map(([x, y]) => [x * at.W - at.ox, y * at.H - at.oy]);
   for (const face of op.eyes || []) {
-    const eyes = []; let sx = 0; let sy = 0;
+    const eyes = []; let sx = 0; let sy = 0; let sR = 0; let sO = 0;
     for (const e of face) {
       const lid = toP(e.lid); const ir = toP(e.iris); const c = ir[0]; let R = 0; for (let i = 1; i < 5; i++) R += Math.hypot(ir[i][0] - c[0], ir[i][1] - c[1]) / 4;
       if (R < 1.5) continue;
@@ -967,10 +987,18 @@ function gaze(img, op, at) {
       const open = lid[4][1] - lid[12][1]; if (open < 0.7 * R) continue;
       const yaw = e.pose?.[0] || 0;
       const tx = (lid[0][0] + lid[8][0]) / 2 - 1.3 * R * Math.sin(yaw); const ty = (lid[4][1] + lid[12][1]) / 2 - 0.03 * R;
-      eyes.push({ lid, iris: ir, R, open }); sx += (tx - c[0]) * op.amt + (op.tune?.[0] || 0) * R; sy += (ty - c[1]) * op.amt + (op.tune?.[1] || 0) * R;
+      // 白目が見えない目（暗い所で目全体が黒くつぶれている・まぶたの点が目からずれている）は、黒目の位置が当てにならず、動かすと黒い影が広がるので、この顔は動かさない
+      if (!scleraVisible(img, lid, c, R)) { sx = NaN; break; }
+      eyes.push({ lid, iris: ir, R, open }); sx += tx - c[0]; sy += ty - c[1]; sR += R; sO += open / R;
     }
-    if (!eyes.length) continue;
-    const delta = [sx / eyes.length, sy / eyes.length];
+    if (!eyes.length || Number.isNaN(sx)) continue;
+    // 自動で動かす量は黒目の半径の 1.5 倍まで（それより大きいのは、顔の向きの推定がずれている。もっと動かしたいときは矢印で）
+    const n = eyes.length; const Rm = sR / n; let ax = sx / n; let ay = sy / n; const al = Math.hypot(ax, ay);
+    if (al > 1.5 * Rm) { ax *= 1.5 * Rm / al; ay *= 1.5 * Rm / al; }
+    // 笑って細くなった目（開きが黒目の直径より小さい）は、黒目の大半がまぶたに隠れていて、AI の黒目・まぶたの点がずれやすく、
+    // 大きく動かすと黒い影が目尻・目頭へはみ出すので、自動で動かす量を減らす（開き 0.9R で 0 → 1.4R で全部。足りなければ矢印で）
+    const k = smooth((sO / n - 0.9) / 0.5); ax *= k; ay *= k;
+    const delta = [ax * op.amt + (op.tune?.[0] || 0) * Rm, ay * op.amt + (op.tune?.[1] || 0) * Rm];
     for (const e of eyes) moveIris(img, e, delta);
   }
 }

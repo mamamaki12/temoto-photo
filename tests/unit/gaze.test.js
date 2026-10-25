@@ -54,3 +54,11 @@ test('目線: 閉じかけの目（開きが黒目の半径の 7 割より小さ
   const [x, y, w, h] = brushBounds(op(), W, H);
   assert.ok(x <= CX - EW - R && x + w >= CX + EW + R && y <= CY - EH - R && y + h >= CY + EH + R);
 });
+
+test('目線: 白目が見えない目（暗くて目全体が黒くつぶれている）は動かさない', () => {
+  const img = eyeImage(); const d = img.data;
+  for (let i = 0; i < d.length; i += 4) if (d[i] === WHITE[0]) { d[i] = 60; d[i + 1] = 45; d[i + 2] = 40; } // 白目も黒目と同じくらい暗い
+  const before = new Uint8ClampedArray(d);
+  applyBrush(img, op());
+  assert.deepEqual([...img.data], [...before]);
+});
