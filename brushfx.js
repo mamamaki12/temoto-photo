@@ -886,7 +886,8 @@ export const warpKernel = (q) => { if (q >= 1) return 0; const t = (1 - q * q); 
  * 色で混ぜ合わせない（背景を元の色に戻さない）ので、輪郭が透けたり二重になったりしない。
  * 返す物の seg(p0, p1, amt) で 1 区間を当て、書き換えた範囲 [x, y, w, h] を返す
  */
-export function warpStroke(img, rad, protect = null) {
+export function warpStroke(img, rad, protect = null, shape = null) {
+  const side = shape?.side || 1; // なぞる向きと直角の方向（輪郭に沿う向き）に、ブラシを何倍まで広げるか
   const W = img.width; const H = img.height; const d = img.data;
   let rx = 0; let ry = 0; let rw = 0; let rh = 0; let D = new Float32Array(0); let O = new Uint8ClampedArray(0); let maxD = 0;
   // ずらす量の地図 D（x, y の 2 つずつ）と、なぞる前の画素 O を持つ四角を、必要なだけ広げる
@@ -915,8 +916,11 @@ export function warpStroke(img, rad, protect = null) {
       if (!dx && !dy) return null;
       // 1 区間で動かすのは半径の 2 割まで（速くなぞっても、画素がちぎれない）
       const lim = rad * 0.2; const len = Math.hypot(dx, dy); if (len > lim) { dx *= lim / len; dy *= lim / len; }
-      const x0 = Math.max(0, Math.floor(p1[0] - rad - 1)); const y0 = Math.max(0, Math.floor(p1[1] - rad - 1));
-      const x1 = Math.min(W, Math.ceil(p1[0] + rad + 2)); const y1 = Math.min(H, Math.ceil(p1[1] + rad + 2));
+      // 当てる範囲: なぞる向きに半径、直角の向きに半径 × side の楕円
+      const ux = dx / Math.hypot(dx, dy); const uy = dy / Math.hypot(dx, dy); const R = rad * side;
+      const hx = Math.hypot(rad * ux, R * uy); const hy = Math.hypot(rad * uy, R * ux);
+      const x0 = Math.max(0, Math.floor(p1[0] - hx - 1)); const y0 = Math.max(0, Math.floor(p1[1] - hy - 1));
+      const x1 = Math.min(W, Math.ceil(p1[0] + hx + 2)); const y1 = Math.min(H, Math.ceil(p1[1] + hy + 2));
       if (x1 <= x0 || y1 <= y0) return null;
       const m = Math.hypot(dx, dy); const pad = Math.ceil(m + maxD) + 2;
       grow(x0 - pad, y0 - pad, x1 + pad, y1 + pad);
@@ -933,8 +937,9 @@ export function warpStroke(img, rad, protect = null) {
       // 今の絵の中で、(x, y) にある物が人物の側かどうか（なぞる前の地図を、動かした分だけずらした所で見る）
       const pw = (x, y) => protect(x - tAt(x, y, 0), y - tAt(x, y, 1));
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-        const q = Math.hypot(x - p1[0], y - p1[1]) / rad; if (q >= 1) continue;
-        let f = warpKernel(q); // 中心ほど大きく動かす
+        const vx = x - p1[0]; const vy = y - p1[1];
+        const q = side === 1 ? Math.hypot(vx, vy) / rad : Math.hypot((vx * ux + vy * uy) / rad, (vy * ux - vx * uy) / R); if (q >= 1) continue;
+        let f = shape?.cos ? 0.5 + 0.5 * Math.cos(Math.PI * q) : warpKernel(q); // 中心ほど大きく動かす
         if (protect) {
           // 動かしてよいのは、人物の側にある画素と、人物の画素を受け取る（人物を外へ広げる先の）画素。それ以外の背景は動かさない
           const g = Math.max(pw(x, y), pw(x - dx * f, y - dy * f)); if (g <= 0) continue;
@@ -997,10 +1002,16 @@ export function warpProtect(pm, rad, at, p0, band = WARP_BAND) {
  */
 export const WARP_BAND = 0.4;
 export const WARP_MAP_N = 128;
+/**
+ * 形を整える（4 版）のブラシの形。2・3 版は丸く、中心だけが強く動く尖った山（(1 − q²)²）だったので、輪郭を押すと
+ * ブラシの幅の所だけが角ばってへこみ、顔の線が折れて見えた。4 版は、なぞる向きと直角の向き（輪郭に沿う向き）に 1.7 倍の楕円にして、
+ * なだらかな山（cos）にする。輪郭が長い範囲でなめらかに動き、へこみ・角ができない
+ */
+export const WARP_SHAPE = { side: 1.7, cos: true };
 
 /** 人物の地図を作る範囲（なぞり始めのまわり。写真全体に対する 0〜1 の [x0, y0, x1, y1]） */
 export function warpProtectBox(p0, r, W, H) {
-  const S = Math.min(W, H); const h = r * S * 3;
+  const S = Math.min(W, H); const h = r * S * 4; // 楕円（直角の向きに 1.7 倍）でなぞっても、地図の外に出ないように
   return [Math.max(0, p0[0] * W - h) / W, Math.max(0, p0[1] * H - h) / H, Math.min(W, p0[0] * W + h) / W, Math.min(H, p0[1] * H + h) / H];
 }
 
@@ -1099,8 +1110,8 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
     if (op.v >= 2) {
-      // 2 版・3 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅だけが違う）
-      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1));
+      // 2〜4 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅・ブラシの形だけが違う）
+      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1), op.v >= 4 ? WARP_SHAPE : null);
       for (let i = 1; i < pts.length; i++) st.seg(pts[i - 1], pts[i], amt);
       return;
     }

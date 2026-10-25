@@ -1,4 +1,4 @@
-// 形を整える（2 版・3 版）: ずらす量を重ねて 1 回だけ読み直す。人物の地図で背景を守る
+// 形を整える（2〜4 版）: ずらす量を重ねて 1 回だけ読み直す。人物の地図で背景を守る
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyBrush, brushBounds } from '../../brushfx.js';
@@ -19,7 +19,7 @@ const pm = (n = 32) => { let s = ''; for (let j = 0; j < n; j++) for (let i = 0;
 const run = (op, at) => { const im = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(im, op, at); return im.data; };
 const bgDiff = (d, x0 = 400) => { let m = 0; for (let y = 150; y < 250; y++) for (let x = x0; x < x0 + 100; x++) { const k = (y * W + x) * 4; m = Math.max(m, Math.abs(d[k] - base[k])); } return m; };
 const edge = (d, y = 200) => { for (let x = 150; x < 450; x++) { const k = (y * W + x) * 4; if (d[k + 2] > d[k]) return x; } return -1; }; // 背景（青みが赤より強い）が始まる所
-const push = { type: 'warp', v: 3, pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1, pm: pm() };
+const push = { type: 'warp', v: 4, pts: Array.from({ length: 13 }, (_, i) => [(330 - i * 4) / W, 200 / H]), r: 90 / H, amt: 1, pm: pm() };
 
 test('人物の地図があれば、押した所の背景（境目から半径以上離れた縞）はそのまま。人物の側は縮む（境目が左へ）', () => {
   const kept = run(push); const free = run({ ...push, pm: undefined });
@@ -49,8 +49,18 @@ test('何回なぞっても、人物の模様がぼけない（点の濃さが�
 });
 
 test('3 版は、人物の外で背景を動かす帯が狭い（輪郭から半径の 0.4 倍より外の柱は動かない）。保存済みの 2 版は今までどおり', () => {
-  const v3 = run(push); const v2 = run({ ...push, v: 2 });
+  const v3 = run({ ...push, v: 3 }); const v2 = run({ ...push, v: 2 });
   assert.ok(bgDiff(v3, 300 + 90 * 0.45) < 6, `3 版: 帯の外の縞は変わらない: ${bgDiff(v3, 300 + 90 * 0.45)}`);
   assert.ok(bgDiff(v2, 300 + 90 * 0.45) > 20, '2 版は半径 1 つ分まで背景も動く（保存した編集の見た目を変えない）');
   assert.ok(edge(v3) < 296 && edge(v3) > 0, `境目は左へ: ${edge(v3)}`);
+});
+
+test('4 版は、押した輪郭が角ばらずになめらかに動く（ブラシの幅でへこまない）。保存済みの 3 版は今までどおり', () => {
+  const prof = (d) => Array.from({ length: 41 }, (_, i) => edge(d, 100 + i * 5)); // 境目の位置を縦に並べる
+  const curve = (e) => Math.max(...e.slice(2, -2).map((v, i) => Math.abs(e[i] - 2 * e[i + 2] + e[i + 4]))); // 曲がり方の強さ
+  const e4 = prof(run(push)); const e3 = prof(run({ ...push, v: 3 }));
+  assert.ok(Math.min(...e4) < 296, `4 版も境目は左へ: ${Math.min(...e4)}`);
+  assert.ok(curve(e4) < curve(e3), `4 版の方がなめらか: ${curve(e4)} < ${curve(e3)}`);
+  const moved = (e) => e.filter((v) => v < 299).length; // 動いた行の数（輪郭に沿って広く動くか）
+  assert.ok(moved(e4) > moved(e3), `4 版の方が輪郭に沿って広く動く: ${moved(e4)} > ${moved(e3)}`);
 });
