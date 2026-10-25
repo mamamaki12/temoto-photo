@@ -22,7 +22,10 @@ const LEVELS = 3;
 // 平らな所（カーテン・背景）は少なく戻す。平らな所に戻すと、それはただのノイズに見える
 const KEEP_FLAT = 0.1;
 const KEEP_TEXTURE = 0.6;
-const FINE_KEEP = 0.6; // 取った成分のうち、ごく細かい粒（肌のきめ）を戻す割合
+// 取った成分のうち、ごく細かい粒（1〜2 画素。肌のきめ・生地の目）を戻す割合。人物（肌・衣装・髪）は全部、背景（壁・カーテン）は FINE_BACK だけ
+// （ユーザーの声「元の写真にあったきめ細やかさは残したい。ノイズはもちろん消す」。にじんだ大きな粒・色のムラは戻さないので、ノイズのムラは残らない）
+const FINE_KEEP = 1;
+const FINE_BACK = 0.35;
 // ノイズの代わりに足す、細かい粒（色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
 const FILM_GRAIN = 1.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
@@ -487,12 +490,18 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
     // 取った成分のうち、1〜2 画素のごく細かい粒（肌のきめ）。にじんだ大きな粒（ノイズのムラ）は戻さない
     for (let i = 0; i < Y.length; i++) res[i] = Y0[i] - Y[i];
     const fine = boxBlur(boxBlur(res, w, h, 1), w, h, 1); for (let i = 0; i < Y.length; i++) fine[i] = res[i] - fine[i];
-    for (let i = 0; i < Y.length; i++) {
-      const s = Math.max(noiseFloor(Y[i]), noiseAt(profile[0], Y[i])); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
-      const kk = (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
-      // 細かい粒は多めに戻す。真っ暗に近い所（髪・背景の影）は戻さない（黒い点に見える）。とび出た点は戻さない（ノイズの量の 1.5 倍で切る）
-      const f = Math.max(0, FINE_KEEP * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
-      Y[i] += res[i] * kk + Math.min(1.5 * s, Math.max(-1.5 * s, fine[i])) * f;
+    const pm = tone && tone.person; const px = pm ? pm.w / at.fullW : 0; const py = pm ? pm.h / at.fullH : 0;
+    for (let y = 0, i = 0; y < h; y++) {
+      const gy = (at.y0 + y + 0.5) * py - 0.5;
+      for (let x = 0; x < w; x++, i++) {
+        const s = Math.max(noiseFloor(Y[i]), noiseAt(profile[0], Y[i])); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
+        const kk = (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
+        // 細かい粒は戻す（人物は全部、背景は少し。人物の地図がなければその間）。真っ暗に近い所（髪・背景の影）は戻さない（黒い点に見える）。
+        // とび出た点は戻さない（ノイズの量の 1.5 倍で切る）
+        const p = pm ? sampleGrid(pm.m, pm.w, pm.h, (x + 0.5) * px - 0.5, gy) : 0.5;
+        const f = Math.max(0, FINE_KEEP * (FINE_BACK + (1 - FINE_BACK) * p) * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
+        Y[i] += res[i] * kk + Math.min(1.5 * s, Math.max(-1.5 * s, fine[i])) * f;
+      }
     }
     sharpenDetail(Y, w, h, profile, nr, tone ? tone.hiY : HI_Y);
   }
