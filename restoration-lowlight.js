@@ -565,6 +565,9 @@ const SHARP_FINE = 0.8; // 細かい輪郭の強さ
 const SHARP_MID = 5; // 中くらいの立体感の強さ
 const SHARP_MID_R = 4;
 const SHARP_OVER = 0.15; // まわりの最小〜最大の幅の何割まではみ出してよいか
+// 中くらいの立体感で変えてよい明るさの割合（その画素の明るさの何割まで）。暗い所の小さな黒い部分（瞳・鼻の穴・口の端）は、
+// 少し暗くしただけでも明るくすると真っ黒につぶれ、白目は白く浮く（IMG_9263・9365 の目）
+const SHARP_MID_CAP = 0.1;
 const HI_Y = 0.77; // 明るさを変えないときの「明るい所」（輝度）
 function sharpenDetail(Y, w, h, profile, nr, hiY) {
   const amt = Math.min(1, nr); const n = w * h;
@@ -579,7 +582,8 @@ function sharpenDetail(Y, w, h, profile, nr, hiY) {
     const t1 = gate(Math.sqrt(g1[i]), noiseAt(profile[0], b1[i]), 0.8, 2, b1[i], 0.35);
     const t2 = gate(Math.sqrt(g2[i]), noiseAt(profile[1], b2[i]), 0.7, 1.5, b2[i], 0.5);
     const ph = Math.max(0.1, Math.min(1, (hiY - hi[i]) / (0.5 * hiY)));
-    const v = Y[i] + amt * ph * (SHARP_FINE * t1 * (Y[i] - b1[i]) + SHARP_MID * t2 * (b1[i] - b2[i]));
+    const c = SHARP_MID_CAP * Y[i]; const mid = Math.min(c, Math.max(-c, SHARP_MID * t2 * (b1[i] - b2[i])));
+    const v = Y[i] + amt * ph * (SHARP_FINE * t1 * (Y[i] - b1[i]) + mid);
     const o = (hi[i] - lo[i]) * SHARP_OVER;
     Y[i] = Math.min(hi[i] + o, Math.max(lo[i] - o, v));
   }

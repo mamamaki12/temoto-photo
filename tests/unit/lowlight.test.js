@@ -181,3 +181,19 @@ test('lowlight: 暗い所のやわらかい輪郭が、ノイズを取ったあ�
   // 前は 0.27 画素
   assert.ok(wig / (pos.length - 1) < 0.255, `輪郭がガタガタ: 1 行ごとに平均 ${(wig / (pos.length - 1)).toFixed(3)} 画素ずれる`);
 });
+
+test('lowlight: 暗い所の小さな黒い部分（瞳・鼻の穴）は、くっきりさせるときに暗くしすぎない（明るくすると真っ黒につぶれる）', () => {
+  const w = 160; const h = 160; const rand = randomNormal(45);
+  // 肌（30/255）の中に、半径 4 画素の暗い丸（12/255）を 40 画素おきに置く。くっきりさせない場合（ノイズなしで明るさだけ）と比べる
+  const eye = (x, y) => ((x % 40) - 20) ** 2 + ((y % 40) - 20) ** 2 <= 16;
+  const data = rgba(w, h, (x, y) => { const v = (eye(x, y) ? 12 : 30) + 0.8 * rand(); return [v, v, v]; });
+  const flat = rgba(w, h, (x, y) => { const v = eye(x, y) ? 12 : 30; return [v, v, v]; });
+  const profile = measureNoise(rgba(w, h, (x, y) => { const v = 30 + 0.8 * rand() + (y > 80 ? 40 : 0); return [v, v, v]; }), w, h);
+  const tone = planTone({ width: w, height: h, data }, 50);
+  const out = whole(data, w, h, { nr: 1, profile, tone, grain: false });
+  const ref = whole(flat, w, h, { nr: 0, profile, tone, grain: false });
+  let d = 0; let n = 0;
+  for (let y = 20; y < h; y += 40) for (let x = 20; x < w; x += 40) { d += ref[(y * w + x) * 4 + 1] - out[(y * w + x) * 4 + 1]; n++; }
+  // 前は 13 階調暗くなった
+  assert.ok(d / n < 6, `暗い丸が ${(d / n).toFixed(1)} 階調暗くなった`);
+});
