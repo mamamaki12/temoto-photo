@@ -88,3 +88,24 @@ test('lowlight: 明るくしても白は飛ばさず、色の順番（赤 > 緑 
   assert.ok(white.every((v) => v < 255) || white[2] < 255, `白に階調が残る ${white}`);
   assert.ok(tone.gain > 1 && tone.gain <= 16);
 });
+
+test('lowlight: ノイズを取ったあとに残る小さな点は消し、細い線と光の点は残す', () => {
+  const w = 160; const h = 160; const rand = randomNormal(11);
+  const raw = new Float32Array(w * h).map(() => rand());
+  const grain = boxBlur(raw, w, h, 1); // JPEG でにじんだような 2〜3 画素の粒。標準偏差 3/255
+  const extra = (x, y) => {
+    if (Math.abs(x - 40) <= 1 && Math.abs(y - 40) <= 1) return x === 40 || y === 40 ? 14 : 8; // 3×3 の点（ノイズの約 4 倍）
+    if (x === 100 && y >= 20 && y < 140) return 12; // 1 画素の細い線（髪・糸）
+    const r = Math.hypot(x - 70, y - 120); if (r < 3.5) return 90 * Math.exp(-r * r / 4); // 光の点（ティアラ・目の光）。中心はノイズの 30 倍
+    return 0;
+  };
+  const data = rgba(w, h, (x, y) => { const v = 60 + 9 * grain[y * w + x] + extra(x, y); return [v, v, v]; });
+  const profile = measureNoise(data, w, h);
+  const out = whole(data, w, h, { nr: 1, profile, tone: null });
+  const Y = (x, y) => out[(y * w + x) * 4 + 1];
+  const around = (x, y) => { const v = []; for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) if (Math.max(Math.abs(dx), Math.abs(dy)) >= 4) v.push(Y(x + dx, y + dy)); v.sort((a, b) => a - b); return v[v.length >> 1]; };
+  let line = 0; for (let y = 30; y < 130; y++) line += Y(100, y) - (Y(96, y) + Y(104, y)) / 2;
+  assert.ok(Y(40, 40) - around(40, 40) < 4, `点が残っている: ${Y(40, 40)} / まわり ${around(40, 40)}`);
+  assert.ok(line / 100 > 6, `細い線が薄くなった: ${(line / 100).toFixed(1)}`);
+  assert.ok(Y(70, 120) - around(70, 120) > 60, `光の点が消えた: ${Y(70, 120)}`);
+});

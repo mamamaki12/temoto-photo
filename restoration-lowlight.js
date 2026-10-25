@@ -196,7 +196,8 @@ function nlm(ch, sig, w, h, { R, r = 2, hh = 1, onProgress = () => {} }) {
  * ぽつんと飛び出した点（明るい・暗い小さな点）を消す。似た模様が見つからないので Non-Local Means では消えずに、
  * 明るくすると目立つ。高感度の点は JPEG で 2〜3 画素ににじんでいるので、
  * 1 画素の点は元の大きさで、2〜3 画素の点は半分に縮めた絵で探す。
- * まわり 8 画素のどれよりも、ノイズの 3 倍以上はずれているときだけ直す（細い線や光の点は、となりにも同じ明るさがあるので残る）
+ * まわり 8 画素のどれよりも、ノイズの 3 倍以上はずれているときだけ直す（細い線や光の点は、となりにも同じ明るさがあるので残る）。
+ * まわりよりノイズの SPOT_MAX 倍以上明るい点は、2〜3 画素の小さな光の点（目の光など）なので残す
  */
 function removeSpeckles(ch, w, h, profile) {
   const [Y, Cb, Cr] = ch; const nb = new Float32Array(8);
@@ -211,6 +212,8 @@ function removeSpeckles(ch, w, h, profile) {
         nb.sort();
         if (c === 0) med = (nb[3] + nb[4]) / 2;
         const t = (c === 0 ? 3 : 4) * noiseAt(bins, c === 0 ? nb[4] : chs[0][i]); const v = img[i];
+        // ノイズよりずっと明るい点は、光の点（ティアラ・目の光）なので残す
+        if (c === 0 && v - med > SPOT_MAX * t / 3) { hit = false; break; }
         if (v > nb[7] + t || v < nb[0] - t) hit = true;
       }
       if (hit) hits.push(x, y, med);
@@ -234,6 +237,50 @@ function removeSpeckles(ch, w, h, profile) {
   const two = find(ch.map((c) => down2(c, w, h)), w2, h2, profile[1]);
   // 半分の大きさの 1 画素 = 元の 2×2。にじみの分、まわり 1 画素も含めて 4×4 を直す
   for (let j = 0; j < two.length; j += 3) fill(two[j] * 2 - 1, two[j + 1] * 2 - 1, 4, two[j + 2]);
+}
+
+/**
+ * ノイズを取ったあとに残った小さな点（2〜4 画素の、明るい・暗い点）を消す。
+ * 高感度の粒は JPEG で 2〜4 画素の塊やすじになり、Non-Local Means では似た模様が見つからずにそのまま残る。明るくすると目立つ。
+ * 半径 2 の輪（16 画素）の中央値より、ノイズの量と輪のばらつきに比べてはっきり明るい（暗い）画素を、輪の明るさに寄せる。
+ * - 細い線（髪・レースの糸）は残す: 向かい合う 2 画素がどちらも中心に近い組があれば、線が中心を通っている
+ * - 光の点（ティアラ・ネックレス・目の光）は残す: ずれがノイズの SPOT_MAX 倍より大きいものは直さない
+ * 元の大きさで 1〜3 画素の点を、半分の大きさで 2〜4 画素の点を探す。Y0（ノイズ除去の前）も同じ値にして、きめを戻すときに点が戻らないようにする
+ */
+const SPOT_K = 1; // ノイズの量の何倍ずれたら点とみなすか（強さ 1 のとき）
+const SPOT_IQR = 0.7; // 輪のばらつき（四分位範囲）の何倍を足すか（模様のある所では点とみなしにくく）
+const SPOT_MAX = 8;
+function removeSpots(Y, Y0, w, h, profile, nr) {
+  const ring = new Float32Array(16); const k = SPOT_K / Math.max(0.25, nr);
+  const pass = (img, iw, ih, s, bins) => {
+    const RING = [[-2, -2], [-1, -2], [0, -2], [1, -2], [2, -2], [2, -1], [2, 0], [2, 1]].map(([dx, dy]) => dy * iw + dx); // 残りの 8 画素は向かい側
+    const fixes = [];
+    for (let y = 2; y < ih - 2; y++) for (let x = 2; x < iw - 2; x++) {
+      const i = y * iw + x; const v = img[i];
+      // 向かい合う 2 画素の組ごとに、中心から遠い方の明るさを比べる（lo: 明るい点を調べるとき、hi: 暗い点のとき）
+      let lo = -Infinity; let hi = Infinity;
+      for (let j = 0; j < 8; j++) {
+        const a = img[i + RING[j]]; const c = img[i - RING[j]]; ring[j] = a; ring[j + 8] = c;
+        lo = Math.max(lo, Math.min(a, c)); hi = Math.min(hi, Math.max(a, c));
+      }
+      const sg = noiseAt(bins, v); const t0 = k * sg;
+      if (v - lo <= t0 / 2 && hi - v <= t0 / 2) continue;
+      ring.sort(); const med = (ring[7] + ring[8]) / 2;
+      const d = v - med; const ad = Math.abs(d); const t = t0 + SPOT_IQR * (ring[12] - ring[3]);
+      // 線なら、どこかの組の 2 画素がどちらも、中心と中央値の中ほどより中心側にある
+      if (ad > t && ad < SPOT_MAX * sg && (d > 0 ? lo < med + d / 2 : hi > med + d / 2)) fixes.push(x, y, med, d > 0 ? t / 2 : -t / 2, ad);
+    }
+    // 点とそのまわり 1 画素（にじみ）のうち、同じ向きにずれた画素を直す（点よりずっと明るい・暗い画素は、となりの光の点なので残す）
+    for (let j = 0; j < fixes.length; j += 5) {
+      const x = fixes[j]; const y = fixes[j + 1]; const med = fixes[j + 2]; const t = fixes[j + 3]; const lim = fixes[j + 4] * 1.25;
+      for (let yy = Math.max(0, y * s - 1); yy < Math.min(h, y * s + s + 1); yy++) for (let xx = Math.max(0, x * s - 1); xx < Math.min(w, x * s + s + 1); xx++) {
+        const p = yy * w + xx; const d = Y[p] - med;
+        if ((t > 0 ? d > t : d < t) && Math.abs(d) <= lim) { Y[p] = med + t; Y0[p] = Y[p]; }
+      }
+    }
+  };
+  pass(Y, w, h, 1, profile[0]);
+  pass(down2(Y, w, h), (w + 1) >> 1, (h + 1) >> 1, 2, profile[1]);
 }
 
 /**
@@ -419,6 +466,7 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onPro
     removeSpeckles([Y, Cb, Cr], w, h, profile);
     const Y0 = Float32Array.from(Y);
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
+    removeSpots(Y, Y0, w, h, profile, nr);
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
     // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
