@@ -26,6 +26,11 @@ const KEEP_TEXTURE = 0.6;
 // （ユーザーの声「元の写真にあったきめ細やかさは残したい。ノイズはもちろん消す」。にじんだ大きな粒・色のムラは戻さないので、ノイズのムラは残らない）
 const FINE_KEEP = 1;
 const FINE_BACK = 0.35;
+// 大きく明るくする写真（暗い元の写真）では、戻す細かい粒もそれだけ持ち上がり、肌がカサカサに見える（IMG_9348・9321。倍率 13.5・7.4）。
+// 明るくする倍率が FINE_GAIN を超えた分だけ、戻す量を減らす（IMG_9365 は倍率 4.7 で、そのままの仕上がりがきれい）
+const FINE_GAIN = 5;
+/** 戻す細かい粒の割合（明るくする倍率で決める）。tone は planTone の結果（null なら明るくしない） */
+export const fineScale = (tone) => (tone ? Math.min(1, FINE_GAIN / tone.gain) : 1);
 // ノイズの代わりに足す、細かい粒（色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
 const FILM_GRAIN = 1.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
@@ -495,6 +500,7 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: k
     // 取った成分のうち、1〜2 画素のごく細かい粒（肌のきめ）。にじんだ大きな粒（ノイズのムラ）は戻さない
     for (let i = 0; i < Y.length; i++) res[i] = Y0[i] - Y[i];
     const fine = boxBlur(boxBlur(res, w, h, 1), w, h, 1); for (let i = 0; i < Y.length; i++) fine[i] = res[i] - fine[i];
+    const fg = fineScale(tone);
     const pm = tone && tone.person; const px = pm ? pm.w / at.fullW : 0; const py = pm ? pm.h / at.fullH : 0;
     for (let y = 0, i = 0; y < h; y++) {
       const gy = (at.y0 + y + 0.5) * py - 0.5;
@@ -504,7 +510,7 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: k
         // 細かい粒は戻す（人物は全部、背景は少し。人物の地図がなければその間）。真っ暗に近い所（髪・背景の影）は戻さない（黒い点に見える）。
         // とび出た点は戻さない（ノイズの量の 1.5 倍で切る）
         const p = pm ? sampleGrid(pm.m, pm.w, pm.h, (x + 0.5) * px - 0.5, gy) : 0.5;
-        const f = !keepFine ? 0 : Math.max(0, FINE_KEEP * (FINE_BACK + (1 - FINE_BACK) * p) * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
+        const f = !keepFine ? 0 : Math.max(0, FINE_KEEP * fg * (FINE_BACK + (1 - FINE_BACK) * p) * k * Math.min(1, Math.max(0, (Y[i] - FLOOR_FULL) / (FLOOR_TO - FLOOR_FULL))) - kk);
         Y[i] += res[i] * kk + Math.min(1.5 * s, Math.max(-1.5 * s, fine[i])) * f;
       }
     }
