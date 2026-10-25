@@ -108,8 +108,8 @@ self.onmessage = async ({ data }) => {
     // 強い AI は 1 つの Worker で 0.6GB ほど使うので、CPU では 2 つまで（iPhone・iPad は 1 つ）
     const bs = data.strong ? await init(STRONG_MODEL, { size: STRONG_TILE, most: 2, mostIOS: 1 }, (t) => self.postMessage({ type: 'progress', phase: 'load', t: 0.5 + 0.5 * t })) : null;
     const input = data.denoise ? denoiseSmall(data.small, (t) => self.postMessage({ type: 'progress', phase: 'denoise', t })) : data.small;
-    // 計算の進捗: 強い AI は 1 区画が今までの AI の 8 倍くらい重いので、6 割
-    const share = bs ? 0.4 : 1;
+    // 計算の進捗: 強い AI は 1 区画が今までの AI の 8 倍くらい重く、2 周するので、7 割
+    const share = bs ? 0.3 : 1;
     const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: t * share }) });
     if (bs) {
       const st = await strongResidual(input, bs.run, data.strong, { concurrency: bs.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: share + (1 - share) * t }) });

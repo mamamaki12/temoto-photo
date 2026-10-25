@@ -244,6 +244,7 @@ const STRONG_K_SKIN = 8; // 直してよい量の倍率: 肌（手・腕）。�
 const STRONG_K_CLOTH = 2.5; // 服（レース・ひだに線を作り足さないよう、今までの AI と同じ）
 const STRONG_FACE_GROW = 4; // 顔を外すとき、顔の肌のまわりを広げる幅（部位分けの地図の画素）
 const STRONG_CLOTH_CAP = 1.5;
+const STRONG_PASSES = 2; // 9345 の伸ばした手: 2 回で指・手のひらの輪郭が締まる（3 回はほぼ同じ）
 export const STRONG_TILE = 128; // 強い AI に通す区画（256 だと 1 枚に 2GB 近くメモリを使う。128 なら 0.6GB）
 const STRONG_OVERLAP = 24;
 const STRONG_RAMP = Float32Array.from({ length: STRONG_TILE }, (_, i) => Math.min(1, (i + 0.5) / STRONG_OVERLAP, (STRONG_TILE - i - 0.5) / STRONG_OVERLAP));
@@ -289,11 +290,14 @@ function gauss(r) { return Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math
 export async function strongResidual(small, infer, sm, { onProgress = () => {}, signal, concurrency = 1 } = {}) {
   const q = halve(small); const { width: w, height: h, data: clean } = q; const n = w * h;
   const mask = resizeMap(sm.mask, sm.w, sm.h, w, h); const skin = resizeMap(sm.skin, sm.w, sm.h, w, h);
-  const r = rng(12345); const x = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const g = gauss(r) * STRONG_NOISE;
-    for (let c = 0; c < 3; c++) x[i * 3 + c] = Math.min(1, Math.max(0, clean[i * 3 + c] + g + gauss(r) * STRONG_NOISE * 0.3));
-  }
+  const r = rng(12345); const x = new Float32Array(n * 3); const tot = new Float32Array(n * 3);
+  // AI に入れる絵: 小さなノイズを足す（平らすぎると控えめにしか直さない）。2 回目からは前の回の直しも足す
+  const makeInput = () => {
+    for (let i = 0; i < n; i++) {
+      const g = gauss(r) * STRONG_NOISE;
+      for (let c = 0; c < 3; c++) x[i * 3 + c] = Math.min(1, Math.max(0, clean[i * 3 + c] + tot[i * 3 + c] + g + gauss(r) * STRONG_NOISE * 0.3));
+    }
+  };
   const T = STRONG_TILE; const tiles = [];
   for (const y0 of starts(h, T, STRONG_OVERLAP)) for (const x0 of starts(w, T, STRONG_OVERLAP)) {
     let mx = 0;
@@ -301,7 +305,7 @@ export async function strongResidual(small, infer, sm, { onProgress = () => {}, 
     if (mx >= 0.3) tiles.push({ y0, x0 }); // 人物らしさが低い所（肌に似た色の背景など）だけの区画は通さない
   }
   if (!tiles.length) return null;
-  const P = T * T; const acc = new Float32Array(n * 3); const wsum = new Float32Array(n);
+  const P = T * T; let acc = new Float32Array(n * 3); let wsum = new Float32Array(n);
   const ref = (v, m) => { let i = v; if (i < 0) i = -i; if (i >= m) i = 2 * m - 2 - i; return Math.max(0, Math.min(m - 1, i)); };
   let done = 0; let next = 0;
   // 1 つの区画を、そのままと左右反転の 2 回 AI に通して、向きが合う直しだけ足し込む
@@ -326,7 +330,7 @@ export async function strongResidual(small, infer, sm, { onProgress = () => {}, 
         wsum[i] += wt;
       }
     }
-    onProgress(++done / tiles.length);
+    onProgress(++done / (tiles.length * STRONG_PASSES));
   };
   const lane = async () => {
     while (next < tiles.length) {
@@ -334,14 +338,19 @@ export async function strongResidual(small, infer, sm, { onProgress = () => {}, 
       await one(tiles[next++]);
     }
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, tiles.length)) }, lane));
-  for (let i = 0; i < n; i++) { const k = wsum[i] > 0 ? 1 / wsum[i] : 0; acc[i * 3] *= k; acc[i * 3 + 1] *= k; acc[i * 3 + 2] *= k; }
+  // 大きなブレは 1 回では直りきらないので、直した絵をもう一度通す
   const ch = new Float32Array(n);
-  for (let c = 0; c < 3; c++) {
-    for (let i = 0; i < n; i++) ch[i] = acc[i * 3 + c];
-    const lo = blur3(ch, w, h, STRONG_LOW_R);
-    for (let i = 0; i < n; i++) acc[i * 3 + c] -= lo[i];
+  for (let pass = 0; pass < STRONG_PASSES; pass++) {
+    makeInput(); acc = new Float32Array(n * 3); wsum = new Float32Array(n); next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, tiles.length)) }, lane));
+    for (let i = 0; i < n; i++) { const k = wsum[i] > 0 ? 1 / wsum[i] : 0; acc[i * 3] *= k; acc[i * 3 + 1] *= k; acc[i * 3 + 2] *= k; }
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < n; i++) ch[i] = acc[i * 3 + c];
+      const lo = blur3(ch, w, h, STRONG_LOW_R);
+      for (let i = 0; i < n; i++) tot[i * 3 + c] += acc[i * 3 + c] - lo[i];
+    }
   }
+  acc = tot;
   // 直してよい量: 肌は大きく、服は今までと同じ（ない線を作り足さないように）
   const A = gateMap(clean, w, h, STRONG_GATE_R, 1);
   for (let i = 0; i < n; i++) A[i] *= STRONG_K_SKIN * skin[i] + STRONG_K_CLOTH * (1 - skin[i]);

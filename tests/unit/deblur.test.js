@@ -139,8 +139,8 @@ test('deblur（大きなブレ）: 当てる所のない区画は AI に通さ�
   const st = await strongResidual(img, async (input, n) => { calls++; assert.equal(n, 1); assert.equal(input.length, 3 * STRONG_TILE * STRONG_TILE); return Float32Array.from(input); }, sm);
   assert.equal(st.width, 500); assert.equal(st.height, 300);
   assert.ok(st.data.every((v) => v === 0));
-  // 半分の大きさで、左から 128 画素くらいまでの区画だけ（そのままと左右反転で 2 回ずつ）
-  assert.ok(calls > 0 && calls <= 2 * 2 * 3, `AI に通した回数 ${calls}`);
+  // 半分の大きさで、左から 128 画素くらいまでの区画だけ（そのままと左右反転で 2 回ずつ、それを 2 周）
+  assert.ok(calls > 0 && calls <= 2 * 2 * 3 * 2, `AI に通した回数 ${calls}`);
   assert.equal(await strongResidual(img, async (x) => x, strongMask(parts(100, 60, () => [0, 0, 0]))), null, '人物がいなければ何もしない');
 });
 
