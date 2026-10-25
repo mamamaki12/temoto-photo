@@ -37,17 +37,17 @@ const GROUPS = [
   ['adjust', '☀', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
   ['crop', '⌗', '切り抜き', ['crop']],
   ['local', '◎', '部分補正', ['local']],
-  ['retouch', '❀', 'レタッチ', ['skin', 'shape', 'eyes', 'dodge', 'wrinkle', 'heal', 'hide']],
+  ['retouch', '❀', 'レタッチ', ['skin', 'eyes', 'shape', 'dodge', 'wrinkle', 'heal', 'hide']], // 顔（目元・歯・リップ・鼻筋・目線）は美肌の次に（よく使うので）
   ['frame', '▢', 'フレーム', ['frame']],
   ['info', 'ⓘ', '情報', ['info']],
 ];
-const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '目元・歯', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
 /** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
 const MAX_REFS = 40;
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
 /** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
-const DEFAULT_HIDDEN = ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects', 'crop', 'local'];
+const DEFAULT_HIDDEN = ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects', 'local']; // 切り抜きは、プリントの比率（L判など）に使うので最初から出す
 const hiddenTools = () => { const v = prefs.get('hiddenTools', DEFAULT_HIDDEN); return Array.isArray(v) ? v : DEFAULT_HIDDEN; };
 /** スペシャリストモード: 隠した道具も全部出す */
 const specialist = () => prefs.get('specialist', false) === true;
@@ -372,14 +372,18 @@ async function showLibrary() {
         h('b', {}, '写真を開く'),
         h('span', { class: 'muted small' }, 'タップして選ぶ・ドラッグ＆ドロップ・貼り付け（複数可）')),
       fileIn,
+      h('div', { id: 'install-slot' }, installCard()),
       projects.length ? h('div', { class: 'lib-bar' }, h('h2', {}, `写真（${projects.length}）`), h('button', { type: 'button', class: 'ghost small', onclick: () => { projects.forEach((p) => selecting.add(p.id)); showLibrary(); } }, 'すべて選択')) : null,
       bar,
       projects.length ? grid : h('div', { class: 'lib-empty' },
         h('h2', {}, 'できること'),
         h('ul', { class: 'feature-list' }, [
+          '暗い舞台の写真を、ノイズを取ってから明るく（開くと自動でおすすめします）',
+          '動いた手・髪のブレを AI でくっきり（端末の中で計算）',
+          '美肌、顔の仕上げ（歯を白く・リップ・鼻筋・目線をカメラへ）はタップするだけ',
           'キヤノンなどの RAW を、RAW データから高画質に現像',
-          'フィルター22種（フィルム風・モノクロなど）と強さの調整、自動補正',
-          '美肌、スポット修復、顔やナンバーを隠すモザイク・ぼかし',
+          'フィルター27種（成人式・振袖向け、フィルム風・モノクロなど）と強さの調整、自動補正',
+          'スポット修復、顔やナンバーを隠すモザイク・ぼかし、L判・2L判の切り抜き',
           'フレーム・余白（SNS の比率に合わせる）',
           '複数の写真を1枚にまとめるグリッド（2〜9枚）',
           '編集はいつでもやり直せる（元の写真はそのまま）',
@@ -389,7 +393,6 @@ async function showLibrary() {
         h('p', { class: 'muted small' }, '編集画面の「⋯」メニューでオンにすると出てきます。'),
         h('ul', { class: 'feature-list' }, [
           '明るさ・色・トーンカーブ・HSL・カラーグレーディング・ディテール・効果',
-          '切り抜き・傾き補正・遠近補正・反転',
           '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
         ].map((t) => h('li', {}, t)))),
       h('section', { class: 'privacy' },
@@ -422,6 +425,18 @@ async function upgradeThumbs(list, imgs, gen) {
       if (img && gen === libGen) { const url = URL.createObjectURL(thumb); libUrls.push(url); img.src = url; }
     } catch (e) { console.warn('見本を作り直せませんでした', p.name, e); }
   }
+}
+
+// ── アプリとして入れる（パソコンの Chrome・Edge、Android）。入れると自分の窓で開き、写真を右クリック →「プログラムから開く」でも開ける ──
+let installEvt = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; const slot = $('#install-slot'); if (slot) render(slot, installCard()); });
+addEventListener('appinstalled', () => { installEvt = null; const slot = $('#install-slot'); if (slot) render(slot, null); toast('アプリとして入れました。デスクトップ・スタートメニューのアイコンから開けます', 5000); });
+function installCard() {
+  if (!installEvt || prefs.get('installHidden', false)) return null;
+  return h('div', { class: 'install-card' },
+    h('div', {}, h('b', {}, 'アプリとして入れる'), h('p', { class: 'muted small' }, 'デスクトップ・スタートメニュー（スマホはホーム画面）から、自分の窓で開けます。オフラインでも使え、写真を右クリック →「プログラムから開く」でも開けます。')),
+    h('button', { type: 'button', class: 'primary', onclick: async () => { const e = installEvt; if (!e) return; installEvt = null; render($('#install-slot'), null); await e.prompt().catch(() => {}); } }, '入れる'),
+    h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'このお知らせを出さない', title: 'このお知らせを出さない（ブラウザのメニューからも入れられます）', onclick: () => { prefs.set('installHidden', true); render($('#install-slot'), null); } }, '✕'));
 }
 
 function confirmBox(msg, okLabel, onOk) {
@@ -468,8 +483,10 @@ async function openEditor(id) {
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
   requestRender();
+  suggestDark();
   if (p.lin) toast(`RAW データから現像しました。編集中は ${p.W}×${p.H} で表示し、書き出しで元の大きさ（${p.origW}×${p.origH}）に現像し直します`, 5000);
-  else if (p.scaled) toast(`写真が大きいので、編集中は ${p.W}×${p.H} に縮めて表示します。書き出しは元の大きさ（${p.origW}×${p.origH}）のままできます`, 5000);
+  // 大きな写真のお知らせは、はじめての 1 回だけ（毎回出ると、道具の列を 5 秒ふさぐ。「情報」でいつでも見られる）
+  else if (p.scaled && !prefs.get('scaledNote', false)) { prefs.set('scaledNote', true); toast(`写真が大きいので、編集中は ${p.W}×${p.H} に縮めて表示します。書き出しは元の大きさ（${p.origW}×${p.origH}）のままできます`, 5000); }
 }
 
 const sourceKey = (st) => JSON.stringify([st.retouch, st.portrait, st.raw]);
@@ -650,6 +667,37 @@ function sampleSource(s, t, rad = 2) {
   let r = 0; let g = 0; let b = 0; const n = d.length / 4;
   for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
   return [r / n / 255, g / n / 255, b / n / 255];
+}
+
+/**
+ * 暗い写真か（舞台・夜の室内など）。編集用の小さな写真で、明るさの真ん中と上の方（9 割の所）を見る。
+ * 実写で: 舞台の写真（ISO1600）は真ん中 27〜68・9 割 33〜121、日中・日陰の写真は真ん中 78 以上か 9 割 151 以上
+ */
+function looksDark() {
+  const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+  const hist = new Uint32Array(256); const n = d.length / 4;
+  for (let i = 0; i < d.length; i += 4) hist[(d[i] * 54 + d[i + 1] * 183 + d[i + 2] * 19) >> 8]++;
+  const at = (q) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * q) return v; } return 255; };
+  return at(0.5) < 72 && at(0.9) < 140;
+}
+/** 暗い写真のおすすめ（テスト写真 21 枚で確かめた値。ノイズ軽減 50・明るさ補正 50 が標準の強さ） */
+const DARK_RECIPE = { lowlight: 50, noise: 50 };
+function applyDarkRecipe() {
+  Object.assign(E.state.adj, DARK_RECIPE); commit(); syncHistoryButtons(); requestRender();
+  if (E.tool === 'auto') buildPanel();
+  toast('ノイズを取ってから明るくしています。写真の上のバーが消えるまでお待ちください（「自動補正」のスライダーで強さを変えられます）', 5000);
+}
+/** 開いた写真が暗くて、まだ編集していなければ、写真の上に「明るくする」を出す */
+function suggestDark() {
+  if (S.isEdited(E.state) || !looksDark()) return;
+  const close = () => box.remove();
+  const box = h('div', { class: 'suggest', role: 'region', 'aria-label': 'おすすめ' },
+    h('p', {}, h('b', {}, '暗い写真です。'), 'ノイズを取ってから明るくできます。'),
+    h('div', { class: 'suggest-actions' },
+      btn('✦ 明るくする', () => { close(); setTool('auto'); applyDarkRecipe(); }, 'primary small'),
+      btn('そのまま', close, 'ghost small')));
+  for (const ev of ['pointerdown', 'dblclick', 'wheel']) box.addEventListener(ev, (e) => e.stopPropagation()); // 写真の上の操作にしない
+  E.suggestEl = box; E.stageEl.append(box);
 }
 
 // ── 履歴（元に戻す・やり直す）と保存 ──
@@ -898,6 +946,14 @@ function setTool(k, { keepSide = false } = {}) {
   buildPanel(); requestRender();
   E.tabs.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
   E.sideHead.querySelector('.subtabs [aria-selected="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
+  scrollHint(E.sideHead.querySelector('.subtabs')); scrollHint(E.tabs);
+}
+/** 横にはみ出した列（スマホのタブ・道具の列）は、続きがあることがわかるように右端を薄くする */
+function scrollHint(el) {
+  if (!el) return;
+  const upd = () => el.classList.toggle('more', el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  if (!el.dataset.hint) { el.dataset.hint = '1'; el.addEventListener('scroll', upd, { passive: true }); globalThis.ResizeObserver && new ResizeObserver(upd).observe(el); }
+  requestAnimationFrame(upd);
 }
 
 // ───────────────────────── 道具ごとのパネル ─────────────────────────
@@ -909,7 +965,18 @@ function adjSliders(group) {
   }).el);
 }
 const histo = () => { const c = h('canvas', { class: 'histo', width: 256, height: 64, role: 'img', 'aria-label': 'ヒストグラム（明るさの分布）' }); if (E.hist) drawHistogram(c, E.hist); return c; };
-const hint = (t) => h('p', { class: 'hint' }, t);
+/**
+ * 説明文。スマホでは写真の下のパネルが低いので、長い説明は最初の 1 文だけ見せて、残りは「続き」で開く
+ * （開いたかどうかは覚えておき、ほかの説明も同じにする）。パソコンの幅では全部見せる
+ */
+const narrow = matchMedia('(max-width: 599px)');
+const hint = (t) => {
+  const cut = t.indexOf('。') + 1;
+  if (!narrow.matches || cut <= 0 || cut >= t.length - 8 || t.length < 70) return h('p', { class: 'hint' }, t);
+  const d = h('details', { class: 'hint more-hint', open: prefs.get('hintsOpen', false) }, h('summary', {}, t.slice(0, cut), h('span', { class: 'hint-more' }, '続き')), h('span', {}, t.slice(cut)));
+  d.addEventListener('toggle', () => prefs.set('hintsOpen', d.open));
+  return d;
+};
 const row = (...k) => h('div', { class: 'btn-row' }, ...k);
 const btn = (label, onclick, cls = '', title = null) => h('button', { type: 'button', class: cls, onclick, ...(title ? { title, 'aria-label': title } : {}) }, label);
 
@@ -918,6 +985,8 @@ const PANELS = {
     return [
       histo(),
       h('h3', {}, '暗い写真を明るく'),
+      E.state.adj.lowlight === DARK_RECIPE.lowlight && E.state.adj.noise === DARK_RECIPE.noise ? null
+        : row(btn('✦ おすすめの強さで明るくする', () => { E.suggestEl?.remove(); applyDarkRecipe(); }, 'primary')),
       slider({ label: '写真全体の明るさ補正', min: 0, max: 100, value: E.state.adj.lowlight, def: 0,
         onInput: live((v) => { E.state.adj.lowlight = v; }), onChange: commit }).el,
       slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
@@ -1275,14 +1344,17 @@ function skinPanel() {
   const n = p.seeds.length; const autoOn = !n && portraitActive(p);
   const pick = (k) => {
     const v = SKIN_LEVELS.find((x) => x[0] === k)[2];
-    if (n || k === 'off') applySkin(v, buildPanel); else askSkinTap(v);
+    // AI（MediaPipe）で肌を見分けられる端末では、タップしなくてもすぐかける（タップしたときと仕上がりはほぼ同じ。実写 4 枚で差は 1/255 以下）。
+    // AI を使えないときだけ、背景まで変わらないよう顔のタップを待つ
+    if (n || k === 'off' || !E.segFailed) applySkin(v, buildPanel); else askSkinTap(v);
   };
   return [
     hint(n ? 'タップした肌の色に近く、そこからつながっている場所だけを整えます。首・手など離れた肌は、そこもタップすると追加できます。'
-      : '① 顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、髪・服・背景は変えずに肌だけを整えます。② 強さを選びます。'),
+      : E.segFailed ? '① 顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、髪・服・背景は変えずに肌だけを整えます。② 強さを選びます。'
+        : '強さを選ぶだけで、AI が顔・首・腕の肌を見つけて、肌だけを整えます（髪・服・背景は変えません）。肌でない所まで変わるときは、顔の肌（ほお）をタップしてください。'),
     h('div', { class: 'btn-row' },
       h('span', { class: n ? 'ok-note small' : 'muted small' }, n ? `✓ 肌として選んだ場所: ${n}か所`
-        : autoOn ? '肌の場所: 未選択（自動で判定中。髪や背景も変わることがあります。顔をタップすると正確になります）'
+        : autoOn ? (E.segFailed ? '肌の場所: 色で自動判定（髪や背景も変わることがあります。顔をタップすると正確になります）' : '✓ 肌の場所: AI が自動で判定')
           : E.skinPending ? '👆 写真の、顔の肌をタップしてください' : '肌の場所: 未選択'),
       n ? btn('選び直す', () => applySkin({ seeds: [] }, buildPanel), 'ghost small') : null),
     n || autoOn ? toggle('肌と判定した範囲を赤で表示', !!E.showSkin, (v) => setShowSkin(v)).el : null,
@@ -1295,10 +1367,10 @@ function skinPanel() {
       const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
       Object.assign(E.state.adj, autoAdjust(histogram(d), d));
       E.state.look = { id: 'studio-clear', amount: 60 };
-      if (n) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
+      if (n || !E.segFailed) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
       else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }
     }, 'primary')),
-    hint('おすすめの流れ: ①顔をタップ → ②おまかせ仕上げ → ③「修復」でニキビ・後れ毛・背景のゴミを消す → ④「フィルター」の「透明感」「振袖あでやか」などで雰囲気を選ぶ → ⑤「切り抜き」の「L判」「2L判」でプリントの比率に。決まった仕上げは「フィルター」のマイプリセットに保存すると、他の写真にも一度で使えます（肌の場所は写真ごとにタップしてください）。'),
+    hint('おすすめの流れ: ①おまかせ仕上げ → ②「顔」で歯を白く・リップ → ③「修復」でニキビ・後れ毛・背景のゴミを消す → ④「フィルター」の「透明感」「振袖あでやか」などで雰囲気を選ぶ → ⑤「切り抜き」の「L判」「2L判」でプリントの比率に。決まった仕上げは「フィルター」のマイプリセットに保存すると、他の写真にも一度で使えます。'),
   ].filter(Boolean);
 }
 /** 美肌タブ: タップで肌の場所を追加（拡大中のドラッグは移動） */
@@ -1623,10 +1695,12 @@ function fxPanel(tool) {
   const types = d.modes ? d.modes.map(([m]) => d.type(m)) : [d.type()];
   const n = E.state.retouch.filter((o) => types.includes(o.type)).length;
   return [
-    hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
+    // 種類を先に（説明の長さが種類で違うので、説明の下に置くと、切り替えるたびにボタンの位置がずれる）
     d.modes ? chips(d.modes, f.mode, (v) => { prefs.set(`fx2:${tool}:mode`, v); buildPanel(); }, { label: '種類' }).el : null,
+    hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
     f.mode === 'lip' ? lipColorPicker() : null,
-    slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
+    // 鼻筋・目線はタップした所の顔を AI で見つけて当てるので、ブラシの大きさは使わない（出すと迷う）
+    ['nose', 'gaze'].includes(f.mode) ? null : slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
     slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
     f.mode === 'gaze' ? gazeTuner() : null,
     h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
@@ -2022,7 +2096,7 @@ function openExport({ batch }) {
     let r;
     try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), origW: E.proj.w || E.W, origH: E.proj.h || E.H }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
-    status.textContent = `画像の生成完了（残り0%） ${r.w}×${r.h}・${fmtBytes(r.blob.size)}`;
+    status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
   };
   go.addEventListener('click', async () => {
@@ -2031,8 +2105,11 @@ function openExport({ batch }) {
       if (!batch) { const r = await one(); download(r.blob, r.file); toast('書き出しました'); }
       else {
         let i = 0;
+        // まとめて書き出すときも、全体の進み具合をバーに出す（暗所補正・ブレ補正のある写真は 1 枚に数分かかる）
+        exportProgress.hidden = false; exportProgress.value = 0;
+        const step = (t) => { exportProgress.value = Math.min(99, Math.floor(100 * (i - 1 + t) / batch.length)); };
         for (const p of batch) {
-          status.textContent = `書き出しています… ${++i}/${batch.length}`;
+          status.textContent = `書き出しています… ${++i}/${batch.length}`; step(0);
           const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
           if (portraitActive(S.validateState(p.state).portrait)) await ensureSkinSeg(ctx2d(toCanvas(prep.base, prep.W, prep.H), { willReadFrequently: true }).getImageData(0, 0, prep.W, prep.H)); // 美肌の肌を AI で見分ける
           if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
@@ -2040,11 +2117,11 @@ function openExport({ batch }) {
             try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
           }
           let r;
-          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
+          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: step }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
           download(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
           await new Promise((res) => setTimeout(res, 400));
         }
-        status.textContent = `${batch.length}枚を書き出しました`;
+        exportProgress.value = 100; status.textContent = `✓ ${batch.length}枚を書き出しました`;
       }
     } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });

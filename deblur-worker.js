@@ -3,6 +3,7 @@
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, TILE } from './deblur.js';
+import { workerCount } from './cores.js';
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
 
@@ -24,9 +25,7 @@ async function download(onProgress) {
 
 /** CPU の Worker をいくつか作り、区画を分けて渡す（1 つの Worker の中の計算は 1 本なので、Worker の数だけ速くなる） */
 function cpuPool(model) {
-  const nav = self.navigator || {};
-  const ios = /iP(hone|ad|od)/.test(nav.userAgent || '') || (nav.maxTouchPoints > 1 && /Mac/.test(nav.userAgent || ''));
-  const n = Math.max(1, Math.min(ios ? 2 : 4, (nav.hardwareConcurrency || 2) - 1)); // iPhone・iPad はメモリが少ないので 2 つまで
+  const n = workerCount(self.navigator, { max: 6 }); // iPhone・iPad はメモリが少ないので 2 つまで、パソコンは CPU の数に合わせる
   const idle = []; const waiting = []; const jobs = new Map(); let seq = 0; let failed = null;
   const ready = [];
   for (let i = 0; i < n; i++) {
