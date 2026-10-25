@@ -184,3 +184,28 @@ test('目線: 顔をタップすると AI で両目を見つけて黒目をカ�
   await page.getByRole('button', { name: /元に戻す/ }).click(); // 微調整の 1 手ずつ戻せる
   expect((await page.evaluate(() => window.__temoto.state.retouch[0].tune))).toEqual([-0.4, 0]);
 });
+
+test('鼻筋: 鼻をタップすると、AI で見つけた顔の点から、鼻筋は明るく・両脇は暗くなり、頬・髪は変わらない', async ({ page }) => {
+  await open(page);
+  // この写真の鼻: 鼻先 (0.51, 0.48)、頬 (0.42, 0.5)、髪 (0.3, 0.3)。鼻筋・横の面の位置は、見つけた顔の点から決める
+  const cheek0 = await srcPixel(page, 0.42, 0.5); const hair0 = await srcPixel(page, 0.3, 0.3);
+  const org = await page.evaluate(() => { const E = window.__temoto.editor; const cv = document.createElement('canvas'); cv.width = E.W; cv.height = E.H; cv.getContext('2d').drawImage(E.base, 0, 0); return [...cv.getContext('2d').getImageData(0, 0, E.W, E.H).data]; });
+  await openTool(page, '目元・歯');
+  await page.getByRole('button', { name: '鼻筋', exact: true }).click();
+  const view = await page.locator('canvas.view').boundingBox();
+  const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
+  await page.mouse.click(view.x + view.width * (L.ix + L.iw * 0.51), view.y + view.height * (L.iy + L.ih * 0.47));
+  await page.waitForFunction(() => { const r = window.__temoto.state.retouch; return r.length && !document.querySelector('.stage.busy'); }, null, { timeout: 60000 });
+  await page.waitForTimeout(300);
+  const op = (await page.evaluate(() => window.__temoto.state.retouch))[0];
+  expect(op.type).toBe('nose'); expect(op.nose.mid.length).toBe(7); expect(op.nose.li.length).toBe(5); // 顔の点を見つけ、範囲は自動で
+  const lum = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
+  const { W, H } = await page.evaluate(() => ({ W: window.__temoto.editor.W, H: window.__temoto.editor.H }));
+  const before = ([x, y]) => { const k = (Math.round(y * (H - 1)) * W + Math.round(x * (W - 1))) * 4; return org.slice(k, k + 3); };
+  const bridge = op.nose.mid[2]; const side = [(op.nose.ri[1][0] + op.nose.ro[1][0]) / 2, (op.nose.ri[1][1] + op.nose.ro[1][1]) / 2]; // 鼻筋のまん中と、右の横の面（ふちと頬の境目の間。この写真では左の横の面はもともと陰なので、影は控えめになる）
+  expect(lum(await srcPixel(page, ...bridge))).toBeGreaterThan(lum(before(bridge)) + 4); // 鼻筋は明るく
+  expect(lum(await srcPixel(page, ...side))).toBeLessThan(lum(before(side)) - 3); // 横の面は暗く
+  const cheek1 = await srcPixel(page, 0.42, 0.5); const hair1 = await srcPixel(page, 0.3, 0.3);
+  for (let c = 0; c < 3; c++) { expect(Math.abs(cheek1[c] - cheek0[c])).toBeLessThan(3); expect(Math.abs(hair1[c] - hair0[c])).toBeLessThan(3); } // 頬・髪は変わらない
+  await expect(page.getByText(/なぞった回数: 1/)).toBeVisible();
+});

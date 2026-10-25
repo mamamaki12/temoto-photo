@@ -1,7 +1,7 @@
 // 人物の肌（顔・体）を見分ける Worker（MediaPipe の「Selfie Multiclass」モデル。端末の中だけで動く）。
-// 受け取る: { id, kind: 'skin' | 'person' | 'lips' | 'eyes', w, h, data: Uint8ClampedArray（RGBA） }
-// 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }
-//       eyes → { id, eyes: [[{ lid, iris }, { lid, iris }]]（顔ごとに右目・左目。lid: まぶたのふち 16 点、iris: 黒目の中心と上右下左の 4 点。0〜1 の座標） }
+// 受け取る: { id, kind: 'skin' | 'person' | 'lips' | 'eyes' | 'face', w, h, data: Uint8ClampedArray（RGBA） }
+// 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }／face → { id, faces: [[[x, y, z], …478 点], …] }
+//       eyes → { id, eyes: [[{ lid, iris, pose }, { lid, iris, pose }]]（顔ごとに右目・左目。lid: まぶたのふち 16 点、iris: 黒目の中心と上右下左の 4 点。0〜1 の座標。pose: 顔の向き [yaw, pitch]） }
 // クラシックな Worker にしているのは、MediaPipe が読み込み用のスクリプトを importScripts で読むため
 /* eslint-disable no-undef */
 var exports = {};
@@ -42,6 +42,12 @@ self.onmessage = async (e) => {
       const pose = (r.facialTransformationMatrixes || []).map((m) => { const d = m.data; return [Math.atan2(d[8], d[10]), Math.atan2(d[9], Math.hypot(d[8], d[10]))]; });
       const eyes = (r.faceLandmarks || []).map((f, fi) => [0, 1].map((e) => ({ lid: LID[e].map((i) => [f[i].x, f[i].y]), iris: IRIS[e].map((i) => [f[i].x, f[i].y]), pose: pose[fi] || [0, 0] })));
       self.postMessage({ id, eyes }); return;
+    }
+    if (kind === 'face') {
+      // 顔ごとの 478 点（x, y は 0〜1、z は顔の幅くらいを 1 とした奥行き）。鼻筋など、唇のほかの部位に使う
+      const fl = await initFace(); const r = fl.detect(new ImageData(data, w, h));
+      const faces = (r.faceLandmarks || []).map((f) => f.map((q) => [q.x, q.y, q.z]));
+      self.postMessage({ id, faces }); return;
     }
     const seg = await init();
     const res = seg.segment(new ImageData(data, w, h));
