@@ -185,13 +185,14 @@ function taps(n, N) {
 }
 
 /**
- * 2 段で直す。まず半分に縮めた絵で大きなブレを直し、それを足した絵で、もう一度細かいブレを直す
+ * 何段かで直す。まず半分に縮めた絵で大きなブレを直し（その中でさらに半分に縮めた段も使う）、それを足した絵で、もう一度細かいブレを直す
  * （前に伸ばした手のような、縮めた絵で 15 画素を超えるブレは 1 段では直りきらない）
- * @returns 差分（small と同じ大きさ。2 段の和）
+ * levels: 段の数（3 なら 1/4 → 1/2 → そのまま）。cap: 和を、元の絵の直してよい量の何倍までに抑えるか
+ * @returns 差分（small と同じ大きさ。各段の和）
  */
-export async function deblurResidual2(small, infer, { onProgress = () => {}, signal, concurrency = 1 } = {}) {
+export async function deblurResidual2(small, infer, { onProgress = () => {}, signal, concurrency = 1, levels = 3, cap = 1 } = {}) {
   const { width: w, height: h, data } = small;
-  if (Math.min(w, h) < 2 * TILE) return deblurResidual(small, infer, { onProgress, signal, concurrency });
+  if (levels < 2 || Math.min(w, h) < 2 * TILE) return deblurResidual(small, infer, { onProgress, signal, concurrency });
   const w2 = Math.ceil(w / 2); const h2 = Math.ceil(h / 2); const half = new Float32Array(w2 * h2 * 3);
   for (let y = 0; y < h2; y++) {
     for (let x = 0; x < w2; x++) {
@@ -200,13 +201,13 @@ export async function deblurResidual2(small, infer, { onProgress = () => {}, sig
     }
   }
   // 進捗: 半分の大きさの段は区画が 4 分の 1 なので 2 割
-  const r1 = await deblurResidual({ width: w2, height: h2, data: half }, infer, { signal, concurrency, onProgress: (t) => onProgress(0.2 * t) });
+  const r1 = await deblurResidual2({ width: w2, height: h2, data: half }, infer, { signal, concurrency, levels: levels - 1, cap, onProgress: (t) => onProgress(0.2 * t) });
   const up = resizeRGB(r1, w, h).data;
   const pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
   const r2 = await deblurResidual({ width: w, height: h, data: pre }, infer, { signal, concurrency, onProgress: (t) => onProgress(0.2 + 0.8 * t) });
   for (let i = 0; i < data.length; i++) r2.data[i] += up[i];
   // 2 段の和も、元の絵の直してよい量までに抑える（頬のやわらかい光の境目が、角ばった形にならないように）
-  limitResidual(r2.data, gateMap(data, w, h), w, h);
+  if (cap > 0) limitResidual(r2.data, gateMap(data, w, h).map((a) => a * cap), w, h);
   return r2;
 }
 

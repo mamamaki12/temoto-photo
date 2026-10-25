@@ -25,7 +25,7 @@ const input = +dn ? denoiseSmall({ width: w, height: h, data: small }) : { width
 const res = await deblurResidual2(input, async (input, n) => {
   const r = await session.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) });
   return r.output.data;
-}, { onProgress: (t) => { if (t - last > 0.1 || t === 1) { last = t; process.stderr.write(`${Math.round(t * 100)}% `); } } });
+}, { onProgress: (t) => { if (t - last > 0.1 || t === 1) { last = t; process.stderr.write(`${Math.round(t * 100)}% `); } }, levels: +(process.env.LEVELS || 3), cap: +(process.env.CAP || 1) });
 console.error(`\n${w}x${h} AI ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 const rgba = new Uint8ClampedArray(W * H * 4);
 for (let i = 0; i < W * H; i++) { rgba[i * 4] = rgb[i * 3]; rgba[i * 4 + 1] = rgb[i * 3 + 1]; rgba[i * 4 + 2] = rgb[i * 3 + 2]; rgba[i * 4 + 3] = 255; }
