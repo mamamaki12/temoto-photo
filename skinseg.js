@@ -89,6 +89,40 @@ export async function personSeg(img) {
   } catch (e) { console.warn('人物を見分ける AI を使えませんでした', e); return null; }
 }
 
+/**
+ * 写真の一部（box: 写真全体に対する 0〜1 の [x0, y0, x1, y1]）の人物の地図を、n×n に縮めて保存できる形にする
+ * （形を整えるブラシが、背景を動かさないために使う。{ b: box, n, d: base64 の n×n（0〜255 = 人物らしさ） }）。
+ * 切り出して AI に渡すので、写真全体を渡すより顔のまわりの輪郭が細かく出る。使えない端末では null
+ */
+const personMapStore = new Map();
+export async function personMap(img, box, n = 64) {
+  const W = img.width; const H = img.height;
+  const x0 = Math.max(0, Math.round(box[0] * W)); const y0 = Math.max(0, Math.round(box[1] * H));
+  const cw = Math.min(W, Math.round(box[2] * W)) - x0; const ch = Math.min(H, Math.round(box[3] * H)) - y0;
+  if (cw < 4 || ch < 4) return null;
+  const key = `${fingerprint(img)}|${x0},${y0},${cw},${ch},${n}`; if (personMapStore.has(key)) return personMapStore.get(key);
+  try {
+    const src = new OffscreenCanvas(W, H); src.getContext('2d').putImageData(img instanceof ImageData ? img : new ImageData(img.data, W, H), 0, 0);
+    const sc = Math.min(1, 512 / Math.max(cw, ch)); const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
+    const c2 = new OffscreenCanvas(w, h); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
+    const small = x2.getImageData(0, 0, w, h);
+    const r = await call({ kind: 'person', w, h, data: small.data }, [small.data.buffer]);
+    // n×n に縮める（升目の平均）
+    const sum = new Float32Array(n * n); const cnt = new Float32Array(n * n);
+    for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) { const i = Math.min(n - 1, Math.floor(y * n / r.h)) * n + Math.min(n - 1, Math.floor(x * n / r.w)); sum[i] += r.skin[y * r.w + x]; cnt[i]++; }
+    let bin = ''; for (let i = 0; i < n * n; i++) bin += String.fromCharCode(Math.round(255 * (cnt[i] ? sum[i] / cnt[i] : 0)));
+    const v = { b: [x0 / W, y0 / H, (x0 + cw) / W, (y0 + ch) / H], n, d: btoa(bin) };
+    personMapStore.set(key, v); if (personMapStore.size > 32) personMapStore.delete(personMapStore.keys().next().value);
+    return v;
+  } catch (e) { console.warn('人物を見分ける AI を使えませんでした（背景も動きます）', e); return null; }
+}
+/** 人物を見分ける AI を先に読み込んでおく（形を整えるブラシを開いたとき。なぞり始めで待たないように） */
+let warmed = null;
+export function warmPersonSeg() {
+  if (!warmed) warmed = call({ kind: 'person', w: 8, h: 8, data: new Uint8ClampedArray(8 * 8 * 4) }).catch(() => { warmed = null; });
+  return warmed;
+}
+
 /** 地図の値（双一次補間）。u, v は写真全体に対する 0〜1 */
 export function segAt(seg, u, v) {
   const fx = Math.min(seg.w - 1, Math.max(0, u * seg.w - 0.5)); const fy = Math.min(seg.h - 1, Math.max(0, v * seg.h - 0.5));
@@ -168,4 +202,54 @@ export async function findMouth(img, pts, r = 0) {
   }
   const all = await findLips(img); if (!all) return ok ? [] : null;
   return pick(all);
+}
+
+const faceStore = new Map(); // 指紋と切り出した所 → 顔の点の一覧
+/**
+ * なぞった所（目印）に重なる顔の 478 点（写真全体に対する 0〜1 の座標。z は奥行き）を AI で見つける。
+ * findMouth と同じく、なぞった所のまわりを狭い方から順に切り出して渡す（集合写真の小さな顔でも見つかる）。
+ * pts: なぞった線（0〜1）、r: ブラシの半径（短い辺に対する割合）
+ * @returns {Promise<number[][]|null|undefined>} 見つかった顔の点。見つからなければ undefined、AI を使えなければ null
+ */
+export async function findFaceAt(img, pts, r = 0) {
+  const W = img.width; const H = img.height; const S = Math.min(W, H);
+  const xs = pts.map((q) => q[0] * W); const ys = pts.map((q) => q[1] * H); const rp = r * S;
+  const box = [Math.min(...xs) - rp, Math.min(...ys) - rp, Math.max(...xs) + rp, Math.max(...ys) + rp];
+  const cx = (box[0] + box[2]) / 2; const cy = (box[1] + box[3]) / 2;
+  const s = Math.max(box[2] - box[0], box[3] - box[1], S * 0.01);
+  // 目印を含む顔（顔の点を囲む四角に入る）のうち、鼻先（4 番）が目印の真ん中にいちばん近いもの
+  const pick = (faces) => {
+    let best; let bd = Infinity;
+    for (const f of faces) {
+      const fx = f.map((q) => q[0] * W); const fy = f.map((q) => q[1] * H);
+      if (cx < Math.min(...fx) || cx > Math.max(...fx) || cy < Math.min(...fy) || cy > Math.max(...fy)) continue;
+      const d = Math.hypot(f[4][0] * W - cx, f[4][1] * H - cy); if (d < bd) { bd = d; best = f; }
+    }
+    return best;
+  };
+  let src = null;
+  for (const k of [6, 12, 24, 48]) {
+    const side = Math.min(s * k, Math.max(W, H));
+    const x0 = Math.max(0, Math.round(cx - side / 2)); const y0 = Math.max(0, Math.round(cy - side / 2));
+    const cw = Math.min(W, Math.round(cx + side / 2)) - x0; const ch = Math.min(H, Math.round(cy + side / 2)) - y0;
+    if (cw < 16 || ch < 16) continue;
+    const key = `${fingerprint(img)}|${x0},${y0},${cw},${ch}`;
+    let faces = faceStore.get(key);
+    if (!faces) {
+      try {
+        if (!src) { src = new OffscreenCanvas(W, H); src.getContext('2d').putImageData(img instanceof ImageData ? img : new ImageData(img.data, W, H), 0, 0); }
+        const sc = Math.min(768, Math.max(384, Math.max(cw, ch))) / Math.max(cw, ch);
+        const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
+        const c2 = new OffscreenCanvas(w, h); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
+        const small = x2.getImageData(0, 0, w, h);
+        const res = await call({ kind: 'face', w, h, data: small.data }, [small.data.buffer]);
+        // z は切り出した幅に対する値なので、写真の短い辺に対する値に直す
+        faces = res.faces.map((f) => f.map((q) => [(x0 + q[0] * cw) / W, (y0 + q[1] * ch) / H, q[2] * cw / S]));
+        faceStore.set(key, faces); if (faceStore.size > 32) faceStore.delete(faceStore.keys().next().value);
+      } catch (e) { console.warn('顔を見つける AI を使えませんでした', e); return null; }
+    }
+    const got = pick(faces); if (got) return got;
+    if (side >= Math.max(W, H)) break;
+  }
+  return undefined;
 }

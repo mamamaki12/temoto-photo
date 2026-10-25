@@ -9,9 +9,9 @@ import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
 import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, coverSource, gridSize, drawGrid, hitCell, hitDivider, dividerRange, gridMetrics, cellEdges } from './grid.js';
 import { applyRetouch } from './retouch.js';
-import { warpSegment, warpGuard, LIP_COLORS } from './brushfx.js';
+import { warpStroke, warpProtect, warpProtectBox, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findMouth } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth, findFaceAt, personMap, warmPersonSeg } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -27,7 +27,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.18.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.20.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -1482,8 +1482,8 @@ function localHandles(l) {
 const FX = {
   shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
     hint: '動かしたい所（輪郭・あご・肩・腕など）に指を置いて、動かしたい向きへゆっくりなぞってください。ブラシは動かしたい所が丸ごと入るくらいにして、少しずつ何回かに分けると自然です（小さすぎると、へこみができます）。' },
-  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 } },
-    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
+  eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ'], ['nose', '鼻筋']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 }, nose: { size: 1, amt: 50 } },
+    hint: { eyes: '目のまわりをなぞってください。白目の赤みを減らして明るく、黒目・まつげをくっきりさせ、くまを少し薄くします。', teeth: '歯をタップするか、口のあたりを軽くなぞってください。AI が口を見つけて、歯の範囲を自動で決め、黄ばみを減らして白くします（唇・歯ぐきは変えません）。小さく写った顔は、2 本指で拡大してからタップすると確実です。', lip: '色を選んで、唇をタップするか、口のあたりを軽くなぞってください。AI が唇を見つけて、唇の範囲（歯は除く）を自動で決めて色をのせます。元の唇の明暗・つや・しわは残ります。小さく写った顔は、2 本指で拡大してからタップすると確実です。', nose: '鼻をタップするか、鼻筋を軽くなぞってください。AI が顔を見つけて、鼻筋にほそいハイライト、両脇に影を入れ、鼻を高く見せます（メイクのノーズシャドウと同じ）。幅・長さは顔に合わせて自動で決まり、横向きの顔は奥側を控えめにします。強さは 50% くらいが自然です。小さく写った顔は、2 本指で拡大してからタップすると確実です。' } },
   dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
     hint: { dodge: '明るくしたい所（鼻筋・頬の高い所・目の下など）をなぞってください。重ねてなぞるほど明るくなります。', burn: '暗くしたい所（輪郭のきわ・頬の下・あごの下など）をなぞると、顔が立体的に見えます。重ねるほど暗くなります。' } },
   wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
@@ -1507,6 +1507,7 @@ function showBrushPreview() {
 }
 function fxPanel(tool) {
   const d = FX[tool]; const f = fxPrefs(tool);
+  if (tool === 'shape') warmPersonSeg(); // 背景を動かさないための AI を先に読み込んでおく
   const types = d.modes ? d.modes.map(([m]) => d.type(m)) : [d.type()];
   const n = E.state.retouch.filter((o) => types.includes(o.type)).length;
   return [
@@ -1560,23 +1561,33 @@ function fxAction(tool, c, p) {
     if (!E.src) { const rr = retouchCanvas(srcBase(), E.state.retouch, E.state.portrait, E.skinCache); E.src = rr.canvas; E.srcData = rr.data; }
     const ctx = ctx2d(E.src, { willReadFrequently: true });
     if (!E.srcData) E.srcData = ctx.getImageData(0, 0, E.W, E.H);
-    live = { ctx, dirty: null };
+    // 背景を動かさないために、なぞり始めのまわりの人物の地図を AI に頼む。届くまでの区間はためておき、届いたらまとめて当てる
+    // （保存した線から作り直すときと同じ順になる）。AI を使えなければ地図なし（背景も動く）
+    const rp = Math.max(1.5, r * Math.min(E.W, E.H)); const p0 = [pts[0][0] * E.W, pts[0][1] * E.H];
+    live = { ctx, dirty: null, rad: rp, stroke: null, done: 1, pm: undefined };
+    const e0 = E;
+    live.ready = personMap(E.srcData, warpProtectBox(pts[0], r, E.W, E.H)).then((pm) => {
+      if (E !== e0) return; live.pm = pm || undefined;
+      live.stroke = warpStroke(E.srcData, rp, warpProtect(live.pm, rp, { W: E.W, H: E.H, ox: 0, oy: 0 }, p0));
+      live.apply();
+    });
+    live.apply = () => {
+      if (!live.stroke) return;
+      for (; live.done < pts.length; live.done++) {
+        const a0 = [pts[live.done - 1][0] * E.W, pts[live.done - 1][1] * E.H]; const a1 = [pts[live.done][0] * E.W, pts[live.done][1] * E.H];
+        const box = live.stroke.seg(a0, a1, amt);
+        if (box) { const d = live.dirty; live.dirty = d ? [Math.min(d[0], box[0]), Math.min(d[1], box[1]), Math.max(d[0] + d[2], box[0] + box[2]) - Math.min(d[0], box[0]), Math.max(d[1] + d[3], box[1] + box[3]) - Math.min(d[1], box[1])] : box; }
+      }
+      if (live.dirty && !raf) raf = requestAnimationFrame(flush);
+    };
   }
   const flush = () => { raf = 0; if (!live?.dirty) return; const [x, y, w, hh] = live.dirty; live.ctx.putImageData(E.srcData, 0, 0, x, y, w, hh); live.dirty = null; E.engine.setSource(E.src, E.W, E.H); requestRender(); };
   return {
     move: (e) => {
       const q = canvasPoint(e); const s = toSrc(q);
       if (!far(s, pts.at(-1)) || pts.length >= S.MAX_BRUSH_POINTS) return;
-      const prev = pts.at(-1); pts.push(s); path.push(q);
-      if (live) {
-        const S0 = Math.min(E.W, E.H);
-        const a0 = [prev[0] * E.W, prev[1] * E.H]; const a1 = [s[0] * E.W, s[1] * E.H]; const rp = Math.max(1.5, r * S0);
-        if (live.guard === undefined) live.guard = warpGuard(E.srcData, a0, a1, rp); // 背景（動かさない所）は、なぞり始めに決める（保存した線から作り直すときと同じ）
-        const box = warpSegment(E.srcData, a0, a1, rp, amt, live.guard);
-        if (box) { const d = live.dirty; live.dirty = d ? [Math.min(d[0], box[0]), Math.min(d[1], box[1]), Math.max(d[0] + d[2], box[0] + box[2]) - Math.min(d[0], box[0]), Math.max(d[1] + d[3], box[1] + box[3]) - Math.min(d[1], box[1])] : box; }
-        if (!raf) raf = requestAnimationFrame(flush);
-        E.cursor = q; drawHandles();
-      } else { E.fxPath = path; E.cursor = q; drawHandles(); }
+      pts.push(s); path.push(q);
+      if (live) { live.apply(); E.cursor = q; drawHandles(); } else { E.fxPath = path; E.cursor = q; drawHandles(); }
     },
     end: (e) => {
       E.fxPath = null; if (raf) { cancelAnimationFrame(raf); raf = 0; }
@@ -1584,7 +1595,18 @@ function fxAction(tool, c, p) {
       const op = { type, pts, r, amt, ...(type === 'lip' ? { col: lipColor() } : {}) };
       if (live) {
         if (pts.length < 2) { drawHandles(); return; }
-        flush(); E.state.retouch.push(op); E.retouchKey = sourceKey(E.state); E.small = null;
+        op.v = 2;
+        const e0 = E;
+        const finish = () => {
+          if (E !== e0) return; E.stageEl.classList.remove('busy', 'warp');
+          if (live.pm) op.pm = live.pm;
+          live.apply(); if (raf) { cancelAnimationFrame(raf); raf = 0; }
+          flush(); E.state.retouch.push(op); E.retouchKey = sourceKey(E.state); E.small = null;
+          commit(); buildPanel(); requestRender();
+        };
+        if (live.stroke) finish();
+        else { E.stageEl.classList.add('busy', 'warp'); live.ready.then(finish); } // 人物の地図がまだなら、届いてから当てる
+        return;
       } else if (type === 'lip' || type === 'teeth') {
         // なぞった所・タップした所は目印。そのそばの口を AI で見つけ、唇・歯の範囲はアプリが決める（はじめての 1 回は少し時間がかかる）
         drawHandles(); // なぞった線は、AI を待たずにすぐ消す
@@ -1601,10 +1623,26 @@ function fxAction(tool, c, p) {
           addRetouch(op); commit(); buildPanel(); requestRender();
         });
         return;
+      } else if (type === 'nose') {
+        // タップした所の顔を AI で見つけ、鼻の点（鼻筋のまん中・ふち・頬の境目）から範囲をアプリが決める。顔が見つからなければ何もしない
+        drawHandles();
+        E.stageEl.classList.add('busy', 'face');
+        const e0 = E;
+        findFaceAt(baseImageData(), pts, r).then((face) => {
+          if (E !== e0) return; E.stageEl.classList.remove('busy', 'face');
+          if (!face) { toast(face === null ? '顔を見つける AI を使えないので、鼻筋は補正できませんでした' : '顔が見つからなかったので、鼻筋は補正できませんでした（横顔・顔が隠れているときは見つかりません。小さい顔は 2 本指で拡大してからタップしてください）'); return; }
+          op.nose = {}; for (const [k, ids] of Object.entries(NOSE_POINTS)) op.nose[k] = ids.map((i) => [+face[i][0].toFixed(5), +face[i][1].toFixed(5)]);
+          addRetouch(op); commit(); buildPanel(); requestRender();
+        });
+        return;
       } else addRetouch(op);
       commit(); buildPanel(); requestRender();
     },
-    cancel: () => { E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf); if (live && pts.length > 1) { E.state.retouch.push({ type, pts, r, amt }); E.retouchKey = sourceKey(E.state); rebuildSource(); } drawHandles(); },
+    cancel: () => {
+      E.fxPath = null; E.cursor = null; if (raf) cancelAnimationFrame(raf);
+      if (live && pts.length > 1) { const e0 = E; live.ready.then(() => { if (E !== e0) return; E.state.retouch.push({ type, pts, r, amt, v: 2, ...(live.pm ? { pm: live.pm } : {}) }); E.retouchKey = sourceKey(E.state); rebuildSource(); }); }
+      drawHandles();
+    },
   };
 }
 

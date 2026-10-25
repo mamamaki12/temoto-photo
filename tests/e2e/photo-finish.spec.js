@@ -53,7 +53,9 @@ test('形を整える: なぞった向きに画素が動く（なぞっている
   const e0 = await viewMean(page, edge);
   await openTool(page, '形');
   await stroke(page, [[0.41, 0.72], [0.36, 0.72], [0.33, 0.72]]);
+  await page.waitForFunction(() => window.__temoto.state.retouch.length > 0 && !document.querySelector('.stage.busy'), null, { timeout: 60000 }); // 背景を見分ける AI を待ってから当てる
   expect((await ops(page))[0].type).toBe('warp');
+  expect((await ops(page))[0].v).toBe(2);
   const e1 = await viewMean(page, edge);
   expect(Math.abs(lum(e1) - lum(e0)) + Math.abs(e1[0] - e0[0])).toBeGreaterThan(3);
   for (const [tool, mode, type] of [['しわ取り', null, 'wrinkle'], ['目元・歯', '目元', 'eyes'], ['目元・歯', '歯', 'teeth']]) {
@@ -76,6 +78,8 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
     const out = {};
     for (const type of BRUSH_TYPES) {
       const op = { type, pts: [[0.3, 0.4], [0.36, 0.45], [0.42, 0.47]], r: 0.06, amt: 0.8 };
+      // 鼻筋は、AI で見つけた顔の点から範囲を決める（作りものの鼻: まん中の線と、左右のふち・頬の境目）
+      if (type === 'nose') { const col = (dx) => [0.2, 0.3, 0.4, 0.5].map((t) => [0.36 + dx, 0.3 + t * 0.4]); op.nose = { mid: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9].map((t) => [0.36, 0.3 + t * 0.4]), li: col(-0.02), ri: col(0.02), lo: col(-0.06), ro: col(0.06) }; }
       const whole = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(whole, op);
       const [rx, ry, rw, rh] = brushBounds(op, W, H); const part = { width: rw, height: rh, data: new Uint8ClampedArray(rw * rh * 4) };
       for (let y = 0; y < rh; y++) part.data.set(base.subarray(((ry + y) * W + rx) * 4, ((ry + y) * W + rx + rw) * 4), y * rw * 4);
