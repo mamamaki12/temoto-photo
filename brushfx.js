@@ -1075,7 +1075,13 @@ export function warpStroke(img, rad, protect = null, shape = null) {
           f *= g;
         }
         const ex = dx * f; const ey = dy * f;
-        const nx = ex + tAt(x - ex, y - ey, 0); const ny = ey + tAt(x - ex, y - ey, 1);
+        let nx = ex + tAt(x - ex, y - ey, 0); let ny = ey + tAt(x - ex, y - ey, 1);
+        const cap = shape?.cap ? shape.cap * rad * amt : 0; // 1 回のなぞりで動かす量の上限（画素）。強さに比例
+        if (cap) {
+          // 1 回のなぞりで動く量の上限（半径 × cap）。上限に近づくほどゆるやかに効かなくする（長くなぞっても、頬がこけ・あごが尖るほど動かない）
+          const a0 = Math.hypot(nx, ny); const k = cap * 0.5;
+          if (a0 > k) { const a1 = k + (cap - k) * Math.tanh((a0 - k) / (cap - k)); nx *= a1 / a0; ny *= a1 / a0; }
+        }
         const j = ((y - ry) * rw + x - rx) * 2; D[j] = nx; D[j + 1] = ny;
         const a = Math.hypot(nx, ny); if (a > maxD) maxD = a;
         orig(x - nx, y - ny);
@@ -1136,7 +1142,13 @@ export const WARP_MAP_N = 128;
  * ブラシの幅の所だけが角ばってへこみ、顔の線が折れて見えた。4 版は、なぞる向きと直角の向き（輪郭に沿う向き）に 1.7 倍の楕円にして、
  * なだらかな山（cos）にする。輪郭が長い範囲でなめらかに動き、へこみ・角ができない
  */
-export const WARP_SHAPE = { side: 1.7, cos: true };
+export const WARP_SHAPE = { side: 1.7, cos: true, cap: 0.3 };
+/**
+ * cap（5 版）: 1 回のなぞりで動く量の上限（半径 × 強さ × cap。強さ 50% なら半径の 0.15 倍）。4 版は上限がなく、長くなぞると
+ * 押した所だけが深くへこんで、頬がこけ・あごが尖って見えた。上限に近づくほどゆるやかに効かなくなるので、動く量の山が平らになり、
+ * 輪郭が丸みを保ったまま細くなる。もっと細くしたいときは、何回かに分けてなぞる
+ */
+const WARP_SHAPE_V4 = { side: 1.7, cos: true };
 
 /** 人物の地図を作る範囲（なぞり始めのまわり。写真全体に対する 0〜1 の [x0, y0, x1, y1]） */
 export function warpProtectBox(p0, r, W, H) {
@@ -1239,8 +1251,8 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
     if (op.v >= 2) {
-      // 2〜4 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅・ブラシの形だけが違う）
-      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1), op.v >= 4 ? WARP_SHAPE : null);
+      // 2〜5 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る（帯の幅・ブラシの形だけが違う）
+      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0], op.v >= 3 ? WARP_BAND : 1), op.v >= 5 ? WARP_SHAPE : op.v === 4 ? WARP_SHAPE_V4 : null);
       for (let i = 1; i < pts.length; i++) st.seg(pts[i - 1], pts[i], amt);
       return;
     }

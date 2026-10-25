@@ -126,8 +126,8 @@ function validRetouch(r) {
     const pts = arr(r.pts, MAX_BRUSH_POINTS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]);
     if (!pts.length) return null;
     const op = { type: r.type, pts, r: num(r.r, 0.002, 0.3, 0.03), amt: num(r.amt, 0, 1, 0.5) };
-    if (r.type === 'warp' && (r.v === 2 || r.v === 3 || r.v === 4)) {
-      // 形を整える（2〜4 版）: ずらす量を重ねて 1 回だけ読み直す。pm = 人物の地図（なぞり始めのまわり。n×n を base64 で）
+    if (r.type === 'warp' && (Number.isInteger(r.v) && r.v >= 2 && r.v <= 5)) {
+      // 形を整える（2〜5 版）: ずらす量を重ねて 1 回だけ読み直す。pm = 人物の地図（なぞり始めのまわり。n×n を base64 で）
       op.v = r.v;
       const pm = r.pm; const n = Number.isInteger(pm?.n) && pm.n >= 4 && pm.n <= 256 ? pm.n : 0;
       if (n && typeof pm.d === 'string' && pm.d.length === Math.ceil(n * n / 3) * 4 && Array.isArray(pm.b) && pm.b.length === 4) op.pm = { b: pm.b.map((v) => num(v, 0, 1)), n, d: pm.d };
