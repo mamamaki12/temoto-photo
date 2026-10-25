@@ -7,9 +7,10 @@ import { applyBrush } from '../../brushfx.js';
 const W = 400; const H = 300;
 const SKIN = [205, 160, 140]; const LIP = [190, 95, 105]; const TOOTH = [215, 200, 160]; const DARK = [60, 30, 30];
 const LOWER = [120, 80, 75]; const SHADED = TOOTH.map((v) => Math.round(v * 0.45)); const PALE = [200, 130, 120]; const GUM = [235, 135, 140];
+const GLOSS = [245, 225, 215];
 // back: 口の左端の奥に、影に入った歯 / pale: 歯のすぐ上まで、日の当たった淡い上唇がかぶさっている / gum: 上の歯の上に歯ぐき
-// lower: 上の歯のすぐ下に、上の歯の陰で暗く赤みがかった下の歯
-function mouthImage({ open = true, back = false, pale = false, gum = false, lower = false } = {}) {
+// lower: 上の歯のすぐ下に、上の歯の陰で暗く赤みがかった下の歯 / gloss: 下唇のつや（明るく色の薄い点）と、鼻の下の赤い点
+function mouthImage({ open = true, back = false, pale = false, gum = false, lower = false, gloss = false } = {}) {
   const d = new Uint8ClampedArray(W * H * 4);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const u = (x - 200) / 90; const v = (y - 150) / 45; const r = u * u + v * v;
@@ -21,6 +22,8 @@ function mouthImage({ open = true, back = false, pale = false, gum = false, lowe
     if (pale && ri < 1 && y < 142) c = PALE;
     if (gum && ri < 1 && y >= 134 && y < 142 && Math.abs(x - 200) < 58) c = GUM;
     if (lower && ri < 1 && y >= 159 && y < 166 && Math.abs(x - 200) < 40) c = LOWER;
+    if (gloss && Math.abs(x - 215) < 6 && Math.abs(y - 182) < 4) c = GLOSS;
+    if (gloss && Math.abs(x - 200) < 3 && Math.abs(y - 80) < 3) c = LIP;
     const k = (y * W + x) * 4; d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 255;
   }
   return { width: W, height: H, data: d };
@@ -96,4 +99,14 @@ test('歯: 上の歯の陰で暗く赤みがかった下の歯も白くし、唇
   const lp = mouthImage({ lower: true });
   applyBrush(lp, { type: 'lip', pts: [[0.5, 0.5]], r: 0.01, amt: 0.8, col: [196, 30, 48], whole: true, lips });
   for (let c = 0; c < 3; c++) assert.ok(Math.abs(px(lp, 200, 162)[c] - px(org, 200, 162)[c]) <= 3, 'リップは下の歯に付かない');
+});
+
+test('リップ: 下唇のつやの所も唇として塗り（穴をあけない）、つやを歯として白くしない。唇から離れた赤い点には付けない', () => {
+  const img = mouthImage({ gloss: true }); const org = mouthImage({ gloss: true });
+  applyBrush(img, { type: 'lip', pts: [[0.5, 0.5]], r: 0.01, amt: 0.8, col: [196, 30, 48], whole: true, lips });
+  for (const [x, y] of [[215, 182], [212, 181]]) { const a = px(img, x, y); const b = px(org, x, y); assert.ok(Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 15, `つや ${x},${y}`); }
+  assert.deepEqual(px(img, 200, 80), px(org, 200, 80), '鼻の下の赤い点');
+  const t = mouthImage({ gloss: true });
+  applyBrush(t, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 0.8, whole: true, lips });
+  for (let c = 0; c < 3; c++) assert.ok(Math.abs(px(t, 215, 182)[c] - px(org, 215, 182)[c]) <= 3, 'つやは歯ではない');
 });

@@ -7,7 +7,10 @@
 
 export const BRUSH_TYPES = ['warp', 'eyes', 'teeth', 'lip', 'dodge', 'burn', 'wrinkle'];
 /** リップの色（名前・RGB） */
-export const LIP_COLORS = [['pink', 'ピンク', [214, 92, 120]], ['coral', 'コーラル', [232, 110, 88]], ['red', 'レッド', [196, 30, 48]], ['rose', 'ローズ', [178, 70, 92]], ['berry', 'ベリー', [140, 34, 70]], ['nude', 'ヌード', [196, 122, 106]]];
+// リップの色の見本は、市販の口紅（ディオール・シャネル・イヴ・サンローラン・ジバンシィ・メイベリンの 287 色）を色の系統で分け、
+// それぞれの系統のまん中に近い実際の色にした（ピンク: ディオール 351、コーラル: ディオール 644、レッド: ジバンシィ 13、
+// ローズ: ジバンシィ 23、ベリー: ディオール 867、ヌード: イヴ・サンローラン 11 の色）
+export const LIP_COLORS = [['pink', 'ピンク', [228, 97, 119]], ['coral', 'コーラル', [234, 83, 49]], ['red', 'レッド', [202, 41, 46]], ['rose', 'ローズ', [198, 46, 84]], ['berry', 'ベリー', [144, 26, 50]], ['nude', 'ヌード', [192, 107, 114]]];
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const LIN = new Float32Array(256).map((_, i) => { const v = i / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
@@ -234,6 +237,11 @@ function segmentMouth(img, mk, p, at) {
   }
   let nF = 0; for (let i = 0; i < n; i++) nF += face[i];
   if (nT < Math.max(12, nF * 0.004)) teethW.fill(0); // 口の中に歯らしい所がほとんどない（口を閉じている・口の奥しか見えない）
+  // 暗い写真を明るくしたもの: 明るいが、歯の白さ（赤みの少なさ）が唇とあまり変わらない。色では歯と、影になった唇・口の端の見分けがつきにくいので、
+  // 歯の確かな所は、口の中のいちばん明るい所（上から 3 割）だけにする
+  const tgr = []; for (let i = 0; i < n; i++) if (teethW[i]) tgr.push(gr[i]);
+  const faint = ySkin >= 70 && tgr.length > 0 && q(tgr, 0.5) - (gSkin - span) < 0.15;
+  if (faint) { const yHi = q(innerY, 0.7); for (let i = 0; i < n; i++) if (teethW[i] && F[i * 3] < yHi) { teethW[i] = 0; nT--; } }
   let G = [gauss2(F, skinW, n), gauss2(F, lipW, n), open ? gauss2(F, teethW, n) : null, open ? gauss2(F, darkW, n) : null, null];
   // 歯ぐき: 上の歯のすぐ上にある、歯より赤く暗くない所のうち、唇の色とははっきり違う所（唇の色に近ければ、歯に接した唇）。
   // 見つかれば別の色として覚え、リップの色をのせない
@@ -272,8 +280,9 @@ function segmentMouth(img, mk, p, at) {
   const gumOk = (i) => { const t = tTop[i % w]; return t < 0 || Math.floor(i / w) <= t + lipH * 0.03; };
   const prior = (c, i) => (c === 0 ? 0.01 + (1 - sOutT[i]) : c === 1 ? 0.005 + sLip[i] : c === 4 ? (0.003 + sIn[i] * Math.min(1, nearT[i] * 5)) * (gumOk(i) ? 1 : 0.02) : (0.003 + 0.25 * sOutT[i] + 0.75 * sIn[i]) * (above(i) ? 0.05 : 1)); // 唇・歯・口の奥は、外側の輪郭から離れた所にはまずない
   // 影の歯は、口の中（内側の輪郭のあたり）だけで探す（口の端の影になった肌・唇を歯にしない）。
-  // 暗い写真（舞台など）は、どこも暗くノイズも多く、影の歯と暗い唇・口の端の見分けがつかないので、探さない
-  const dim = ySkin < 70;
+  // 暗い写真（舞台など）は、どこも暗くノイズも多く、影の歯と暗い唇・口の端の見分けがつかないので、探さない。
+  // 暗い写真を明るくしたもの（明るいが、歯の白さが唇とあまり変わらない）も同じ（口の端の暗い所が歯になる）
+  const dim = ySkin < 70 || faint;
   const P = Array.from({ length: 5 }, () => new Float32Array(n));
   const L = Array.from({ length: 5 }, () => new Float32Array(n));
   const R = Math.max(1, lipH * 0.03); const e = [0, 0, 0, 0, 0];
@@ -294,14 +303,15 @@ function segmentMouth(img, mk, p, at) {
   if (G[4]) {
     // 歯ぐきは、唇の内側（口の中の側）にしかない。上から（下唇は下から）たどって、肌の次に出てくる赤い所は唇とする
     // （日の当たった細い唇は歯ぐきと同じような色になるので、色だけでは決めない）
-    const m = Math.max(2, Math.round(lipH * 0.015));
+    // 肌との境目の数画素は色が混ざって唇らしく見えるので、唇の画素を数え始めるのは、赤い所に入ってから少し先。歯ぐきを唇に戻すのは、唇の厚みほどまで
+    const m = Math.max(2, Math.round(lipH * 0.015)); const skip = Math.max(1, Math.round(lipH * 0.02)); const reach = lipH * 0.15;
     for (let x = 0; x < w; x++) for (const dir of [1, -1]) {
-      let seen = -1; // -1: まだ肌、0 以上: 赤い所に入ってから見た唇の画素の数
+      let seen = -1; let run = 0; // seen -1: まだ肌、0 以上: 赤い所に入ってから見た唇の画素の数。run: 赤い所に入ってからの画素の数
       for (let t = 0; t < h; t++) {
         const i = (dir > 0 ? t : h - 1 - t) * w + x; const red = P[1][i] + P[4][i] > 0.5;
         if (seen < 0) { if (red) seen = 0; else continue; }
-        if (!red || seen >= m) break;
-        if (P[1][i] >= P[4][i]) seen++; else { P[1][i] += P[4][i]; P[4][i] = 0; }
+        if (!red || seen >= m || run++ > reach) break;
+        if (P[1][i] >= P[4][i]) { if (run > skip) seen++; } else { P[1][i] += P[4][i]; P[4][i] = 0; }
       }
     }
   }
@@ -310,7 +320,7 @@ function segmentMouth(img, mk, p, at) {
     // 歯は、唇・歯ぐきのように赤い所には広げない（濡れた下唇の内側・歯ぐきの縁）。確かな歯と唇の赤みの中間で分ける
     const tg = []; for (let i = 0; i < n; i++) if (teethW[i]) tg.push(gr[i]);
     // 暗い写真では赤みの差が小さくノイズも多いので、境目を唇寄りにして、広くならしてから比べる
-    const gT = q(tg, 0.5); const gL = gSkin - span; const low = gT - gL < 0.22 && dim;
+    const gT = q(tg, 0.5); const gL = gSkin - span; const low = gT - gL < 0.22 && ySkin < 70;
     // 歯と唇の赤みは、場所によって違う（日の当たった上唇の歯に近い所は淡く、影の歯は赤みが強い）。写真全体の値で切ると、
     // 淡い上唇が歯に入ったり影の歯が抜けたりするので、その場所の近くの歯と唇の赤みの中間で切る。近くにどちらかが少なければ、写真全体の値に寄せる
     const cT = new Float32Array(n); const aT = new Float32Array(n); const sT = new Float32Array(n); const aL = new Float32Array(n); const sL = new Float32Array(n);
@@ -350,26 +360,53 @@ function segmentMouth(img, mk, p, at) {
       for (let i = 0; i < n; i++) if (lowS[i] > teeth[i]) { teeth[i] = lowS[i]; lip[i] *= 1 - lowS[i]; }
     }
   }
+  // 口に当てた指: 光った指は、色では歯と見分けられない。歯は唇に囲まれていて、口の外の肌と、唇・口の奥・歯ぐきを通らずに
+  // 幅広くつながることはない。口の外の確かな肌から、唇・口の奥・歯ぐきでない所を、指ほどの幅（唇の厚みの 16% 以上）で
+  // たどって届く所は、歯にしない（肌に戻す）。細いすき間（口の端・唇の切れ目）は通らない
+  if (G[2]) {
+    const pass = new Uint8Array(n);
+    for (let i = 0; i < n; i++) pass[i] = P[1][i] < 0.5 && P[3][i] < 0.5 && P[4][i] < 0.5 ? 1 : 0;
+    const r = Math.max(2, lipH * 0.08); const r2 = r * r;
+    const block = new Uint8Array(n); for (let i = 0; i < n; i++) block[i] = 1 - pass[i];
+    const dB = dist2(block, w, h); const reach = new Uint8Array(n); const st = [];
+    for (let i = 0; i < n; i++) if (dB[i] > r2 && sOutT[i] < 0.02) { reach[i] = 1; st.push(i); }
+    while (st.length) {
+      const j = st.pop(); const x = j % w;
+      for (const k of [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, j - w, j + w]) if (k >= 0 && k < n && !reach[k] && dB[k] > r2) { reach[k] = 1; st.push(k); }
+    }
+    const dR = dist2(reach, w, h);
+    for (let i = 0; i < n; i++) if (pass[i] && dR[i] <= r2 && sOutT[i] >= 0.02 && teeth[i] > 0) { P[0][i] += teeth[i]; teeth[i] = 0; }
+    // 指の縁の赤い所が、唇の小さなかけらになることがある。指のすぐ横にある小さな唇のかけらは外す
+    const { lab, sizes } = components(P[1], w, h, 0.5); const big = Math.max(0, ...sizes); const nr = new Float32Array(sizes.length);
+    const nonLip = new Uint8Array(n); for (let i = 0; i < n; i++) nonLip[i] = lab[i] < 0 ? 1 : 0;
+    const dL = dist2(nonLip, w, h); const th = new Float32Array(sizes.length); // かけらの太さ（中心から縁までのいちばん長い距離の 2 乗）
+    for (let i = 0; i < n; i++) if (lab[i] >= 0) { if (dR[i] <= r2 * 4) nr[lab[i]]++; if (dL[i] > th[lab[i]]) th[lab[i]] = dL[i]; }
+    // 細いかけらだけ（指と指のあいだに見える唇は、太いので残す）
+    for (let i = 0; i < n; i++) { const c = lab[i]; if (c >= 0 && sizes[c] < big * 0.15 && nr[c] > sizes[c] * 0.6 && th[c] <= r2) { P[0][i] += P[1][i]; P[1][i] = 0; } }
+  }
   // 歯: 小さな（いちばん大きなかたまりの 2 割より小さな）明るい所のうち、まわりが唇・肌だけの所（唇のつや・肌のてかり）は外す。
   // 歯と歯のすき間で分かれた奥の歯は、まわりに口の奥（暗い所）があるので残る
   if (G[2]) {
     const { lab, sizes } = components(teeth, w, h, 0.5); const big = Math.max(0, ...sizes);
-    const edge = new Float32Array(sizes.length); const darkEdge = new Float32Array(sizes.length); const inSum = new Float32Array(sizes.length);
+    const edge = new Float32Array(sizes.length); const darkEdge = new Float32Array(sizes.length); const lipEdge = new Float32Array(sizes.length); const inSum = new Float32Array(sizes.length);
     for (let i = 0; i < n; i++) {
       const c = lab[i]; if (c < 0) continue; const x = i % w; inSum[c] += sIn[i];
-      for (const k of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (k >= 0 && k < n && lab[k] !== c) { edge[c]++; if (G[3] && P[3][k] > 0.4) darkEdge[c]++; }
+      for (const k of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (k >= 0 && k < n && lab[k] !== c) { edge[c]++; if (G[3] && P[3][k] > 0.4) darkEdge[c]++; if (lip[k] > 0.5) lipEdge[c]++; }
     }
     const keep = new Float32Array(n);
     // 残すのは: 口の中（内側の輪郭のあたり）にあるもの。大きいか、口の奥の暗い所に接しているもの
     // ごく小さなもの（唇の厚みの 15% 四方より小さい）は、口の中にしっかり入っているときだけ（口の端の影の縁を歯にしない）
+    // 小さく、まわりがほとんど唇のもの（下唇のつや）は外す
     const tiny = (lipH * 0.15) ** 2;
     for (let i = 0; i < n; i++) {
       const c = lab[i]; if (c < 0) continue; const m = inSum[c] / sizes[c];
-      if (m > 0.1 && (sizes[c] >= big * 0.2 || darkEdge[c] > edge[c] * 0.15 || m > 0.4) && (sizes[c] >= tiny || m > 0.4)) keep[i] = 1;
+      if (m > 0.1 && (sizes[c] >= big * 0.2 || darkEdge[c] > edge[c] * 0.15 || m > 0.4) && (sizes[c] >= tiny || m > 0.4) && !(sizes[c] < big * 0.2 && lipEdge[c] > edge[c] * 0.85)) keep[i] = 1;
     }
     const near = blur(keep, w, h, 1, Math.max(1, lipH * 0.03)); // かたまりの縁のなだらかな所は残す
     for (let i = 0; i < n; i++) teeth[i] *= Math.min(1, near[i] * 3);
   }
+  const cut = new Uint8Array(n); for (let i = 0; i < n; i++) if (teeth[i] > 0.5) cut[i] = 1; // 歯には唇を足さない
+  tidyLip(lip, cut, G[3] ? P[3] : null, sOutT, w, h, lipH);
   if (G[2]) {
     const inMouth = new Float32Array(n); for (let i = 0; i < n; i++) inMouth[i] = Math.max(teeth[i], G[3] ? P[3][i] : 0);
     const ly = []; for (let i = 0; i < n; i++) if (lipW[i]) ly.push(F[i * 3]);
@@ -447,6 +484,64 @@ function smoothUpperLip(lip, inMouth, F, w, h, lipH, yLip) {
   }
 }
 
+/** 2 値（1 の所）までの距離の 2 乗（Felzenszwalb の方法。行・列の順に 1 次元で） */
+function dist2(bin, w, h) {
+  const INF = 1e12; const D = new Float64Array(w * h); for (let i = 0; i < w * h; i++) D[i] = bin[i] ? 0 : INF;
+  const N = Math.max(w, h); const f = new Float64Array(N); const z = new Float64Array(N + 1); const v = new Int32Array(N); const out = new Float64Array(N);
+  const pass = (len, get, set) => {
+    for (let q = 0; q < len; q++) f[q] = get(q);
+    let k = 0; v[0] = 0; z[0] = -Infinity; z[1] = Infinity;
+    for (let q = 1; q < len; q++) {
+      let s; do { const p = v[k]; s = (f[q] + q * q - (f[p] + p * p)) / (2 * q - 2 * p); if (s <= z[k]) k--; else break; } while (k >= 0);
+      k++; v[k] = q; z[k] = s; z[k + 1] = Infinity;
+    }
+    for (let q = 0, j = 0; q < len; q++) { while (z[j + 1] < q) j++; const p = v[j]; out[q] = (q - p) * (q - p) + f[p]; }
+    for (let q = 0; q < len; q++) set(q, out[q]);
+  };
+  for (let y = 0; y < h; y++) pass(w, (x) => D[y * w + x], (x, val) => { D[y * w + x] = val; });
+  for (let x = 0; x < w; x++) pass(h, (y) => D[y * w + x], (y, val) => { D[y * w + x] = val; });
+  return D;
+}
+
+/**
+ * 唇の範囲を、唇らしい形に整える（唇がガタガタ・穴あきの人はいない）:
+ * - 唇から離れた小さなかたまり（鼻の下の影・肌の赤み）は外す
+ * - 唇に囲まれた小さな穴（つや・口の端の暗い点・しわ）は埋める（歯の入った穴・口の端の奥の暗い所は埋めない）
+ * - 縁の細いくぼみは、その幅だけ閉じる（クロージング。口の奥の暗いすき間は閉じない）
+ * cut: 唇を足さない所（歯・歯ぐき・上唇の縁より下）。dark: 口の奥らしさ
+ */
+function tidyLip(lip, cut, dark, sOutT, w, h, lipH) {
+  const n = w * h;
+  {
+    const { lab, sizes } = components(lip, w, h, 0.5); const big = Math.max(0, ...sizes); const so = new Float32Array(sizes.length);
+    for (let i = 0; i < n; i++) if (lab[i] >= 0) so[lab[i]] += sOutT[i];
+    for (let i = 0; i < n; i++) { const c = lab[i]; if (c >= 0 && (sizes[c] < big * 0.03 || (sizes[c] < big * 0.15 && so[c] / sizes[c] < 0.6))) lip[i] = 0; }
+  }
+  {
+    const inv = new Float32Array(n); for (let i = 0; i < n; i++) inv[i] = lip[i] < 0.5 ? 1 : 0;
+    const { lab, sizes } = components(inv, w, h, 0.5); const m = sizes.length;
+    const border = new Uint8Array(m); const nCut = new Float32Array(m); const nDark = new Float32Array(m);
+    const x0 = new Int32Array(m).fill(w); const x1 = new Int32Array(m).fill(-1);
+    for (let i = 0; i < n; i++) {
+      const c = lab[i]; if (c < 0) continue; const x = i % w; const y = (i / w) | 0;
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) border[c] = 1;
+      if (cut[i]) nCut[c]++; if (dark && dark[i] > 0.5) nDark[c]++; if (x < x0[c]) x0[c] = x; if (x > x1[c]) x1[c] = x;
+    }
+    // 口の中（歯の入った所・口の幅ほどの暗いすき間）は、大きいか横に長いので埋まらない。暗い穴（口の端の奥）は、点のように小さいときだけ埋める
+    const maxA = (lipH * 0.3) ** 2; const darkA = (lipH * 0.13) ** 2;
+    const fill = new Uint8Array(m);
+    for (let c = 0; c < m; c++) fill[c] = !border[c] && sizes[c] <= maxA && x1[c] - x0[c] <= lipH * 0.6 && nCut[c] <= sizes[c] * 0.25 && (nDark[c] <= sizes[c] * 0.5 || sizes[c] <= darkA) ? 1 : 0;
+    for (let i = 0; i < n; i++) if (lab[i] >= 0 && fill[lab[i]] && !cut[i]) lip[i] = 1;
+  }
+  {
+    const r = Math.max(1, lipH * 0.06); const r2 = r * r;
+    const bin = new Uint8Array(n); for (let i = 0; i < n; i++) bin[i] = lip[i] >= 0.5 ? 1 : 0;
+    const dIn = dist2(bin, w, h); const out = new Uint8Array(n); for (let i = 0; i < n; i++) out[i] = dIn[i] > r2 ? 1 : 0;
+    const dOut = dist2(out, w, h);
+    for (let i = 0; i < n; i++) if (!bin[i] && !cut[i] && !(dark && dark[i] > 0.5) && dOut[i] > r2) lip[i] = Math.max(lip[i], clamp01((Math.sqrt(dOut[i]) - r) + 0.5));
+  }
+}
+
 /** 唇・歯の範囲（顔ごとに塗り分けて、重ねる） */
 function mouthAreas(img, mk, polys, at) {
   const n = mk.w * mk.h; const lip = new Float32Array(n); const teeth = new Float32Array(n); let skin = [0, 0];
@@ -486,10 +581,12 @@ function lip(img, mk, amt, col, area) {
   const mY = sY / sw; const mC = Math.max(4, sC / sw);
   const [tY, tCb, tCr] = ycc(col[0], col[1], col[2]); const tC = Math.hypot(tCb - 128, tCr - 128);
   const tdir = tC > 0 ? [(tCb - 128) / tC, (tCr - 128) / tC] : [0, 0];
-  // 目標の明るさへの寄せ方（唇全体の明るさを、目標の色の明るさへ少しだけ。明るくするのは控えめ）
-  const yGain = Math.min(1.15, Math.max(0.6, tY / Math.max(mY, 1)));
+  // 目標の明るさへの寄せ方（唇全体の明るさを、目標の色の明るさへ。暗い色（ベリー・レッド）は暗くなる。明るくするのは控えめ）
+  const yGain = Math.min(1.1, Math.max(0.45, tY / Math.max(mY, 1)));
   // 目標の色の濃さは、唇の明るさに合わせる（暗い唇に明るい色の濃さをそのままのせると、蛍光色のように浮く）
   const cScale = Math.min(1, Math.max(0.35, mY / Math.max(tY, 1)));
+  // 色の濃さは、元の唇の濃さから目標の 6 割まで（そのまま目標の濃さにすると、元の唇よりずっと鮮やかになり、塗ったように浮く）
+  const tCe = mC + (tC * cScale - mC) * 0.6;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = y * w + x; const a0 = m[i]; if (!a0) continue;
     const k = ((by + y) * W + bx + x) * 4; const [Y, cb, cr] = ycc(d[k], d[k + 1], d[k + 2]);
@@ -497,9 +594,9 @@ function lip(img, mk, amt, col, area) {
     // この所の元の色の濃さ・明るさの、唇の平均に対する比（濃淡・明暗）
     const relC = Math.min(1.8, Math.max(0.4, Math.hypot(cb - 128, cr - 128) / mC));
     const relY = Math.min(1.6, Math.max(0.5, Y / mY));
-    const c = tC * cScale * relC * Math.min(1.2, Math.max(0.6, relY ** 0.5)); // 明るい所は少し濃く、影は少し淡く
+    const c = tCe * relC * Math.min(1.2, Math.max(0.6, relY ** 0.5)); // 明るい所は少し濃く、影は少し淡く
     const gCb = 128 + tdir[0] * c; const gCr = 128 + tdir[1] * c;
-    const Y1 = Y * (1 + (yGain - 1) * 0.5 * a);
+    const Y1 = Y * (1 + (yGain - 1) * a);
     const cb1 = cb + (gCb - cb) * a; const cr1 = cr + (gCr - cr) * a;
     d[k] = Math.max(0, Math.min(255, Y1 + 1.402 * (cr1 - 128)));
     d[k + 1] = Math.max(0, Math.min(255, Y1 - 0.344136 * (cb1 - 128) - 0.714136 * (cr1 - 128)));
@@ -531,10 +628,10 @@ function teethWhole(img, mk, amt, area) {
   // 目安の色の濃さ: まわりの肌の色の濃さの 0.22 倍。夕日・舞台など照明の色が強い（肌の色が濃い）ときは、そのぶん照明の色を残す
   // （残さないと、まわりが色づいているのに歯だけ灰色・青白く見える）。そのときも少しは減らす（0.85 倍まで）
   const rS = Math.hypot(area.skin[0], area.skin[1]);
-  const rT = Math.max(rS * 0.22, (rS - 0.17) * 1.2);
+  const rT = Math.max(rS * 0.32, (rS - 0.17) * 1.2);
   // 色の濃さは、歯全体で同じ倍率で減らす（画素ごとに揃えると、根もとの黄みと先の透けた所の差が消えて、のっぺりする）
-  const f = Math.min(0.85, Math.max(0.25, rT / Math.max(rTeeth, 1e-3)));
-  const gain = Math.min(1.25, Math.max(1, 232 / Math.max(top, 1)));
+  const f = Math.min(0.9, Math.max(0.38, rT / Math.max(rTeeth, 1e-3)));
+  const gain = Math.min(1.18, Math.max(1, 224 / Math.max(top, 1)));
   const knee = 225; const roll = (v) => (v <= knee ? v : knee + (255 - knee) * (1 - Math.exp(-(v - knee) / (255 - knee)))); // 白飛びさせない
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = y * w + x; const s = m[i] * amt * A[i]; if (s <= 0.002) continue;
