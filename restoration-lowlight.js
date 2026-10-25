@@ -14,10 +14,16 @@ const toLinear = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : SRGB_LUT[(v * 4095 + 0.5) | 0
 const toSrgb = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
 
 export const NOISE_BINS = 12;
+const hash = (v) => { let h = Math.imul(v ^ (v >>> 16), 0x45d9f3b); h = Math.imul(h ^ (h >>> 16), 0x45d9f3b); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
 /** 帯の上下に余分に読む行数（いちばん粗い段の探索範囲と、色ムラ除去の半径が収まる大きさ。4 の倍数） */
 export const BAND_MARGIN = 48;
 const LEVELS = 3;
-const KEEP_GRAIN = 0.3; // ノイズ除去で取った明るさの成分のうち、戻す割合（強さ 1 のとき）
+// ノイズ除去で取った明るさの成分のうち、戻す割合（強さ 1 のとき）。模様のある所（肌のきめ・レース・髪）は多く、
+// 平らな所（カーテン・背景）は少なく戻す。平らな所に戻すと、それはただのノイズに見える
+const KEEP_FLAT = 0.1;
+const KEEP_TEXTURE = 0.6;
+// ノイズの代わりに足す、細かい粒（1 画素の、色のない粒。フィルムの粒のように均一で、中間の明るさで強い）。8bit の標準偏差
+const FILM_GRAIN = 1.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
@@ -194,13 +200,20 @@ function nlm(ch, sig, w, h, { R, r = 2, hh = 1, onProgress = () => {} }) {
  */
 function removeSpeckles(ch, w, h, profile) {
   const [Y, Cb, Cr] = ch; const nb = new Float32Array(8);
-  const find = (img, iw, ih, bins) => {
+  // 輝度だけでなく色差も調べる（赤や青の 1 点は、明るさの差は小さくても、色ムラ除去でにじんで灰色の点になる）
+  const find = (chs, iw, ih, bins) => {
     const hits = [];
     for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) {
-      const i = y * iw + x; let k = 0;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) nb[k++] = img[i + dy * iw + dx];
-      nb.sort(); const v = img[i]; const t = 3 * noiseAt(bins, nb[4]);
-      if (v > nb[7] + t || v < nb[0] - t) hits.push(x, y, (nb[3] + nb[4]) / 2);
+      const i = y * iw + x; let med = 0; let hit = false;
+      for (let c = 0; c < 3; c++) {
+        const img = chs[c]; let k = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) nb[k++] = img[i + dy * iw + dx];
+        nb.sort();
+        if (c === 0) med = (nb[3] + nb[4]) / 2;
+        const t = (c === 0 ? 3 : 4) * noiseAt(bins, c === 0 ? nb[4] : chs[0][i]); const v = img[i];
+        if (v > nb[7] + t || v < nb[0] - t) hit = true;
+      }
+      if (hit) hits.push(x, y, med);
     }
     return hits;
   };
@@ -215,10 +228,10 @@ function removeSpeckles(ch, w, h, profile) {
       const i = y * w + x; Y[i] = val; if (n) { Cb[i] = cb / n; Cr[i] = cr / n; }
     }
   };
-  const one = find(Y, w, h, profile[0]);
+  const one = find(ch, w, h, profile[0]);
   for (let j = 0; j < one.length; j += 3) fill(one[j], one[j + 1], 1, one[j + 2]);
   const w2 = (w + 1) >> 1; const h2 = (h + 1) >> 1;
-  const two = find(down2(Y, w, h), w2, h2, profile[1]);
+  const two = find(ch.map((c) => down2(c, w, h)), w2, h2, profile[1]);
   // 半分の大きさの 1 画素 = 元の 2×2。にじみの分、まわり 1 画素も含めて 4×4 を直す
   for (let j = 0; j < two.length; j += 3) fill(two[j] * 2 - 1, two[j + 1] * 2 - 1, 4, two[j + 2]);
 }
@@ -375,7 +388,13 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
       }
       // 8bit にするとき、ごく弱いディザ（位置で決まるので、帯に分けても同じ）
       const p = (at.y0 + y) * at.fullW + x;
-      const d = ((((p * 2654435761) >>> 0) / 4294967296) - 0.5) / 255;
+      let d = ((((p * 2654435761) >>> 0) / 4294967296) - 0.5) / 255;
+      if (at.grain) {
+        // 細かい粒（位置で決まる。3 つの乱数の和で、なめらかな山形の分布に）
+        const u = hash(p) + hash(p + 0x9e3779b9) + hash(p + 0x7f4a7c15) - 1.5;
+        const lv = Math.min(1, Math.max(0, toSrgb(0.2126 * r + 0.7152 * g + 0.0722 * bl)));
+        d += u * 2 * at.grain / 255 * 4 * lv * (1 - lv);
+      }
       out[i * 4] = 255 * (toSrgb(r) + d) + 0.5;
       out[i * 4 + 1] = 255 * (toSrgb(g) + d) + 0.5;
       out[i * 4 + 2] = 255 * (toSrgb(bl) + d) + 0.5;
@@ -393,7 +412,7 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
  * @param {{nr:number,profile:Float32Array[]|null,tone:object|null}} o
  * @returns {Uint8ClampedArray} top〜bottom の行の RGBA
  */
-export function enhanceBand(band, at, { nr, profile, tone }, onProgress = () => {}) {
+export function enhanceBand(band, at, { nr, profile, tone, grain = true }, onProgress = () => {}) {
   const { width: w, height: h, data } = band;
   let [Y, Cb, Cr] = toYCC(data, w, h);
   if (nr > 0 && profile) {
@@ -402,12 +421,39 @@ export function enhanceBand(band, at, { nr, profile, tone }, onProgress = () => 
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
-    const keep = KEEP_GRAIN / Math.max(1, nr);
-    for (let i = 0; i < Y.length; i++) Y[i] += (Y0[i] - Y[i]) * keep;
+    // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
+    const res = new Float32Array(Y.length); for (let i = 0; i < Y.length; i++) { const d = Y0[i] - Y[i]; res[i] = d * d; }
+    const energy = boxBlur(res, w, h, 3); const k = 1 / Math.max(1, nr);
+    for (let i = 0; i < Y.length; i++) {
+      const s = noiseAt(profile[0], Y[i]); const t = Math.min(1, Math.max(0, (energy[i] / (s * s + 1e-8) - 1.3) / 1.5));
+      Y[i] += (Y0[i] - Y[i]) * (KEEP_FLAT + (KEEP_TEXTURE - KEEP_FLAT) * t) * k;
+    }
   }
   onProgress(0.95);
   const rows = at.bottom - at.top; const o = at.top * w;
-  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH });
+  const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: grain ? grainFor(nr) : 0 });
   onProgress(1);
   return out;
+}
+
+/** ノイズ軽減の強さ → 足す粒の強さ */
+export const grainFor = (nr) => (nr > 0 ? FILM_GRAIN * Math.min(1, nr) : 0);
+
+/**
+ * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）
+ * @param {{y0:number,fullW:number}} at data の 1 行目が写真全体の何行目か
+ */
+export function addGrain(data, w, rows, at, grain) {
+  if (!(grain > 0)) return data;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4; const p = (at.y0 + y) * at.fullW + x;
+      const r = data[i] / 255; const g = data[i + 1] / 255; const b = data[i + 2] / 255;
+      const lv = toSrgb(0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b));
+      const u = hash(p) + hash(p + 0x9e3779b9) + hash(p + 0x7f4a7c15) - 1.5;
+      const d = u * 2 * grain * 4 * lv * (1 - lv);
+      data[i] += d; data[i + 1] += d; data[i + 2] += d; // Uint8ClampedArray は代入で四捨五入される
+    }
+  }
+  return data;
 }
