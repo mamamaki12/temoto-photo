@@ -1,5 +1,5 @@
 import { restoreInWorker } from './restoration-client.js';
-import { measureNoise, planTone, BAND_MARGIN } from './restoration-lowlight.js';
+import { measureNoise, planTone, grainFor, BAND_MARGIN } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 import { personSeg } from './skinseg.js';
 
@@ -95,9 +95,10 @@ function workerCount() {
  * @param {object} hooks
  * @param {(y:number, rows:number, data:Uint8ClampedArray)=>void} hooks.onBand 補正できた帯（順番どおりとは限らない）
  * @param {(t:number)=>void} [hooks.onProgress] 0〜1（実際に処理した量）
+ * @param {(grain:number)=>void} [hooks.onGrain] 足す粒の強さ（grainFor）。帯より先に 1 回。grain: false のときも、ブレ補正のあとに足す強さとして知らせる
  * @param {AbortSignal} [hooks.signal]
  */
-export async function enhancePhoto({ width, height, read, small }, { nr, light, grain = true, fine = true }, { onBand, onProgress = () => {}, signal } = {}) {
+export async function enhancePhoto({ width, height, read, small }, { nr, light, grain = true, fine = true }, { onBand, onProgress = () => {}, onGrain = () => {}, signal } = {}) {
   const check = () => { if (signal?.aborted) throw abortError(); };
   check();
   // 1. ノイズの量（写真の中央で）
@@ -114,6 +115,7 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light, 
   const person = light > 0 ? await personSeg(small) : null;
   check();
   const tone = light > 0 ? planTone(small, light, { person }) : null;
+  onGrain(grainFor(nr, profile, tone));
   // 3. 帯ごとに、いくつかの Worker で
   const ROWS = Math.max(64, Math.min(512, Math.floor(1_000_000 / width / 4) * 4));
   const bands = [];
