@@ -7,7 +7,10 @@
 
 export const BRUSH_TYPES = ['warp', 'eyes', 'teeth', 'lip', 'dodge', 'burn', 'wrinkle'];
 /** リップの色（名前・RGB） */
-export const LIP_COLORS = [['pink', 'ピンク', [214, 92, 120]], ['coral', 'コーラル', [232, 110, 88]], ['red', 'レッド', [196, 30, 48]], ['rose', 'ローズ', [178, 70, 92]], ['berry', 'ベリー', [140, 34, 70]], ['nude', 'ヌード', [196, 122, 106]]];
+// リップの色の見本は、市販の口紅（ディオール・シャネル・イヴ・サンローラン・ジバンシィ・メイベリンの 287 色）を色の系統で分け、
+// それぞれの系統のまん中に近い実際の色にした（ピンク: ディオール 351、コーラル: ディオール 644、レッド: ジバンシィ 13、
+// ローズ: ジバンシィ 23、ベリー: ディオール 867、ヌード: イヴ・サンローラン 11 の色）
+export const LIP_COLORS = [['pink', 'ピンク', [228, 97, 119]], ['coral', 'コーラル', [234, 83, 49]], ['red', 'レッド', [202, 41, 46]], ['rose', 'ローズ', [198, 46, 84]], ['berry', 'ベリー', [144, 26, 50]], ['nude', 'ヌード', [192, 107, 114]]];
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const LIN = new Float32Array(256).map((_, i) => { const v = i / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
@@ -578,8 +581,8 @@ function lip(img, mk, amt, col, area) {
   const mY = sY / sw; const mC = Math.max(4, sC / sw);
   const [tY, tCb, tCr] = ycc(col[0], col[1], col[2]); const tC = Math.hypot(tCb - 128, tCr - 128);
   const tdir = tC > 0 ? [(tCb - 128) / tC, (tCr - 128) / tC] : [0, 0];
-  // 目標の明るさへの寄せ方（唇全体の明るさを、目標の色の明るさへ少しだけ。明るくするのは控えめ）
-  const yGain = Math.min(1.15, Math.max(0.6, tY / Math.max(mY, 1)));
+  // 目標の明るさへの寄せ方（唇全体の明るさを、目標の色の明るさへ。暗い色（ベリー・レッド）は暗くなる。明るくするのは控えめ）
+  const yGain = Math.min(1.1, Math.max(0.45, tY / Math.max(mY, 1)));
   // 目標の色の濃さは、唇の明るさに合わせる（暗い唇に明るい色の濃さをそのままのせると、蛍光色のように浮く）
   const cScale = Math.min(1, Math.max(0.35, mY / Math.max(tY, 1)));
   // 色の濃さは、元の唇の濃さから目標の 6 割まで（そのまま目標の濃さにすると、元の唇よりずっと鮮やかになり、塗ったように浮く）
@@ -593,7 +596,7 @@ function lip(img, mk, amt, col, area) {
     const relY = Math.min(1.6, Math.max(0.5, Y / mY));
     const c = tCe * relC * Math.min(1.2, Math.max(0.6, relY ** 0.5)); // 明るい所は少し濃く、影は少し淡く
     const gCb = 128 + tdir[0] * c; const gCr = 128 + tdir[1] * c;
-    const Y1 = Y * (1 + (yGain - 1) * 0.5 * a);
+    const Y1 = Y * (1 + (yGain - 1) * a);
     const cb1 = cb + (gCb - cb) * a; const cr1 = cr + (gCr - cr) * a;
     d[k] = Math.max(0, Math.min(255, Y1 + 1.402 * (cr1 - 128)));
     d[k + 1] = Math.max(0, Math.min(255, Y1 - 0.344136 * (cb1 - 128) - 0.714136 * (cr1 - 128)));
