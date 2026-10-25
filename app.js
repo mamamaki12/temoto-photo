@@ -42,6 +42,8 @@ const GROUPS = [
   ['info', 'ⓘ', '情報', ['info']],
 ];
 const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '目元・歯', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+/** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
+const MAX_REFS = 40;
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
 /** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
@@ -983,7 +985,8 @@ const PANELS = {
               for (const c of cands) URL.revokeObjectURL(c.url);
             }
           } finally { E?.stageEl.classList.remove('busy'); }
-          if (add.length) { await save(list.map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-12) } : q))); toast(`${add.length}枚の顔を追加しました`); }
+          // 読み込み中に別の写真を足したときも消えないよう、保存の直前の一覧に足す
+          if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました`); }
         });
         const name = h('input', { value: p.name, maxlength: 20, 'aria-label': '人の名前', onchange: () => save(list.map((q) => (q.id === p.id ? { ...q, name: name.value.trim().slice(0, 20) || q.name } : q))) });
         return h('div', { class: 'faceai-person' },
@@ -1006,7 +1009,7 @@ const PANELS = {
       facesBox,
       slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
       h('h3', {}, '本人の写真'),
-      hint('その人が明るい所ではっきり写った写真を、2〜5 枚追加してください（正面に近い顔・歯が見える笑顔があると、歯並びや目元が本人らしくなります）。写真は端末の中に保存され、ほかの写真の顔にも選べます。'),
+      hint(`その人が明るい所ではっきり写った写真を、できれば 10 枚以上（${MAX_REFS} 枚まで）追加してください。枚数が多いほど、表情や目線が合う写真が見つかりやすく、目元・歯並びが本人らしくなります（いろいろな表情・笑顔の写真があると効きます）。写真は端末の中に保存され、ほかの写真の顔にも選べます。`),
       peopleBox,
     ];
   },

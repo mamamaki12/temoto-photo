@@ -195,21 +195,44 @@ function midBand(img, w, h) {
   return a;
 }
 
+/** 目のまわり（MediaPipe の目の縁。目尻 → 下まぶた → 目頭 → 上まぶた） */
+const EYES = [[33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246], [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]];
+/** 目のまわりで使う本人の写真の枚数（その目の形がいちばん合うもの） */
+const EYE_TOP = 3;
+
 /**
  * 本人の写真の細かい模様を、この顔に移す（AI に渡す前）。大まかな形と色はこの顔のまま。
  * 本人の写真を顔の点で曲げて重ね、まわりの形がよく合う所（目・歯・まぶたの線が同じ位置にある所）だけ、その細かい所を使う。
- * 合わない所（口の開き方・目線が違う所）は、この顔の細かい所のまま
+ * 合わない所（口の開き方・目線が違う所）は、この顔の細かい所のまま。
+ * 目のまわりだけは、その目の形がいちばん合う EYE_TOP 枚だけを使う（たくさんの写真を平均すると、黒目の光やまつげの線が薄まって目が眠そうに見えるため）
  * @param {Float32Array} face この顔の切り出し（RGB、0〜255） @param {number[][]} pts この顔の点（512 の座標）
  * @param {{img:Float32Array,pts:number[][]}[]} refs 本人の写真の切り出しと顔の点
  */
 export function transferDetail(face, pts, refs, size = SIZE) {
   const n = size * size; const base = gauss(face, size, size, 3, SPLIT); const tm = midBand(face, size, size);
   const acc = new Float32Array(n * 3); const wsum = new Float32Array(n);
+  const eyes = EYES.map((idx) => { const m = polyMask(idx.map((i) => pts[i]), size, 18, 6); return { m, box: maskBox(m, size), top: [] }; });
   for (const r of refs) {
     const w = meshWarp(r.img, r.pts, pts, size); const wl = gauss(w, size, size, 3, SPLIT); const q = localCorr(tm, midBand(w, size, size), size, size, 6);
+    const k = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      const k = Math.min(1, Math.max(0, (q[i] - 0.3) / 0.4)) ** 2; if (!k) continue;
-      wsum[i] += k; for (let c = 0; c < 3; c++) acc[i * 3 + c] += (w[i * 3 + c] - wl[i * 3 + c]) * k;
+      k[i] = Math.min(1, Math.max(0, (q[i] - 0.3) / 0.4)) ** 2; if (!k[i]) continue;
+      wsum[i] += k[i]; for (let c = 0; c < 3; c++) acc[i * 3 + c] += (w[i * 3 + c] - wl[i * 3 + c]) * k[i];
+    }
+    for (const e of eyes) {
+      if (!e.box) continue;
+      const [x0, y0, x1, y1] = e.box; let sq = 0; let sm = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = y * size + x; sq += q[i] * e.m[i]; sm += e.m[i]; }
+      const score = sq / sm;
+      if (e.top.length >= EYE_TOP && score <= e.top[e.top.length - 1].score) continue;
+      const bw = x1 - x0; const D = new Float32Array(bw * (y1 - y0) * 3); const K = new Float32Array(bw * (y1 - y0));
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = y * size + x; const j = (y - y0) * bw + x - x0; K[j] = k[i];
+          for (let c = 0; c < 3; c++) D[j * 3 + c] = w[i * 3 + c] - wl[i * 3 + c];
+        }
+      }
+      e.top.push({ score, D, K }); e.top.sort((a, b) => b.score - a.score); if (e.top.length > EYE_TOP) e.top.pop();
     }
   }
   const mask = faceMask(pts, size, 0, 8); const out = new Float32Array(n * 3);
@@ -217,15 +240,34 @@ export function transferDetail(face, pts, refs, size = SIZE) {
     const cover = Math.min(1, wsum[i]) * mask[i];
     for (let c = 0; c < 3; c++) {
       const o = i * 3 + c; const own = face[o] - base[o]; const ref = wsum[i] > 1e-3 ? acc[o] / wsum[i] : 0;
-      out[o] = Math.min(255, Math.max(0, base[o] + ref * cover + own * (1 - cover)));
+      out[o] = base[o] + ref * cover + own * (1 - cover);
     }
   }
+  // 目のまわり: 形がいちばん合う写真だけで作り直して、なめらかに入れ替える
+  for (const e of eyes) {
+    if (!e.box || !e.top.length) continue;
+    const [x0, y0, x1, y1] = e.box; const bw = x1 - x0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = y * size + x; const j = (y - y0) * bw + x - x0; const em = e.m[i]; if (!em) continue;
+        let ks = 0; for (const t of e.top) ks += t.K[j];
+        const cover = Math.min(1, ks);
+        for (let c = 0; c < 3; c++) {
+          const o = i * 3 + c; let ref = 0;
+          if (ks > 1e-3) { for (const t of e.top) ref += t.D[j * 3 + c] * t.K[j]; ref /= ks; }
+          const eye = base[o] + ref * cover + (face[o] - base[o]) * (1 - cover);
+          out[o] = out[o] * (1 - em) + eye * em;
+        }
+      }
+    }
+  }
+  for (let o = 0; o < out.length; o++) out[o] = Math.min(255, Math.max(0, out[o]));
   return out;
 }
 
-/** 顔の輪郭の内側を 1、外を 0 にした地図（grow: 外へ広げる画素、soft: ぼかし）。512 の座標 */
-export function faceMask(pts, size = SIZE, grow = 12, soft = 8) {
-  const poly = OVAL.map((i) => pts[i]); const m = new Float32Array(size * size);
+/** 多角形の内側を 1 にした地図（grow: 外へ広げる画素、soft: ぼかし）。512 の座標 */
+function polyMask(poly, size, grow, soft) {
+  const m = new Float32Array(size * size);
   for (let y = 0; y < size; y++) {
     // 横の線と輪郭の交わる所
     const xs = [];
@@ -239,6 +281,17 @@ export function faceMask(pts, size = SIZE, grow = 12, soft = 8) {
   let out = m;
   if (grow > 0) { const g = gauss(m, size, size, 1, grow / 2); out = new Float32Array(m.length); for (let i = 0; i < m.length; i++) out[i] = g[i] > 0.02 ? 1 : 0; }
   return soft > 0 ? gauss(out, size, size, 1, soft) : out;
+}
+/** 地図の 0 でない所を囲む四角 [x0, y0, x1, y1]（なければ null） */
+function maskBox(m, size) {
+  let x0 = size; let y0 = size; let x1 = -1; let y1 = -1;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (m[y * size + x] > 1e-3) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  return x1 < 0 ? null : [x0, y0, x1 + 1, y1 + 1];
+}
+
+/** 顔の輪郭の内側を 1、外を 0 にした地図（grow: 外へ広げる画素、soft: ぼかし）。512 の座標 */
+export function faceMask(pts, size = SIZE, grow = 12, soft = 8) {
+  return polyMask(OVAL.map((i) => pts[i]), size, grow, soft);
 }
 
 /**
