@@ -126,6 +126,12 @@ function validRetouch(r) {
     const pts = arr(r.pts, MAX_BRUSH_POINTS).filter((q) => Array.isArray(q)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]);
     if (!pts.length) return null;
     const op = { type: r.type, pts, r: num(r.r, 0.002, 0.3, 0.03), amt: num(r.amt, 0, 1, 0.5) };
+    if (r.type === 'warp' && r.v === 2) {
+      // 形を整える（2 版）: ずらす量を重ねて 1 回だけ読み直す。pm = 人物の地図（なぞり始めのまわり。n×n を base64 で）
+      op.v = 2;
+      const pm = r.pm; const n = Number.isInteger(pm?.n) && pm.n >= 4 && pm.n <= 256 ? pm.n : 0;
+      if (n && typeof pm.d === 'string' && pm.d.length === Math.ceil(n * n / 3) * 4 && Array.isArray(pm.b) && pm.b.length === 4) op.pm = { b: pm.b.map((v) => num(v, 0, 1)), n, d: pm.d };
+    }
     if (r.type === 'lip') op.col = Array.isArray(r.col) && r.col.length === 3 ? r.col.map((v) => int(v, 0, 255)) : [214, 92, 120]; // リップの色
     if (r.type === 'lip' || r.type === 'teeth') {
       // AI で見つけた唇の輪郭（顔ごとに外側・内側 20 点ずつ）。リップは唇、歯は口の中（内側の輪郭）を元に範囲を決める

@@ -911,18 +911,17 @@ function moveIris(img, eye, delta) {
   // 行き先の画素ごとに、元の位置を決める（逆向きの写像）。動かしたあとの黒目の中は、そのまま (dx, dy) ずらして読む。
   // 黒目の外（白目）は、黒目のふちからまぶたのふち（黒目の中心から見た向きに進んだ先）までの間で、ずらす量を 1 → 0 になだらかに減らす
   // （白目が伸び縮みする）。まぶたのふちでは 0 なので、ふちの外とつながる
-  // まぶたのふちからの距離と、いちばん近いふちの向き（内側の画素だけ）。ふちのそば（黒目の半径の 4 割ほど）は、ふちを横切る向きには動かさず、
-  // ふちに沿う向きにだけ動かす: AI のまぶたの線は実際のふちと 1〜2 画素ずれるので、ふちを横切って動かすと、まつげ・アイラインが二重になる。
-  // ふちに沿って動かせば、まつげの線はそのままで、黒目のふちはまぶたの線のところまで動く
-  const band = Math.max(1, BAND * R); const D = new Float32Array(bw * bh); const T = new Float32Array(bw * bh * 2); const lp = lid.map(([x, y]) => [x - bx, y - by]);
+  // まぶたのふちからの距離（内側の画素だけ）。ふちのそば（黒目の半径の 3〜4 割）は、元の画素と動かした画素の暗い方にする:
+  // AI のまぶたの線は実際のふちと 1〜2 画素ずれるので、ふちの内側に入っていたまつげ・アイラインを動かすと二重の線に見える。
+  // 暗い方なら、元のまつげの線は残り、黒目が来た所は黒目になる（白目の細い線が残らない）
+  const band = Math.max(1, BAND * R); const D = new Float32Array(bw * bh); const lp = lid.map(([x, y]) => [x - bx, y - by]);
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
-    if (!P[y * bw + x]) continue; const X = x + 0.5; const Y = y + 0.5; let m = Infinity; let tx = 1; let ty = 0;
+    if (!P[y * bw + x]) continue; const X = x + 0.5; const Y = y + 0.5; let m = Infinity;
     for (let i = 0; i < lp.length; i++) {
       const [ax, ay] = lp[i]; const [qx, qy] = lp[(i + 1) % lp.length]; const vx = qx - ax; const vy = qy - ay; const l2 = vx * vx + vy * vy || 1e-6;
-      const t = Math.max(0, Math.min(1, ((X - ax) * vx + (Y - ay) * vy) / l2)); const dd = Math.hypot(X - ax - vx * t, Y - ay - vy * t);
-      if (dd < m) { m = dd; const l = Math.sqrt(l2); tx = vx / l; ty = vy / l; }
+      const t = Math.max(0, Math.min(1, ((X - ax) * vx + (Y - ay) * vy) / l2)); m = Math.min(m, Math.hypot(X - ax - vx * t, Y - ay - vy * t));
     }
-    D[y * bw + x] = m; T[(y * bw + x) * 2] = tx; T[(y * bw + x) * 2 + 1] = ty;
+    D[y * bw + x] = m;
   }
   const nc = [c[0] + dx - bx, c[1] + dy - by]; const out = new Float32Array(src); const tmp = [0, 0, 0];
   const inside = (x, y) => { const ix = x | 0; const iy = y | 0; return ix >= 0 && iy >= 0 && ix < bw && iy < bh && P[iy * bw + ix]; };
@@ -974,6 +973,128 @@ function gaze(img, op, at) {
     const delta = [sx / eyes.length, sy / eyes.length];
     for (const e of eyes) moveIris(img, e, delta);
   }
+}
+
+/** ブラシの形（中心からの距離 q 0〜1 → 動かす割合）。中ほどまでは全部動かし、縁に向かってなめらかに 0 に（尖った山だと輪郭がへこむ） */
+export const warpKernel = (q) => { if (q >= 1) return 0; const t = (1 - q * q); return t * t; };
+
+/**
+ * 形を整える（2 版）: なぞった区間ごとに「どこから画素を持ってくるか」（ずらす量の地図 D）だけを重ねていき、
+ * 画素は、なぞる前の写真から 1 回だけ読み直す（区間ごとに読み直すと、そのたびに少しずつぼける）。
+ * protect（人物の地図から作った、動かしてよい度合い。warpProtect）があれば:
+ *   - 背景（人物から離れた所）は動かさない。人物の側（髪・肌・服）でずれを受け止める
+ *   - 人物を外へ広げるときは、人物の画素を受け取る背景の画素も動かす（人物の地図は、動かした分だけずれた所で見る）
+ * 色で混ぜ合わせない（背景を元の色に戻さない）ので、輪郭が透けたり二重になったりしない。
+ * 返す物の seg(p0, p1, amt) で 1 区間を当て、書き換えた範囲 [x, y, w, h] を返す
+ */
+export function warpStroke(img, rad, protect = null) {
+  const W = img.width; const H = img.height; const d = img.data;
+  let rx = 0; let ry = 0; let rw = 0; let rh = 0; let D = new Float32Array(0); let O = new Uint8ClampedArray(0); let maxD = 0;
+  // ずらす量の地図 D（x, y の 2 つずつ）と、なぞる前の画素 O を持つ四角を、必要なだけ広げる
+  const grow = (x0, y0, x1, y1) => {
+    x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(W, x1); y1 = Math.min(H, y1);
+    if (rw && x0 >= rx && y0 >= ry && x1 <= rx + rw && y1 <= ry + rh) return;
+    if (rw) { x0 = Math.min(x0, rx); y0 = Math.min(y0, ry); x1 = Math.max(x1, rx + rw); y1 = Math.max(y1, ry + rh); }
+    const nw = x1 - x0; const nh = y1 - y0; const nD = new Float32Array(nw * nh * 2); const nO = new Uint8ClampedArray(nw * nh * 4);
+    for (let y = 0; y < nh; y++) nO.set(d.subarray(((y0 + y) * W + x0) * 4, ((y0 + y) * W + x1) * 4), y * nw * 4); // 四角の外は、まだ書き換えていない
+    for (let y = 0; y < rh; y++) {
+      nD.set(D.subarray(y * rw * 2, (y + 1) * rw * 2), ((ry - y0 + y) * nw + rx - x0) * 2);
+      nO.set(O.subarray(y * rw * 4, (y + 1) * rw * 4), ((ry - y0 + y) * nw + rx - x0) * 4);
+    }
+    rx = x0; ry = y0; rw = nw; rh = nh; D = nD; O = nO;
+  };
+  const px = (x, y, c) => (x >= rx && y >= ry && x < rx + rw && y < ry + rh ? O[((y - ry) * rw + x - rx) * 4 + c] : d[(y * W + x) * 4 + c]);
+  const out = [0, 0, 0];
+  const orig = (x, y) => {
+    x = x < 0 ? 0 : x > W - 1 ? W - 1 : x; y = y < 0 ? 0 : y > H - 1 ? H - 1 : y;
+    const x0 = Math.floor(x); const y0 = Math.floor(y); const x1 = Math.min(x0 + 1, W - 1); const y1 = Math.min(y0 + 1, H - 1); const fx = x - x0; const fy = y - y0;
+    for (let c = 0; c < 3; c++) out[c] = (px(x0, y0, c) * (1 - fx) + px(x1, y0, c) * fx) * (1 - fy) + (px(x0, y1, c) * (1 - fx) + px(x1, y1, c) * fx) * fy;
+  };
+  return {
+    seg(p0, p1, amt) {
+      let dx = (p1[0] - p0[0]) * amt; let dy = (p1[1] - p0[1]) * amt;
+      if (!dx && !dy) return null;
+      // 1 区間で動かすのは半径の 2 割まで（速くなぞっても、画素がちぎれない）
+      const lim = rad * 0.2; const len = Math.hypot(dx, dy); if (len > lim) { dx *= lim / len; dy *= lim / len; }
+      const x0 = Math.max(0, Math.floor(p1[0] - rad - 1)); const y0 = Math.max(0, Math.floor(p1[1] - rad - 1));
+      const x1 = Math.min(W, Math.ceil(p1[0] + rad + 2)); const y1 = Math.min(H, Math.ceil(p1[1] + rad + 2));
+      if (x1 <= x0 || y1 <= y0) return null;
+      const m = Math.hypot(dx, dy); const pad = Math.ceil(m + maxD) + 2;
+      grow(x0 - pad, y0 - pad, x1 + pad, y1 + pad);
+      // 動かす前のずらす量（読み出す所は、動かす量だけ広く）
+      const tx0 = Math.max(rx, x0 - Math.ceil(m) - 2); const ty0 = Math.max(ry, y0 - Math.ceil(m) - 2);
+      const tx1 = Math.min(rx + rw, x1 + Math.ceil(m) + 2); const ty1 = Math.min(ry + rh, y1 + Math.ceil(m) + 2); const tw = tx1 - tx0; const th = ty1 - ty0;
+      const T = new Float32Array(tw * th * 2);
+      for (let y = 0; y < th; y++) T.set(D.subarray(((ty0 - ry + y) * rw + tx0 - rx) * 2, ((ty0 - ry + y) * rw + tx1 - rx) * 2), y * tw * 2);
+      const tAt = (x, y, c) => {
+        x -= tx0; y -= ty0; x = x < 0 ? 0 : x > tw - 1 ? tw - 1 : x; y = y < 0 ? 0 : y > th - 1 ? th - 1 : y;
+        const a = Math.floor(x); const b = Math.floor(y); const a1 = Math.min(a + 1, tw - 1); const b1 = Math.min(b + 1, th - 1); const fx = x - a; const fy = y - b;
+        return (T[(b * tw + a) * 2 + c] * (1 - fx) + T[(b * tw + a1) * 2 + c] * fx) * (1 - fy) + (T[(b1 * tw + a) * 2 + c] * (1 - fx) + T[(b1 * tw + a1) * 2 + c] * fx) * fy;
+      };
+      // 今の絵の中で、(x, y) にある物が人物の側かどうか（なぞる前の地図を、動かした分だけずらした所で見る）
+      const pw = (x, y) => protect(x - tAt(x, y, 0), y - tAt(x, y, 1));
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const q = Math.hypot(x - p1[0], y - p1[1]) / rad; if (q >= 1) continue;
+        let f = warpKernel(q); // 中心ほど大きく動かす
+        if (protect) {
+          // 動かしてよいのは、人物の側にある画素と、人物の画素を受け取る（人物を外へ広げる先の）画素。それ以外の背景は動かさない
+          const g = Math.max(pw(x, y), pw(x - dx * f, y - dy * f)); if (g <= 0) continue;
+          f *= g;
+        }
+        const ex = dx * f; const ey = dy * f;
+        const nx = ex + tAt(x - ex, y - ey, 0); const ny = ey + tAt(x - ex, y - ey, 1);
+        const j = ((y - ry) * rw + x - rx) * 2; D[j] = nx; D[j + 1] = ny;
+        const a = Math.hypot(nx, ny); if (a > maxD) maxD = a;
+        orig(x - nx, y - ny);
+        const k = (y * W + x) * 4; d[k] = out[0]; d[k + 1] = out[1]; d[k + 2] = out[2];
+      }
+      return [x0, y0, x1 - x0, y1 - y0];
+    },
+  };
+}
+
+/**
+ * 人物の地図（op.pm: なぞり始めのまわりの、人物らしさ 0〜1 を n×n に縮めたもの）から、動かしてよい度合いを返す関数を作る。
+ * 人物の中は 1、背景は 0。人物の外は、人物から離れるほど（半径の band 倍で 0 に）だんだん動かさなくなる（人物の輪郭を内へ押すとき、
+ * 輪郭のそばの背景が少し伸びてすき間を埋める。帯が狭いと柵・柱などの線が急に折れ、全部止めると押した分だけ背景がずれて継ぎ目ができる。
+ * 半径 1 つ分の帯だと、線はゆるやかに曲がる程度）。
+ * 人物がブラシの中にほとんどないときは null（ふつうに動かす）
+ */
+export function warpProtect(pm, rad, at, p0, band = 1) {
+  if (!pm?.d) return null;
+  const n = pm.n; const bin = atob(pm.d); if (bin.length !== n * n) return null;
+  const P = new Float32Array(n * n); for (let i = 0; i < n * n; i++) P[i] = bin.charCodeAt(i) / 255;
+  const bx0 = pm.b[0] * at.W - at.ox; const by0 = pm.b[1] * at.H - at.oy; const cw = (pm.b[2] - pm.b[0]) * at.W / n; const ch = (pm.b[3] - pm.b[1]) * at.H / n;
+  if (!(cw > 0 && ch > 0)) return null;
+  // ブラシの中に人物がほとんどなければ、守らない
+  let inside = 0; let tot = 0;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const x = bx0 + (i + 0.5) * cw; const y = by0 + (j + 0.5) * ch; if (Math.hypot(x - p0[0], y - p0[1]) > rad) continue;
+    tot++; if (P[j * n + i] > 0.5) inside++;
+  }
+  if (!tot || inside / tot < 0.08) return null;
+  // 人物の外の、人物からの距離（升目の数。8 方向の近似）
+  const INF = 1e9; const dist = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) dist[i] = P[i] > 0.5 ? 0 : INF;
+  const pass = (ys, xs, nb) => { for (const y of ys) for (const x of xs) { let v = dist[y * n + x]; for (const [ox, oy, w] of nb) { const a = x + ox; const b = y + oy; if (a >= 0 && b >= 0 && a < n && b < n) v = Math.min(v, dist[b * n + a] + w); } dist[y * n + x] = v; } };
+  const up = [...Array(n).keys()]; const down = [...up].reverse();
+  pass(up, up, [[-1, 0, 1], [0, -1, 1], [-1, -1, 1.414], [1, -1, 1.414]]);
+  pass(down, down, [[1, 0, 1], [0, 1, 1], [1, 1, 1.414], [-1, 1, 1.414]]);
+  const bw = Math.max(1, rad * band / Math.min(cw, ch));
+  const G = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) { const t = clamp01(1 - dist[i] / bw); G[i] = P[i] > 0.5 ? 1 : Math.max(P[i], t * t * (3 - 2 * t)); }
+  return (x, y) => {
+    let u = (x - bx0) / cw - 0.5; let v = (y - by0) / ch - 0.5; if (u < -1 || v < -1 || u > n || v > n) return 1; // 地図の外は、ふつうに動かす
+    u = u < 0 ? 0 : u > n - 1 ? n - 1 : u; v = v < 0 ? 0 : v > n - 1 ? n - 1 : v;
+    const a = Math.floor(u); const b = Math.floor(v); const a1 = Math.min(a + 1, n - 1); const b1 = Math.min(b + 1, n - 1); const fx = u - a; const fy = v - b;
+    return (G[b * n + a] * (1 - fx) + G[b * n + a1] * fx) * (1 - fy) + (G[b1 * n + a] * (1 - fx) + G[b1 * n + a1] * fx) * fy;
+  };
+}
+
+/** 人物の地図を作る範囲（なぞり始めのまわり。写真全体に対する 0〜1 の [x0, y0, x1, y1]） */
+export function warpProtectBox(p0, r, W, H) {
+  const S = Math.min(W, H); const h = r * S * 3;
+  return [Math.max(0, p0[0] * W - h) / W, Math.max(0, p0[1] * H - h) / H, Math.min(W, p0[0] * W + h) / W, Math.min(H, p0[1] * H + h) / H];
 }
 
 /** 折れ線（画素）に沿った位置: t は始点 0〜終点 1（両端の区間はその外へ伸ばす）、s は線からの横の距離（符号つき） */
@@ -1070,6 +1191,12 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
   if (op.type === 'warp') {
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
+    if (op.v === 2) {
+      // 2 版: ずらす量を重ねて 1 回だけ読み直す。人物の地図（op.pm）があれば背景を守る
+      const st = warpStroke(img, rad, warpProtect(op.pm, rad, at, pts[0]));
+      for (let i = 1; i < pts.length; i++) st.seg(pts[i - 1], pts[i], amt);
+      return;
+    }
     const guard = op.keepBg === false || pts.length < 2 ? null : warpGuard(img, pts[0], pts[1], rad);
     for (let i = 1; i < pts.length; i++) warpSegment(img, pts[i - 1], pts[i], rad, amt, guard);
     return;
@@ -1094,11 +1221,13 @@ export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, o
 /** 書き出しで読み出す範囲（全体の画素の座標 [x, y, w, h]）。ぼかし・動かす量のぶん、まわりも含める */
 export function brushBounds(op, W, H) {
   const S = Math.min(W, H); const rad = Math.max(1.5, op.r * S);
-  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity; let travel = 0;
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity; let travel = 0; let shift = 0;
   op.pts.forEach(([x, y], i) => {
     const px = x * W; const py = y * H; x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py);
-    if (i) travel = Math.max(travel, Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H));
+    if (i) { const l = Math.hypot(px - op.pts[i - 1][0] * W, py - op.pts[i - 1][1] * H); travel = Math.max(travel, l); shift += Math.min(l * op.amt, rad * 0.2); }
   });
+  // 形を整える（2 版）は、なぞる前の画素を、区間ごとのずらした量の合計だけ遠くから読む
+  if (op.type === 'warp' && op.v === 2) travel = shift;
   // 範囲を自動で決めるときは、唇のまわりも読み出す（唇の高さの 5 割ほど外まで。色を覚える所とぼかしのぶん）
   if ((op.type === 'lip' || op.type === 'teeth') && op.whole) for (const l of op.lips || []) {
     const ys = l.outer.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.5 + 8;
