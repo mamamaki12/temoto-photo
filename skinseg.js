@@ -115,29 +115,28 @@ export async function findLips(img) {
   } catch (e) { console.warn('唇を見つける AI を使えませんでした（色で判定します）', e); return null; }
 }
 
-const mouthStore = new Map(); // 指紋と切り出した所 → 唇の輪郭の一覧
+const partStore = new Map(); // 種類と指紋と切り出した所 → 見つけたものの一覧
 /**
- * なぞった所（目印）のそばの口（唇の外側・内側の輪郭。写真全体に対する 0〜1 の座標）を AI で見つける。
+ * なぞった所（目印）のそばの顔の部位を AI で見つける（findMouth・findEyes の中身）。
  * 舞台や集合写真では顔が小さく、写真全体を縮めて AI に渡すと見つからないので、なぞった所のまわりを
  * 狭い方から順に切り出して渡す（顔がまるごと入る大きさになったところで見つかる）。最後に写真全体でも探す。
- * pts: なぞった線（0〜1）、r: ブラシの半径（短い辺に対する割合）
- * @returns {Promise<{outer:number[][],inner:number[][]}[]|null>} 見つからなければ []、AI を使えなければ null
+ * kind: Worker に頼む種類、key: 返事の中の一覧の名前、back(item, fn): 座標を写真全体の 0〜1 に戻す、
+ * bbox(item): 部位を囲む四角 [x0, y0, x1, y1]（0〜1）
  */
-export async function findMouth(img, pts, r = 0) {
+async function findPart(img, pts, r, { kind, key, back, bbox, whole }) {
   const W = img.width; const H = img.height; const S = Math.min(W, H);
   const xs = pts.map((q) => q[0] * W); const ys = pts.map((q) => q[1] * H); const rp = r * S;
   const box = [Math.min(...xs) - rp, Math.min(...ys) - rp, Math.max(...xs) + rp, Math.max(...ys) + rp];
   const cx = (box[0] + box[2]) / 2; const cy = (box[1] + box[3]) / 2;
   const s = Math.max(box[2] - box[0], box[3] - box[1], S * 0.01);
-  // 目印に重なる口のうち、目印の真ん中にいちばん近いもの
-  const pick = (lips) => {
+  // 目印に重なるもののうち、目印の真ん中にいちばん近いもの
+  const pick = (items) => {
     let best = null; let bd = Infinity;
-    for (const l of lips) {
-      const lx = l.outer.map((q) => q[0] * W); const ly = l.outer.map((q) => q[1] * H);
-      const mw = Math.max(...lx) - Math.min(...lx); const pad = mw * 0.25;
-      if (Math.max(...lx) + pad < box[0] || Math.min(...lx) - pad > box[2] || Math.max(...ly) + pad < box[1] || Math.min(...ly) - pad > box[3]) continue;
-      const d = Math.hypot((Math.max(...lx) + Math.min(...lx)) / 2 - cx, (Math.max(...ly) + Math.min(...ly)) / 2 - cy);
-      if (d < bd) { bd = d; best = l; }
+    for (const it of items) {
+      const [bx0, by0, bx1, by1] = bbox(it); const x0 = bx0 * W; const x1 = bx1 * W; const y0 = by0 * H; const y1 = by1 * H; const pad = (x1 - x0) * 0.25;
+      if (x1 + pad < box[0] || x0 - pad > box[2] || y1 + pad < box[1] || y0 - pad > box[3]) continue;
+      const d = Math.hypot((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy);
+      if (d < bd) { bd = d; best = it; }
     }
     return best ? [best] : [];
   };
@@ -147,9 +146,9 @@ export async function findMouth(img, pts, r = 0) {
     const x0 = Math.max(0, Math.round(cx - side / 2)); const y0 = Math.max(0, Math.round(cy - side / 2));
     const cw = Math.min(W, Math.round(cx + side / 2)) - x0; const ch = Math.min(H, Math.round(cy + side / 2)) - y0;
     if (cw < 16 || ch < 16) continue;
-    const key = `${fingerprint(img)}|${x0},${y0},${cw},${ch}`;
-    let lips = mouthStore.get(key);
-    if (!lips) {
+    const sk = `${kind}|${fingerprint(img)}|${x0},${y0},${cw},${ch}`;
+    let items = partStore.get(sk);
+    if (!items) {
       try {
         if (!src) { src = new OffscreenCanvas(W, H); src.getContext('2d').putImageData(img instanceof ImageData ? img : new ImageData(img.data, W, H), 0, 0); }
         // AI に渡す大きさ: 長い辺 384〜768（小さく切り出したときは拡大する。顔の点は渡した大きさの中の割合で返る）
@@ -157,15 +156,43 @@ export async function findMouth(img, pts, r = 0) {
         const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
         const c2 = new OffscreenCanvas(w, h); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
         const small = x2.getImageData(0, 0, w, h);
-        const res = await call({ kind: 'lips', w, h, data: small.data }, [small.data.buffer]);
-        const back = (q) => [(x0 + q[0] * cw) / W, (y0 + q[1] * ch) / H];
-        lips = res.lips.map((l) => ({ outer: l.outer.map(back), inner: l.inner.map(back) }));
-        mouthStore.set(key, lips); if (mouthStore.size > 32) mouthStore.delete(mouthStore.keys().next().value);
+        const res = await call({ kind, w, h, data: small.data }, [small.data.buffer]);
+        const fn = (q) => [(x0 + q[0] * cw) / W, (y0 + q[1] * ch) / H];
+        items = res[key].map((it) => back(it, fn));
+        partStore.set(sk, items); if (partStore.size > 64) partStore.delete(partStore.keys().next().value);
         ok = true;
-      } catch (e) { console.warn('口を見つける AI を使えませんでした', e); return null; }
+      } catch (e) { console.warn('顔を見つける AI を使えませんでした', e); return null; }
     } else ok = true;
-    const got = pick(lips); if (got.length) return got;
+    const got = pick(items); if (got.length) return got;
   }
-  const all = await findLips(img); if (!all) return ok ? [] : null;
+  const all = await whole(img); if (!all) return ok ? [] : null;
   return pick(all);
 }
+const lipsBack = (l, fn) => ({ outer: l.outer.map(fn), inner: l.inner.map(fn) });
+const polyBox = (polys) => { let x0 = 1; let y0 = 1; let x1 = 0; let y1 = 0; for (const p of polys) for (const [x, y] of p) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return [x0, y0, x1, y1]; };
+/**
+ * なぞった所（目印）のそばの口（唇の外側・内側の輪郭。写真全体に対する 0〜1 の座標）を AI で見つける。
+ * pts: なぞった線（0〜1）、r: ブラシの半径（短い辺に対する割合）
+ * @returns {Promise<{outer:number[][],inner:number[][]}[]|null>} 見つからなければ []、AI を使えなければ null
+ */
+export const findMouth = (img, pts, r = 0) => findPart(img, pts, r, { kind: 'lips', key: 'lips', back: lipsBack, bbox: (l) => polyBox([l.outer]), whole: findLips });
+
+const eyesBack = (f, fn) => f.map((e) => ({ lid: e.lid.map(fn), iris: e.iris.map(fn), pose: e.pose }));
+/** 写真全体の中の、顔ごとの両目（findEyes の最後の手段） */
+async function findAllEyes(img) {
+  try {
+    const s = Math.min(1, 1280 / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * s)); const h = Math.max(1, Math.round(img.height * s));
+    const c = new OffscreenCanvas(img.width, img.height); c.getContext('2d').putImageData(img instanceof ImageData ? img : new ImageData(img.data, img.width, img.height), 0, 0);
+    const c2 = new OffscreenCanvas(w, h); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(c, 0, 0, w, h);
+    const small = x2.getImageData(0, 0, w, h);
+    return (await call({ kind: 'eyes', w, h, data: small.data }, [small.data.buffer])).eyes;
+  } catch (e) { console.warn('目を見つける AI を使えませんでした', e); return null; }
+}
+/**
+ * なぞった所（目印）のそばの顔の両目（まぶたのふち 16 点と、黒目の中心と上右下左の 4 点。写真全体に対する 0〜1 の座標）を AI で見つける。
+ * 目印は顔のどこでもよい（目のあたりが確実）。
+ * 各目に pose: 顔の向き [yaw, pitch]（ラジアン。写真の右・上を向いていると正）
+ * @returns {Promise<{lid:number[][],iris:number[][],pose:number[]}[][]|null>} [[右目, 左目]]。見つからなければ []、AI を使えなければ null
+ */
+export const findEyes = (img, pts, r = 0) => findPart(img, pts, r, { kind: 'eyes', key: 'eyes', back: eyesBack, bbox: (f) => { const b = polyBox(f.map((e) => e.lid)); const w = b[2] - b[0]; return [b[0] - w * 0.3, b[1] - w * 0.6, b[2] + w * 0.3, b[3] + w * 0.9]; }, whole: findAllEyes });

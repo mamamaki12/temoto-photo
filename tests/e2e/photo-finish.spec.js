@@ -76,6 +76,10 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
     const out = {};
     for (const type of BRUSH_TYPES) {
       const op = { type, pts: [[0.3, 0.4], [0.36, 0.45], [0.42, 0.47]], r: 0.06, amt: 0.8 };
+      if (type === 'gaze') { // 目線は AI が見つけた両目（まぶたのふち 16 点と黒目）に当てる: 作りものの目を 2 つ
+        const eye = (cx) => ({ lid: Array.from({ length: 16 }, (_, i) => { const a = Math.PI - (i / 16) * Math.PI * 2; return [(cx + Math.cos(a) * 40) / W, (200 + Math.sin(a) * 16) / H]; }), iris: [[(cx + 12) / W, 200 / H], [(cx + 12) / W, 188 / H], [(cx + 24) / W, 200 / H], [(cx + 12) / W, 212 / H], [cx / W, 200 / H]], pose: [0, 0] });
+        op.eyes = [[eye(200), eye(300)]];
+      }
       const whole = { width: W, height: H, data: new Uint8ClampedArray(base) }; applyBrush(whole, op);
       const [rx, ry, rw, rh] = brushBounds(op, W, H); const part = { width: rw, height: rh, data: new Uint8ClampedArray(rw * rh * 4) };
       for (let y = 0; y < rh; y++) part.data.set(base.subarray(((ry + y) * W + rx) * 4, ((ry + y) * W + rx + rw) * 4), y * rw * 4);

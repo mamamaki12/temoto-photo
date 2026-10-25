@@ -1,6 +1,7 @@
 // 人物の肌（顔・体）を見分ける Worker（MediaPipe の「Selfie Multiclass」モデル。端末の中だけで動く）。
-// 受け取る: { id, kind: 'skin' | 'person' | 'lips', w, h, data: Uint8ClampedArray（RGBA） }
+// 受け取る: { id, kind: 'skin' | 'person' | 'lips' | 'eyes', w, h, data: Uint8ClampedArray（RGBA） }
 // 返す: skin → { id, w, h, skin: Float32Array（0〜1。顔の肌＋体の肌） }／person → { id, w, h, skin: Float32Array（0〜1。背景でない＝人物） }／lips → { id, lips: [{ outer, inner }]（顔ごとの唇の輪郭。0〜1 の座標） }
+//       eyes → { id, eyes: [[{ lid, iris }, { lid, iris }]]（顔ごとに右目・左目。lid: まぶたのふち 16 点、iris: 黒目の中心と上右下左の 4 点。0〜1 の座標） }
 // クラシックな Worker にしているのは、MediaPipe が読み込み用のスクリプトを importScripts で読むため
 /* eslint-disable no-undef */
 var exports = {};
@@ -11,9 +12,12 @@ const load = async (name) => new Uint8Array(await (await fetch(new URL(name, sel
 // 唇の外側・内側の輪郭（MediaPipe の顔の 478 点のうち）
 const OUTER = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185];
 const INNER = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191];
+// 目のふち（まぶたの内側の輪郭。目頭から下まぶた・目尻・上まぶたの順）と黒目（中心・上・右・下・左）。写真の左側の目（本人の右目）から
+const LID = [[33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246], [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]];
+const IRIS = [[468, 469, 470, 471, 472], [473, 474, 475, 476, 477]];
 async function initFace() {
   if (landmarker) return landmarker;
-  landmarker = await exports.FaceLandmarker.createFromOptions(fileset(), { baseOptions: { modelAssetBuffer: await load('face_landmarker.task'), delegate: 'CPU' }, runningMode: 'IMAGE', numFaces: 6 });
+  landmarker = await exports.FaceLandmarker.createFromOptions(fileset(), { baseOptions: { modelAssetBuffer: await load('face_landmarker.task'), delegate: 'CPU' }, runningMode: 'IMAGE', numFaces: 6, outputFacialTransformationMatrixes: true });
   return landmarker;
 }
 async function init() {
@@ -31,6 +35,13 @@ self.onmessage = async (e) => {
       const fl = await initFace(); const r = fl.detect(new ImageData(data, w, h));
       const lips = (r.faceLandmarks || []).map((f) => ({ outer: OUTER.map((i) => [f[i].x, f[i].y]), inner: INNER.map((i) => [f[i].x, f[i].y]) }));
       self.postMessage({ id, lips }); return;
+    }
+    if (kind === 'eyes') {
+      const fl = await initFace(); const r = fl.detect(new ImageData(data, w, h));
+      // 顔の向き: 顔の変換行列（列優先の 4×4）の 3 列目 = 顔の正面の向き（カメラの座標。x 右・y 上・z 手前）。[yaw, pitch]（ラジアン。右向き・上向きが正）
+      const pose = (r.facialTransformationMatrixes || []).map((m) => { const d = m.data; return [Math.atan2(d[8], d[10]), Math.atan2(d[9], Math.hypot(d[8], d[10]))]; });
+      const eyes = (r.faceLandmarks || []).map((f, fi) => [0, 1].map((e) => ({ lid: LID[e].map((i) => [f[i].x, f[i].y]), iris: IRIS[e].map((i) => [f[i].x, f[i].y]), pose: pose[fi] || [0, 0] })));
+      self.postMessage({ id, eyes }); return;
     }
     const seg = await init();
     const res = seg.segment(new ImageData(data, w, h));
