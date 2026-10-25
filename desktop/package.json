@@ -1,0 +1,11 @@
+{
+  "name": "temoto-photo-desktop",
+  "productName": "てもとフォト",
+  "version": "0.1.0",
+  "private": true,
+  "description": "てもとフォトの PC 版（Windows）。Web 版のファイルをそのまま使い、ブレ補正の AI だけ PC 用の ONNX Runtime で動かす",
+  "main": "main.cjs",
+  "dependencies": {
+    "onnxruntime-node": "1.23.2"
+  }
+}

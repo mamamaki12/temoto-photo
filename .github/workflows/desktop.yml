@@ -1,0 +1,44 @@
+name: PC 版（Windows）
+# PC 版（desktop/）を作り、GitHub の Windows の機械で実際に起動して確かめる。できた PC 版は、この実行の Artifacts からダウンロードできる。
+on:
+  push:
+    paths: ['desktop/**', 'deblur-worker.js', 'restoration-photo.js', '.github/workflows/desktop.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash desktop/build-win.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TemotoPhoto-win-x64
+          path: desktop/dist/TemotoPhoto/
+          retention-days: 30
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: TemotoPhoto-win-x64
+          path: dist/TemotoPhoto
+      - name: 起動して、暗所補正・ブレ補正・書き出しができるか（GPU があれば GPU で）
+        run: node desktop/smoke.cjs dist/TemotoPhoto/TemotoPhoto.exe
+      - name: 同じことを CPU だけで
+        run: node desktop/smoke.cjs dist/TemotoPhoto/TemotoPhoto.exe
+        env:
+          TEMOTO_EP: cpu

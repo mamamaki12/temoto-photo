@@ -12,7 +12,7 @@ import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP = new Set(['node_modules', '.git', 'test-results', 'playwright-report', 'tests', 'scripts', '_site', 'playwright.config.js', 'vendor']);
+const SKIP = new Set(['node_modules', '.git', 'test-results', 'playwright-report', 'tests', 'scripts', '_site', 'dist', 'playwright.config.js', 'vendor']);
 const VENDOR = {
   'vendor/libraw': ['index.js', 'worker.js', 'libraw.js', 'libraw.wasm', 'LICENSE.txt'],
   // 人物の肌を見分ける AI（MediaPipe。モデルも同梱し、Worker の中で同じサイトのファイルだけを読む）

@@ -80,7 +80,9 @@ function workerCount() {
   const nav = globalThis.navigator || {};
   // iPhone・iPad は 1 本の帯でも 100MB ほど使うので、同時に 2 本まで
   const ios = /iP(hone|ad|od)/.test(nav.userAgent || '') || (nav.maxTouchPoints > 1 && /Mac/.test(nav.userAgent || ''));
-  return Math.max(1, Math.min(ios ? 2 : 4, (nav.hardwareConcurrency || 2) - 1));
+  // PC 版（desktop/main.cjs。Electron）はメモリに余裕があるので、CPU の数に合わせて 12 本まで
+  const pc = /\bElectron\//.test(nav.userAgent || '');
+  return Math.max(1, Math.min(ios ? 2 : pc ? 12 : 4, (nav.hardwareConcurrency || 2) - 1));
 }
 
 /**

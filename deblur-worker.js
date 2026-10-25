@@ -57,9 +57,28 @@ function cpuPool(model) {
   };
 }
 
+/** PC 版（desktop/main.cjs）なら、PC 用の ONNX Runtime（GPU があれば DirectML）で動かす。区画はこの PC の中のサーバーに送る */
+async function nativeBackend() {
+  if (!/\bElectron\//.test(self.navigator?.userAgent || '')) return null;
+  try {
+    const info = await fetch(new URL('./__native/deblur/info', import.meta.url));
+    if (!info.ok) return null;
+    return {
+      size: 1,
+      run: async (input, n) => {
+        const res = await fetch(new URL(`./__native/deblur?n=${n}`, import.meta.url), { method: 'POST', body: input });
+        if (!res.ok) throw new Error('ブレ補正の AI を実行できませんでした');
+        return new Float32Array(await res.arrayBuffer());
+      },
+    };
+  } catch { return null; }
+}
+
 let backend = null; // { run(input, n), size }
 async function init(onProgress) {
   if (backend) return backend;
+  backend = await nativeBackend();
+  if (backend) { onProgress(1); return backend; }
   ort.env.wasm.wasmPaths = new URL('./vendor/ort/', import.meta.url).href;
   ort.env.wasm.numThreads = 1;
   const model = await download(onProgress);
