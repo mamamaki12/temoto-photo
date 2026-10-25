@@ -133,6 +133,12 @@ function validRetouch(r) {
       op.lips = arr(r.lips, 6).map((l) => ({ outer: poly(l?.outer), inner: poly(l?.inner) })).filter((l) => l.outer.length >= 3);
       if (r.whole === true) op.whole = true; // 範囲を自動で決める（なければ、なぞった所だけ）
     }
+    if (r.type === 'nose' && r.nose && typeof r.nose === 'object') {
+      // AI で見つけた鼻の点（まん中・左右のふち・左右の頬の境目）。なければ何もしない操作になる
+      const poly = (q) => (Array.isArray(q) ? q.slice(0, 8).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
+      const nose = { mid: poly(r.nose.mid), li: poly(r.nose.li), ri: poly(r.nose.ri), lo: poly(r.nose.lo), ro: poly(r.nose.ro) };
+      if (nose.mid.length >= 3 && nose.li.length && nose.ri.length && nose.lo.length && nose.ro.length) op.nose = nose;
+    }
     return op;
   }
   if (r.type === 'mosaic' || r.type === 'blur') return { type: r.type, x: num(r.x, 0, 1), y: num(r.y, 0, 1), w: num(r.w, 0.001, 1, 0.1), h: num(r.h, 0.001, 1, 0.1), size: int(r.size, 2, 100, 20) };
