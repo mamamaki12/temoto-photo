@@ -1,5 +1,5 @@
 // Service Worker: 一度開いたら、オフラインでも開けるようにする（ネットワーク優先・失敗したらキャッシュ）
-const CACHE = 'temoto-photo-v30';
+const CACHE = 'temoto-photo-v31';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
@@ -12,6 +12,17 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  // vendor/ の大きなファイル（AI のモデル・WebAssembly）は、キャッシュにあればそれを使う（毎回ダウンロードしない。更新は CACHE の名前を変えて入れ替える）
+  if (new URL(req.url).pathname.includes('/vendor/')) {
+    e.respondWith((async () => {
+      const hit = await caches.match(req, { ignoreSearch: true });
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res.ok && res.type === 'basic') { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+      return res;
+    })());
+    return;
+  }
   e.respondWith((async () => {
     try {
       const res = await fetch(req);

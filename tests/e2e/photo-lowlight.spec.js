@@ -153,3 +153,46 @@ test('暗い写真の補正: 元の大きさの書き出しでも、帯ごとに
   expect(r.progress.at(-1)).toBe(1);
   for (let i = 1; i < r.progress.length; i++) expect(r.progress[i]).toBeGreaterThanOrEqual(r.progress[i - 1]);
 });
+
+test('暗い写真の補正は、明暗ブラシ・露光量と重ねて使え、書き出しにも全部のる', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#2a1c14', { w: 400, h: 300 }));
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  await openTool(page, '自動補正');
+  const c = page.getByLabel('写真全体の明るさ補正', { exact: true }); await c.fill('50'); await c.dispatchEvent('change');
+  await page.waitForFunction(() => window.__temoto.editor.srcHQ, null, { timeout: 30_000 });
+  const R = [0.35, 0.4, 0.65, 0.6]; const other = [0, 0, 0.15, 0.15];
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const base = lum(await viewMean(page, R));
+  // 明暗ブラシ（明るく）でなぞる
+  await openTool(page, '明暗');
+  await page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el) => { el.value = 15; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
+  const b = await page.locator('canvas.view').boundingBox();
+  await page.mouse.move(b.x + b.width * 0.36, b.y + b.height * 0.5); await page.mouse.down();
+  await page.mouse.move(b.x + b.width * 0.64, b.y + b.height * 0.5, { steps: 8 }); await page.mouse.up(); await page.waitForTimeout(300);
+  expect((await page.evaluate(() => window.__temoto.state.retouch)).map((o) => o.type)).toEqual(['dodge']);
+  await expect.poll(async () => lum(await viewMean(page, R))).toBeGreaterThan(base + 4);
+  // 露光量も
+  await openTool(page, 'ライト');
+  const e = page.getByLabel('露光量', { exact: true }).first(); await e.fill('20'); await e.dispatchEvent('change');
+  await expect.poll(async () => lum(await viewMean(page, other))).toBeGreaterThan(base + 4);
+  expect(await page.evaluate(() => window.__temoto.editor.srcHQ)).toBe(true); // ブラシを足しても、補正したものの上に重なる
+  const view = await viewMean(page, R); const viewOther = await viewMean(page, other);
+  // 書き出し（同じ大きさ）
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  const dlg = page.getByRole('dialog');
+  await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
+  const pending = page.waitForEvent('download');
+  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  const file = await (await pending).path();
+  const buf = (await import('node:fs')).readFileSync(file).toString('base64');
+  const out = await page.evaluate(async ({ buf, R, other }) => {
+    const bmp = await createImageBitmap(new Blob([Uint8Array.from(atob(buf), (ch) => ch.charCodeAt(0))], { type: 'image/png' })); // 通信を禁止する CSP なので、data: URL は読めない
+    const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height; const x = cv.getContext('2d'); x.drawImage(bmp, 0, 0);
+    const mean = ([x0, y0, x1, y1]) => { const d = x.getImageData(Math.floor(cv.width * x0), Math.floor(cv.height * y0), Math.max(1, Math.floor(cv.width * (x1 - x0))), Math.max(1, Math.floor(cv.height * (y1 - y0))), { colorSpace: 'srgb' }).data; let r = 0; let g = 0; let bb = 0; const n = d.length / 4; for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; bb += d[i + 2]; } return [r / n, g / n, bb / n]; };
+    return { R: mean(R), other: mean(other) };
+  }, { buf, R, other });
+  expect(Math.abs(lum(out.R) - lum(view))).toBeLessThan(6);
+  expect(Math.abs(lum(out.other) - lum(viewOther))).toBeLessThan(6);
+  expect(lum(out.R)).toBeGreaterThan(lum(out.other) + 3);
+});
