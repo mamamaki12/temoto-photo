@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/lowlight-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, fineScale, grainFor, BAND_MARGIN } from '../../restoration-lowlight.js';
+import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, fineScale, grainFor, autoNr, applyTone, BAND_MARGIN } from '../../restoration-lowlight.js';
 
 function randomNormal(seed = 521) {
   const uniform = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
@@ -249,4 +249,45 @@ test('lowlight: WebAssembly でも JavaScript でも、結果は 1 ビットも�
   useWasm(false); const b = run();
   useWasm(true);
   assert.deepEqual(a, b);
+});
+
+test('lowlight: 自動の明るさは、顔が写っていれば顔の肌の明るさに寄せる（顔が影なら明るめ、顔だけ明るければ控えめ）', () => {
+  const w = 120; const h = 80;
+  // 幕（8bit 70）の前に、顔（中央の 20×20）。顔の明るさだけを変えた 2 枚
+  const photo = (fv) => ({ width: w, height: h, data: rgba(w, h, (x, y) => (Math.abs(x - 60) < 10 && Math.abs(y - 40) < 10 ? [fv * 1.2, fv, fv * 0.85] : [70, 60, 50])) });
+  const m = new Float32Array(w * h); for (let y = 30; y < 50; y++) for (let x = 50; x < 70; x++) m[y * w + x] = 1;
+  const face = { m, w, h };
+  const faceOut = (img, tone) => {
+    const out = new Float32Array(400); let k = 0; const px = new Uint8ClampedArray(4);
+    for (let y = 30; y < 50; y++) for (let x = 50; x < 70; x++) {
+      const i = (y * w + x) * 4; const r = img.data[i] / 255; const g = img.data[i + 1] / 255; const b = img.data[i + 2] / 255;
+      const Y = 0.299 * r + 0.587 * g + 0.114 * b;
+      applyTone(Float32Array.of(Y), Float32Array.of(b - Y), Float32Array.of(r - Y), 1, 1, tone, { y0: y, x0: x, fullW: w, fullH: h }, px);
+      out[k++] = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+    }
+    return out.sort()[200];
+  };
+  const dark = photo(12); const bright = photo(160);
+  const d0 = planTone(dark, 50); const d1 = planTone(dark, 50, { face });
+  const b0 = planTone(bright, 50); const b1 = planTone(bright, 50, { face });
+  assert.ok(d1.byFace && b1.byFace);
+  assert.ok(d1.gain > d0.gain * 1.1, `顔が暗い: ${d0.gain.toFixed(2)} → ${d1.gain.toFixed(2)}`);
+  assert.ok(b1.gain < b0.gain * 0.9, `顔が明るい: ${b0.gain.toFixed(2)} → ${b1.gain.toFixed(2)}`);
+  // どちらも、写真全体だけで決めたときより、顔の明るさが狙い（105）に近づく
+  assert.ok(Math.abs(faceOut(dark, d1) - 105) < Math.abs(faceOut(dark, d0) - 105));
+  assert.ok(Math.abs(faceOut(bright, b1) - 105) < Math.abs(faceOut(bright, b0) - 105));
+  // 顔が小さすぎるときは、写真全体で決める
+  const tiny = new Float32Array(w * h); tiny[40 * w + 60] = 1;
+  const t = planTone(dark, 50, { face: { m: tiny, w, h } });
+  assert.equal(t.byFace, false); assert.equal(t.gain, d0.gain);
+  // 明るさ補正 0 では明るくしない（顔があっても）
+  assert.equal(planTone(dark, 0, { face }).gain, 1);
+});
+
+test('lowlight: ノイズ軽減の自動の強さは、大きく明るくする写真ほど強い（0.8〜1）', () => {
+  assert.equal(autoNr(null), 0.8);
+  assert.equal(autoNr({ gain: 1 }), 0.8);
+  assert.ok(autoNr({ gain: 3 }) > 0.8 && autoNr({ gain: 3 }) < autoNr({ gain: 5 }));
+  assert.equal(autoNr({ gain: 6 }), 1);
+  assert.equal(autoNr({ gain: 13.5 }), 1);
 });
