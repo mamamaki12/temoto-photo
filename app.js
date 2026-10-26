@@ -28,7 +28,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.28.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.28.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -886,7 +886,7 @@ function buildEditor() {
       h('div', { class: 'ed-hist' }, E.undoBtn, E.redoBtn),
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
-        h('button', { type: 'button', class: 'primary export', onclick: () => openExport({}) }, '書き出し'))),
+        h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, h('span', { class: 'ico-export', 'aria-hidden': 'true' }), h('span', { class: 'export-label' }, '書き出し')))),
     E.tabs, E.side, E.stageEl);
   // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
   E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
@@ -904,7 +904,7 @@ function tabKeys(e) {
 /** 道具の列（見せている道具のグループだけ） */
 function buildRail() {
   render(E.tabs, shownGroups(!!E.rawLin).map(([g, icon, label]) => h('button', {
-    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1',
+    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1', 'aria-label': label, title: label, // スマホはアイコンだけ
     onclick: () => pickGroup(g), onkeydown: tabKeys,
   }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
 }
