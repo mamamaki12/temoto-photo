@@ -3,7 +3,9 @@
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, TILE } from './deblur.js';
-import { workerCount, lowMemory } from './cores.js';
+import { workerCount, lowMemory, limitOrtMemory } from './cores.js';
+
+limitOrtMemory(512); // GPU で動かすときだけ使う（CPU では deblur-infer-worker.js）
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
 
