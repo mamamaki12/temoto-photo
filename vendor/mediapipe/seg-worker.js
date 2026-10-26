@@ -7,8 +7,33 @@
 var exports = {};
 importScripts('vision_bundle.js'); // CommonJS 形式（exports に入る）。拡張子は、どのサーバーでも JavaScript として送られる .js に
 let segmenter = null; let landmarker = null;
-const fileset = () => ({ wasmLoaderPath: new URL('wasm/vision_wasm_internal.js', self.location).href, wasmBinaryPath: new URL('wasm/vision_wasm_internal.wasm', self.location).href });
-const load = async (name) => new Uint8Array(await (await fetch(new URL(name, self.location))).arrayBuffer());
+// 通信が途中で止まったとき（電波の悪い所など）、fetch は失敗もせずにずっと待つことがある。
+// STALL ミリ秒のあいだ 1 バイトも届かなければあきらめる（ゆっくりでも届いていれば待つ）。あきらめたら、画面は AI なしで続ける
+const STALL = 15000;
+async function load(name) {
+  const ctrl = new AbortController(); let timer = 0;
+  const kick = () => { clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), STALL); };
+  kick();
+  try {
+    const res = await fetch(new URL(name, self.location), { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader(); const chunks = []; let n = 0;
+    let told = 0;
+    for (;;) {
+      kick(); const { done, value } = await reader.read(); if (done) break; chunks.push(value); n += value.length;
+      if (Date.now() - told > 1000) { told = Date.now(); self.postMessage({ alive: true }); } // 画面に「ダウンロード中で、止まってはいない」と知らせる
+    }
+    const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; }
+    return out;
+  } catch (e) { throw new Error(`ダウンロードできませんでした（${name}: ${ctrl.signal.aborted ? '通信が止まっています' : e?.message || e}）`); }
+  finally { clearTimeout(timer); }
+}
+// WebAssembly 本体も自分で読み込んで（止まったらあきらめる）、MediaPipe には読み込んだものを渡す
+let wasmUrl = null;
+async function fileset() {
+  wasmUrl ||= URL.createObjectURL(new Blob([await load('wasm/vision_wasm_internal.wasm')], { type: 'application/wasm' }));
+  return { wasmLoaderPath: new URL('wasm/vision_wasm_internal.js', self.location).href, wasmBinaryPath: wasmUrl };
+}
 // 唇の外側・内側の輪郭（MediaPipe の顔の 478 点のうち）
 const OUTER = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185];
 const INNER = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191];
@@ -17,12 +42,12 @@ const LID = [[33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160,
 const IRIS = [[468, 469, 470, 471, 472], [473, 474, 475, 476, 477]];
 async function initFace() {
   if (landmarker) return landmarker;
-  landmarker = await exports.FaceLandmarker.createFromOptions(fileset(), { baseOptions: { modelAssetBuffer: await load('face_landmarker.task'), delegate: 'CPU' }, runningMode: 'IMAGE', numFaces: 6, outputFacialTransformationMatrixes: true });
+  landmarker = await exports.FaceLandmarker.createFromOptions(await fileset(), { baseOptions: { modelAssetBuffer: await load('face_landmarker.task'), delegate: 'CPU' }, runningMode: 'IMAGE', numFaces: 6, outputFacialTransformationMatrixes: true });
   return landmarker;
 }
 async function init() {
   if (segmenter) return segmenter;
-  segmenter = await exports.ImageSegmenter.createFromOptions(fileset(), {
+  segmenter = await exports.ImageSegmenter.createFromOptions(await fileset(), {
     baseOptions: { modelAssetBuffer: await load('selfie_multiclass_256x256.tflite'), delegate: 'CPU' },
     runningMode: 'IMAGE', outputCategoryMask: false, outputConfidenceMasks: true,
   });

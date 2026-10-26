@@ -14,7 +14,9 @@ export function fingerprint(img) {
 /** 覚えている肌の地図（なければ null） */
 export const skinSegFor = (img) => store.get(fingerprint(img)) || null;
 
-const TIMEOUT = 90000; // これより長く返事がなければ、AI をあきらめる（端末のメモリが足りず Worker が止まったときなど。色で判定する）
+// これより長く返事がなければ、AI をあきらめる（端末のメモリが足りず Worker が止まったときなど。色で判定する）。
+// Worker から何か届くたび（AI のファイルのダウンロードの途中も）数え直す（通信が遅くても、届いていれば待つ）
+const TIMEOUT = 45000;
 function stopWorker(why) {
   worker?.terminate(); worker = null;
   for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(new Error(why)); }
@@ -22,15 +24,31 @@ function stopWorker(why) {
 }
 /** 顔・肌を見つける AI を片付けて、メモリを空ける（使っていないときだけ。次に使うときは読み込み直す） */
 export function releaseSkinSeg() { if (!waiting.size) stopWorker('release'); }
+// AI のファイルをダウンロードできなかった（通信が止まっていた）・AI の返事がなかったとき。しばらくは、すぐあきらめる
+// （暗い写真の補正は、人物・顔の地図を続けて頼むので、そのたびに通信を待つと、そのぶん進捗バーが止まって見える）
+const RETRY_AFTER = 30000;
+let failedAt = -Infinity;
+/** t（performance.now()）より後に、AI を使えなかったことがあるか（そのときの補正の結果は保存せず、次に開いたとき計算し直す） */
+export const segFailedSince = (t) => failedAt >= t;
 function call(msg, transfer) {
+  if (performance.now() - failedAt < RETRY_AFTER) return Promise.reject(new Error('AI を少し前に使えなかったので、今回は使いません'));
   if (!worker) {
     worker = new Worker(new URL('vendor/mediapipe/seg-worker.js', import.meta.url));
-    worker.onmessage = (e) => { const w = waiting.get(e.data.id); if (!w) return; waiting.delete(e.data.id); clearTimeout(w.timer); if (e.data.error) w.reject(new Error(e.data.error)); else w.resolve(e.data); };
+    worker.onmessage = (e) => {
+      for (const v of waiting.values()) v.arm(); // 返事・ダウンロードの途中の知らせが来たら、待っているもの全部の時間を数え直す（順番待ちのものも）
+      if (e.data.alive) return;
+      const w = waiting.get(e.data.id); if (!w) return; waiting.delete(e.data.id); clearTimeout(w.timer);
+      if (e.data.error) {
+        if (e.data.error.startsWith('ダウンロード')) { failedAt = performance.now(); stopWorker(e.data.error); } // 読み込みの途中で止まった Worker は使わず、次は作り直す
+        w.reject(new Error(e.data.error));
+      } else w.resolve(e.data);
+    };
     worker.onerror = (e) => stopWorker(e.message || 'worker error');
   }
   const id = ++seq;
   return new Promise((resolve, reject) => {
-    waiting.set(id, { resolve, reject, timer: setTimeout(() => stopWorker('AI の返事がありません'), TIMEOUT) });
+    const w = { resolve, reject, timer: 0, arm: () => { clearTimeout(w.timer); w.timer = setTimeout(() => { failedAt = performance.now(); stopWorker('AI の返事がありません'); }, TIMEOUT); } };
+    w.arm(); waiting.set(id, w);
     worker.postMessage({ ...msg, id }, transfer);
   });
 }
