@@ -21,16 +21,17 @@ const abortError = () => new DOMException('処理を中止しました', 'AbortE
 const later = () => new Promise((r) => setTimeout(r, 0));
 
 // ───── 本人の写真（人ごと。IndexedDB に保存して、ほかの写真でも使う） ─────
-let people = null; let peopleRev = 0;
+let people = null;
 /** 人の一覧（読み込んで覚えておく） */
 export async function loadPeople() { if (!people) people = await getPeople().catch(() => []); return people; }
-/** 人の一覧を保存する（本人の写真が変わると、顔 AI を計算し直す） */
-export async function savePeople(list) { people = list; peopleRev++; await putPeople(list); }
+/** 人の一覧を保存する（本人の写真が変わると、faceaiKey が変わって顔 AI を計算し直す） */
+export async function savePeople(list) { people = list; await putPeople(list); }
 /** 顔 AI の結果を決めるもの（編集内容と、使う人の本人の写真）。これが変わったら計算し直す */
 export function faceaiKey(st) {
   if (!faceaiActive(st)) return null;
   const used = st.faceai.faces.filter((f) => f.on);
-  return JSON.stringify([used.map((f) => [f.x, f.y, f.person || '', (people || []).find((p) => p.id === f.person)?.refs.map((r) => r.id) || []]), peopleRev]);
+  // 本人の写真は id で見る（足す・消すと id の並びが変わる）。開き直しても同じ鍵になるよう、その場かぎりの数は入れない（保存した結果を使えなくなる）
+  return JSON.stringify([used.map((f) => [f.x, f.y, f.person || '', (people || []).find((p) => p.id === f.person)?.refs.map((r) => r.id) || []])]);
 }
 
 /** Blob・File の写真 → ImageData（向きは写真のとおり。長い辺 maxSide まで） */
