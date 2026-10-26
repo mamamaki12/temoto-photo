@@ -116,5 +116,5 @@ test('編集内容: 顔 AI の顔は 8 つまで、値は範囲に収める', ()
   const s = validateState({ faceai: { faces: Array.from({ length: 12 }, (_, i) => ({ x: i / 10, y: 2, on: i % 2 === 0, person: 'p'.repeat(60) })), amount: 300 } });
   assert.equal(s.faceai.faces.length, 8); assert.equal(s.faceai.amount, 100);
   assert.equal(s.faceai.faces[0].y, 1); assert.equal(s.faceai.faces[1].on, false); assert.equal(s.faceai.faces[0].person.length, 40);
-  assert.deepEqual(validateState({}).faceai, { faces: [], amount: 100 });
+  assert.deepEqual(validateState({}).faceai, { faces: [], amount: 100, whole: true });
 });

@@ -68,7 +68,7 @@ export function defaultState() {
     raw: { exposure: 0, nr: 50, sharpen: 50, ca: true, vignette: 0, distortion: 0 },
     frame: { width: 0, color: '#ffffff', radius: 0, pad: 'none', padFill: 'blur', padColor: '#ffffff' },
     // 顔専用 AI（暗い写真・ブレの大きい写真の顔）。faces: 選んだ顔（x, y: 鼻先の位置。元写真の 0〜1、on: 使うか、person: 本人の写真の人の id）、amount: 強さ
-    faceai: { faces: [], amount: 100 },
+    faceai: { faces: [], amount: 100, whole: true },
   };
 }
 
@@ -180,6 +180,7 @@ export function validateState(s) {
   d.faceai.faces = arr(s.faceai?.faces, MAX_FACEAI).filter((q) => q && typeof q === 'object')
     .map((q) => ({ x: num(q.x, 0, 1), y: num(q.y, 0, 1), on: bool(q.on), person: str(q.person, 40) }));
   d.faceai.amount = int(s.faceai?.amount, 0, 100, 100);
+  d.faceai.whole = s.faceai?.whole !== false; // 髪・服・背景も全体 AI で整える（はじめは使う）
   const f = s.frame || {};
   d.frame = { width: int(f.width, 0, 30), color: color(f.color, '#ffffff'), radius: int(f.radius, 0, 50), pad: oneOf(f.pad, PADS, 'none'), padFill: f.padFill === 'color' ? 'color' : 'blur', padColor: color(f.padColor, '#ffffff') };
   return d;

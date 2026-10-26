@@ -118,6 +118,14 @@ export async function personMap(img, box, n = 64) {
     return v;
   } catch (e) { console.warn('人物を見分ける AI を使えませんでした（背景も動きます）', e); return null; }
 }
+/**
+ * 写真（小さめの画素。AI の中は 256×256）の部位ごとの地図。0 背景・1 髪・2 体の肌・3 顔の肌・4 服・5 そのほか（ティアラなどの飾りも入る）。
+ * 返すのは { w, h, parts }（部位 k の値は parts[k·w·h + y·w + x]）。使えない端末では null
+ */
+export async function segParts(img) {
+  try { const r = await call({ kind: 'parts', w: img.width, h: img.height, data: new Uint8ClampedArray(img.data) }); return { w: r.w, h: r.h, parts: r.parts }; }
+  catch (e) { console.warn('部位を見分ける AI を使えませんでした', e); return null; }
+}
 /** 人物を見分ける AI を先に読み込んでおく（形を整えるブラシを開いたとき。なぞり始めで待たないように） */
 let warmed = null;
 export function warmPersonSeg() {

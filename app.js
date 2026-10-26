@@ -21,14 +21,14 @@ import { exportFull, precomputeLowlight } from './fullres.js';
 import { lowMemory } from './cores.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
-import { applyFaceAI, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople } from './face-photo.js';
+import { applyFaceAI, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople, wholeCanvas, wholeResidual } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.27.4'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.28.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -504,7 +504,7 @@ function rebuildSource() {
 // スライダーを動かしている間は GPU の簡易版で見せ、手を止めたら Worker で計算する（進捗は写真の上のバーに）。
 // できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒」。途中の結果は取っておき、ブレ補正の強さだけを変えたときは AI を動かし直さない
-const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount]) : null);
+const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount, faceaiWhole(st)]) : null);
 function hqReady() { return !!E.hq?.canvas && E.hq.key === hqKey(E.state); }
 /**
  * いま見せる、暗所補正・ブレ補正をした写真。ブレ補正の強さだけを変えて計算し直している間は、前にできたものを見せる
@@ -523,6 +523,7 @@ function srcBase() { return hqView() || E.base; }
 function hqResidual() { return hqReady() ? E.hq.res || null : null; }
 /** 顔 AI の結果（顔ごと）。書き出しでも使う */
 function hqFaces() { return hqReady() ? E.hq.faces || null : null; }
+function hqWhole() { return hqReady() ? E.hq.whole || null : null; }
 let hqTimer = 0;
 function scheduleLowlight() {
   if (!E || (E.hq?.key ?? null) === hqKey(E.state)) return; // 済み・計算中
@@ -530,8 +531,8 @@ function scheduleLowlight() {
 }
 /**
  * 暗所補正・ブレ補正・顔 AI をした写真を作る（編集画面と、書き出しで編集中の結果がないときに使う）
- * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res}, fa: {key, canvas, faces} }）
- * @returns {Promise<{canvas, res, faces}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）
+ * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res}, wh: {key, res}, fa: {key, canvas, faces} }）
+ * @returns {Promise<{canvas, res, faces, whole}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）、whole: 全体 AI の差分（なければ null）
  */
 async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = null } = {}) {
   const ll = lowlightActive(adj) ? lowlightOptions(adj) : null; const db = deblurActive(adj); const fa = !!state && faceaiActive(state);
@@ -539,11 +540,13 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = 
   // 粒はブレ補正の後に足す（ブレ補正があるときは、暗所補正では足さない）
   const llKey = ll ? JSON.stringify([adj.noise, adj.lowlight, db]) : null;
   const dbKey = JSON.stringify([adj.noise, adj.lowlight]);
-  const faKey = fa ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faceaiKey(state), state.faceai.amount]) : null;
-  if (fa && cache.fa?.key === faKey) { onProgress(1); return { canvas: cache.fa.canvas, res: db ? cache.db?.res || null : null, faces: cache.fa.faces }; }
-  // 進捗の割合（暗所補正・ブレ補正・顔 AI）。済んでいるものは 0
-  const w = [ll && cache.ll?.key !== llKey ? 0.3 : 0, db && cache.db?.key !== dbKey ? 0.6 : (db ? 0.05 : 0), fa ? 0.4 : 0];
-  const tot = w[0] + w[1] + w[2] || 1; const at = (k, t) => onProgress((w.slice(0, k).reduce((a, b) => a + b, 0) + w[k] * t) / tot);
+  const wh = fa && faceaiWhole(state);
+  const whKey = wh ? JSON.stringify([llKey, db && dbKey, db && adj.deblur]) : null;
+  const faKey = fa ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faceaiKey(state), state.faceai.amount, wh]) : null;
+  if (fa && cache.fa?.key === faKey) { onProgress(1); return { canvas: cache.fa.canvas, res: db ? cache.db?.res || null : null, faces: cache.fa.faces, whole: wh ? cache.wh?.res || null : null }; }
+  // 進捗の割合（暗所補正・ブレ補正・全体 AI・顔 AI）。済んでいるものは 0
+  const w = [ll && cache.ll?.key !== llKey ? 0.3 : 0, db && cache.db?.key !== dbKey ? 0.6 : (db ? 0.05 : 0), wh && cache.wh?.key !== whKey ? 0.5 : 0, fa ? 0.4 : 0];
+  const tot = w[0] + w[1] + w[2] + w[3] || 1; const at = (k, t) => onProgress((w.slice(0, k).reduce((a, b) => a + b, 0) + w[k] * t) / tot);
   let canvas = src.base;
   if (ll) {
     if (cache.ll?.key !== llKey) {
@@ -564,12 +567,20 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = 
     res = cache.db.res;
     canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
   }
-  if (!fa) { onProgress(1); return { canvas, res, faces: null }; }
+  if (!fa) { onProgress(1); return { canvas, res, faces: null, whole: null }; }
+  // 全体 AI（髪・服・背景の細かい所。大まかな形と色・粒は変えない）。顔は、このあと顔 AI で置き換わる
+  if (wh) {
+    if (cache.wh?.key !== whKey) {
+      cache.wh = null;
+      cache.wh = { key: whKey, res: await wholeResidual(canvas, src.W, src.H, { signal, onProgress: (t) => at(2, t) }) };
+    }
+    canvas = await wholeCanvas(canvas, src.W, src.H, cache.wh.res); // Canvas は取っておかない（iPhone の Canvas のメモリの上限）
+  }
   // 顔 AI（選んだ顔だけ。大まかな形と色・粒は変えない）
-  const r = await applyFaceAI(canvas, src.W, src.H, state.faceai, { signal, onProgress: (t) => at(2, t) });
+  const r = await applyFaceAI(canvas, src.W, src.H, state.faceai, { signal, onProgress: (t) => at(3, t) });
   cache.fa = { key: faKey, canvas: r.canvas, faces: r.faces };
   onProgress(1);
-  return { canvas: r.canvas, res, faces: r.faces };
+  return { canvas: r.canvas, res, faces: r.faces, whole: wh ? cache.wh.res : null };
 }
 async function runLowlight() {
   if (!E) return;
@@ -583,11 +594,11 @@ async function runLowlight() {
   E.hqCache ||= {};
   hqBar(0);
   try {
-    const { canvas, res, faces } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
+    const { canvas, res, faces, whole } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
-    E.hq = { key, canvas, res, faces, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
+    E.hq = { key, canvas, res, faces, whole, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender();
     startPrecompute();
   } catch (err) {
@@ -1084,6 +1095,8 @@ const PANELS = {
       h('h3', {}, '暗い写真・ブレの大きい写真の顔を、明るい所で撮ったように'),
       hint('初回は AI（約 90MB）を読み込みます（Wi-Fi がおすすめ。切れても続きから）。'),
       facesBox,
+      h('label', { class: 'faceai-whole', for: 'fa-whole' }, h('input', { type: 'checkbox', id: 'fa-whole', checked: fa.whole !== false, onchange: (ev) => { fa.whole = ev.currentTarget.checked; commit(); requestRender(); } }), '髪・服・背景も AI で整える'),
+      hint('顔だけくっきりして浮かないように（AI 約 5MB）。'),
       slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
       h('h3', {}, '本人の写真'),
       hint(`本人がはっきり写った写真を 10 枚以上（${MAX_REFS} 枚まで）。`),
@@ -1969,11 +1982,11 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
   const db = deblurActive(st0.adj); // ブレ補正（明るさの後、粒の前）
   const fa = faceaiActive(st0); // 顔 AI（いちばん後）
   // 暗所補正・ブレ補正をするときは、美肌の肌の判定・修復のコピー元も、補正した写真（編集用の大きさ）で決める。編集中と同じになる
-  let work = src.base; let pre = 0; let res = null; let faces = null; // pre: 進捗のうち、ここで使った割合
+  let work = src.base; let pre = 0; let res = null; let faces = null; let whole = null; // pre: 進捗のうち、ここで使った割合
   if (ll || db || fa) {
     if (!src.hqCanvas) pre = db || fa ? 0.6 : 0.3;
-    if (src.hqCanvas) { work = src.hqCanvas; res = src.hqRes || null; faces = src.hqFaces || null; } else {
-      ({ canvas: work, res, faces } = await enhanceSource({ base: src.base, W: src.W, H: src.H, origW: src.origW || src.W, origH: src.origH || src.H }, st0.adj, { state: st0, onProgress: (t) => onProgress?.(t * pre) }));
+    if (src.hqCanvas) { work = src.hqCanvas; res = src.hqRes || null; faces = src.hqFaces || null; whole = src.hqWhole || null; } else {
+      ({ canvas: work, res, faces, whole } = await enhanceSource({ base: src.base, W: src.W, H: src.H, origW: src.origW || src.W, origH: src.origH || src.H }, st0.adj, { state: st0, onProgress: (t) => onProgress?.(t * pre) }));
     }
     if (portraitActive(st0.portrait)) await ensureSkinSeg(ctx2d(toCanvas(work, src.W, src.H), { willReadFrequently: true }).getImageData(0, 0, src.W, src.H));
   }
@@ -1985,6 +1998,7 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
       return await exportFull({ full: src.full, work, lowlightFrom: src.base, lowlightPre: src.lowlightPre || null, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
         deblur: db ? { res, amount: deblurAmount(st0.adj), grain: 0 } : null, // 暗所補正があるときの粒は、書き出しで測ったノイズの量で決まる
         faces: fa && faces?.length ? { list: faces, editW: src.W, amount: faceaiAmount(st0) } : null,
+        whole: fa ? whole : null,
         onProgress: onProgress && ((t) => onProgress(pre + (1 - pre) * t)) });
     } catch (e) { console.warn('元の大きさで書き出せなかったので、編集用の大きさで書き出します', e); }
   }
@@ -2055,7 +2069,7 @@ function openExport({ batch }) {
     const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
     const lowlightPre = E.pre && E.pre.key === preKey(st) ? E.pre.promise : null;
-    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), hqWhole: hqWhole(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
