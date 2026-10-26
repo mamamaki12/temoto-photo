@@ -96,7 +96,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .lib-head { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 10px; min-height: 56px; padding: calc(8px + env(safe-area-inset-top, 0px)) 16px 8px; background: var(--header); color: #fff; border-bottom: 1px solid var(--header-line); }
 .lib-head h1 { margin: 0; font-size: 1.15rem; display: flex; align-items: center; gap: 10px; letter-spacing: .06em; font-weight: 600; white-space: nowrap; }
 .logo { width: 28px; height: 28px; border-radius: 7px; background: #17181a url("icon.svg") center / cover; box-shadow: 0 0 0 1px rgb(255 255 255 / 12%); }
-.lib-main { max-width: 1100px; margin: 0 auto; padding: 16px 16px 48px; display: grid; gap: 18px; }
+.lib-main { max-width: 1100px; margin: 0 auto; padding: 16px 16px calc(48px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 18px; }
 #install-slot:empty { display: none; }
 .install-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .install-card p { margin: 2px 0 0; }
@@ -136,7 +136,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .stage { grid-area: stage; }
 .editor.side-closed .side { display: none; }
 .ed-head {
-  position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;
+  position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(8px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
   background: var(--header); color: #fff; border-bottom: 1px solid var(--header-line);
 }
 .ed-head button, .ed-head .menu summary { background: transparent; border-color: transparent; color: #fff; }
@@ -145,6 +145,8 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .ed-head button[aria-pressed="true"] { background: rgb(255 255 255 / 18%); }
 .ed-head .export { background: #3ecf8e; color: #07130d; border-color: #3ecf8e; padding-inline: 18px; } /* 見出しはいつも黒なので、ライトでも明るい緑に黒い文字 */
 .ed-head .export:hover:not(:disabled) { background: #5ad9a0; border-color: #5ad9a0; }
+/* 書き出しのアイコン（共有の形）。スマホではアイコンだけにする */
+.ico-export { width: 1.15em; height: 1.15em; flex: none; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7.5 7.5 12 3l4.5 4.5M8 10.5H6.5a1.5 1.5 0 0 0-1.5 1.5v7.5A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V12a1.5 1.5 0 0 0-1.5-1.5H16'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7.5 7.5 12 3l4.5 4.5M8 10.5H6.5a1.5 1.5 0 0 0-1.5 1.5v7.5A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V12a1.5 1.5 0 0 0-1.5-1.5H16'/%3E%3C/svg%3E") center / contain no-repeat; }
 .ed-hist { display: flex; gap: 2px; padding-left: 6px; margin-left: 2px; border-left: 1px solid rgb(255 255 255 / 16%); }
 .ed-head .back { padding: 0 12px; font-weight: 600; font-size: clamp(22px, 1.3rem, 26px); line-height: 1; }
 .ed-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: .9rem; text-align: center; color: rgb(255 255 255 / 72%); letter-spacing: .03em; }
@@ -206,10 +208,10 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .panel { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
 .panel-inner { padding: 12px 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; max-width: 760px; margin: 0 auto; }
 /* 道具の列（スマホでは下に横並び、パソコンでは左に縦並び） */
-.rail { display: flex; gap: 2px; overflow-x: auto; padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px)); background: var(--bg); border-top: 1px solid var(--line); scrollbar-width: none; }
+.rail { display: flex; gap: 2px; overflow-x: auto; padding: 4px calc(6px + env(safe-area-inset-right, 0px)) max(6px, env(safe-area-inset-bottom, 0px)) calc(6px + env(safe-area-inset-left, 0px)); background: var(--bg); border-top: 1px solid var(--line); scrollbar-width: none; }
 .rail::-webkit-scrollbar { display: none; }
 .rail button { flex: none; min-width: max(64px, 4rem); min-height: max(56px, 3.5rem); padding: 4px 6px; border: none; border-radius: 10px; background: transparent; display: grid; justify-items: center; align-content: center; gap: 2px; font-size: .7rem; color: var(--muted); font-weight: 500; letter-spacing: .04em; }
-.rail button:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+@media (hover: hover) { .rail button:hover:not(:disabled) { background: var(--surface); color: var(--text); } }
 .rail button:hover:not(:disabled) .tab-icon { color: var(--text); }
 .tab-icon { width: 2rem; height: 2rem; display: grid; place-items: center; border-radius: 6px; font-size: 1.1rem; line-height: 1; color: var(--muted); }
 .rail button[aria-selected="true"] { color: var(--accent-text); font-weight: 600; }
@@ -327,7 +329,8 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ed-tools { gap: 2px; }
   .ed-head button.icon, .ed-head .menu summary { width: clamp(36px, 2.3rem, 44px); min-height: clamp(36px, 2.3rem, 44px); height: clamp(36px, 2.3rem, 44px); }
   .ed-hist { padding-left: 2px; margin-left: 0; }
-  .ed-head .export { padding: 4px 12px; min-height: 36px; white-space: nowrap; font-size: clamp(14px, .95rem, 18px); line-height: 1.2; } /* 見出しは文字を大きくしても 1 行に収める */
+  .ed-head .export { padding: 0; width: clamp(44px, 2.8rem, 52px); min-height: 36px; height: clamp(36px, 2.3rem, 44px); font-size: clamp(18px, 1.15rem, 22px); line-height: 1; } /* アイコンだけ（名前は読み上げ・長押しで） */
+  .ed-head .export .export-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .ed-head button.icon, .ed-head .menu summary { font-size: clamp(18px, 1.15rem, 22px); }
   /* 写真を大きく見せるため、下のパネルと道具の列を薄く（文字の大きさに引きずられないよう px で上限） */
   .side { height: min(32dvh, 300px); max-height: none; grid-template-columns: minmax(0, 1fr); } /* 高さは固定（中身が増減しても写真が動かない）。道具のタブが多くても、画面の幅を超えない */
@@ -339,13 +342,16 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .side-title h2 { display: none; }
   .side-head .subtabs { flex: 1; min-width: 0; margin: 0; }
   .side-close { order: 2; flex: none; }
-  .side-head:not(:has(.subtabs)) { justify-content: flex-end; padding-block: 0; }
+  .side-head:not(:has(.subtabs)) { justify-content: space-between; padding-block: 0; }
+  .side-head:not(:has(.subtabs)) .side-title h2 { display: block; font-size: .85rem; color: var(--muted); } /* 道具が 1 つのグループは、下の列がアイコンだけなので名前を出す */
   .subtabs button { min-height: 32px; padding: 2px 10px; }
   .panel-inner { padding: 8px 12px 12px; gap: 8px; }
   .hint { font-size: clamp(11px, .76rem, 15px); line-height: 1.45; }
-  .rail { padding: 2px 4px calc(2px + env(safe-area-inset-bottom, 0px)); }
-  .rail button { min-height: 44px; min-width: max(60px, 3.6rem); padding: 2px 4px; gap: 0; font-size: clamp(10px, .65rem, 13px); }
-  .rail .tab-icon { width: 26px; height: 26px; font-size: 16px; border-radius: 7px; }
+  /* 下の道具の列: iPhone の下の線（ホームバー）より上に、アイコンだけを大きく並べる（名前は読み上げ・長押し・パネルの見出しで） */
+  .rail { padding: 6px calc(4px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) + 2px)) calc(4px + env(safe-area-inset-left, 0px)); justify-content: space-around; }
+  .rail button { min-height: 48px; min-width: 52px; flex: 1 0 52px; max-width: 96px; padding: 2px 4px; gap: 0; font-size: clamp(10px, .65rem, 13px); }
+  .rail .tab-icon { width: 40px; height: 36px; font-size: 21px; border-radius: 10px; }
+  .editor:not(.grid-editor) .rail .tab-label { display: none; }
 }
 /* 長押し（比較ボタンなど）で iPhone の選択メニューが出ないように */
 .ed-head button, .rail button, .stage { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
