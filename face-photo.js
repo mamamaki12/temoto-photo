@@ -184,7 +184,9 @@ export async function autoPick(photos, personId, { img = null, faces = [], dets 
     }
     const seeds = byPerson.get(personId) || [];
     if (!seeds.length) return null;
-    const others = [...byPerson].filter(([id, e]) => id !== personId && e.length).map(([, e]) => e);
+    // ほかの人と、この人によく似た別人（自動で選んだのに外された顔・選ばれなかったいちばん似た顔）
+    const notMe = list.find((q) => q.id === personId)?.notMe || [];
+    const others = [...byPerson].filter(([id, e]) => id !== personId && e.length).map(([, e]) => e).concat(notMe.map((e) => [e]));
     return findPerson(photos.map((c) => c.map((f) => f.emb)), seeds, others);
   } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); return null; }
 }

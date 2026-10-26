@@ -1063,7 +1063,7 @@ const PANELS = {
         file.addEventListener('change', async () => {
           const files = [...file.files]; file.value = ''; if (!files.length) return;
           E.stageEl.classList.add('busy');
-          const add = []; let auto = 0;
+          const add = []; const notMe = []; let auto = 0;
           try {
             const got = [];
             for (const fl of files) {
@@ -1077,15 +1077,20 @@ const PANELS = {
             const res = got.length ? await autoPick(got.map((g) => g.cands), p.id, { img, faces: E?.state.faceai.faces || [], dets }) : null;
             for (let i = 0; i < got.length; i++) {
               const { fl, cands } = got[i]; const r = res?.[i];
-              let pick;
-              if (r && r.pick >= 0) { pick = [cands[r.pick]]; if (cands.length > 1) auto++; } else if (cands.length === 1 && !res) pick = cands;
-              else pick = await pickFaces(cands, fl.name, { guess: r ? r.guess : -1, unsure: !!r });
-              for (const c of pick) add.push({ id: uid(), crop: c.crop, pts: c.pts, emb: c.emb });
+              let pick; let byAI = false;
+              if (r && r.pick >= 0) { pick = [cands[r.pick]]; byAI = true; if (cands.length > 1) auto++; } else if (cands.length === 1 && !res) pick = cands;
+              else {
+                const guess = r ? r.guess : -1;
+                pick = await pickFaces(cands, fl.name, { guess: cands.length === 1 ? -1 : guess, unsure: !!r });
+                // いちばん似ていた顔ではなく別の顔を選ばれたら、その顔はよく似た別人として覚える（次からその人を選ばない）
+                if (guess >= 0 && pick.length && !pick.includes(cands[guess]) && cands[guess].emb) notMe.push(cands[guess].emb);
+              }
+              for (const c of pick) add.push({ id: uid(), crop: c.crop, pts: c.pts, emb: c.emb, auto: byAI });
               for (const c of cands) URL.revokeObjectURL(c.url);
             }
           } finally { E?.stageEl.classList.remove('busy'); }
           // 読み込み中に別の写真を足したときも消えないよう、保存の直前の一覧に足す
-          if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました${auto ? `（うち${auto}枚は、何人も写った写真から本人を自動で選びました）` : ''}`); }
+          if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS), notMe: [...(q.notMe || []), ...notMe].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました${auto ? `（うち${auto}枚は、何人も写った写真から本人を自動で選びました）` : ''}`); }
         });
         const name = h('input', { value: p.name, maxlength: 20, 'aria-label': '人の名前', onchange: () => save(list.map((q) => (q.id === p.id ? { ...q, name: name.value.trim().slice(0, 20) || q.name } : q))) });
         return h('div', { class: 'faceai-person' },
@@ -1096,7 +1101,9 @@ const PANELS = {
           h('div', { class: 'faceai-refs' }, p.refs.map((r) => {
             const url = URL.createObjectURL(r.crop);
             return h('span', { class: 'faceai-ref' }, h('img', { src: url, alt: '本人の写真', width: 64, height: 64, onload: () => URL.revokeObjectURL(url) }),
-              h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id) } : q))) }, '×'));
+              h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id),
+                // 自動で選んだ顔を外したら、よく似た別人として覚える（次から何人も写った写真で、その人を選ばない）
+                notMe: r.auto && r.emb ? [...(q.notMe || []), r.emb].slice(-MAX_REFS) : q.notMe } : q))) }, '×'));
           }),
           h('label', { for: `fa-file-${p.id}`, class: 'btn small' }, '＋ 写真を追加'), file));
       }) : hint('「＋ 新しい人」で追加できます。'));
@@ -1236,7 +1243,8 @@ function pickFaces(cands, name, { guess = -1, unsure = false } = {}) {
     const chosen = new Set(guess >= 0 ? [guess] : []);
     const msg = !unsure ? `${name} に ${cands.length} 人。本人の顔を選んでください。`
       : cands.length === 1 ? `${name} の顔が、本人と違う人に見えます。本人なら選んでください。`
-        : `${name} に ${cands.length} 人。本人をはっきり見分けられませんでした。${guess >= 0 ? 'いちばん似ている顔を選んであります。' : ''}本人の顔を選んでください。`;
+        : guess >= 0 ? `${name} に ${cands.length} 人。本人をはっきり見分けられませんでした。いちばん似ている顔を選んであります。本人の顔を選んでください。`
+          : `${name} に ${cands.length} 人。本人が見つかりませんでした（よく似た別の人かもしれません）。写っていれば、本人の顔を選んでください。`;
     const dlg = h('dialog', { class: 'dlg', 'aria-labelledby': 'pick-h' },
       h('h2', { id: 'pick-h' }, '本人の顔を選んでください'),
       h('p', { class: 'muted small' }, msg),

@@ -2,7 +2,7 @@
 // 本人を見分けられるかは、テスト写真で確かめる（docs/faceai-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REC, SAME, recInput, normalize, cosine, personScore, findPerson, groupFaces } from '../../facerec.js';
+import { REC, SAME, recInput, normalize, cosine, personScore, findPerson, groupFaces, faceFloor } from '../../facerec.js';
 import { FACE_PTS } from './face-fixture.js';
 
 /** 人ごとの向き（dim 番目）に、少しずれ（jitter）を足した特徴 */
@@ -47,6 +47,17 @@ test('同じ人のまとまりで決める（1 枚だけ本人より手がかり
   const r = findPerson([[X[0], P[0]], [X[1], P[1]], [P[2], X[2]]], [seed]);
   assert.deepEqual(r.map((q) => q.pick), [1, 1, 0]);
   assert.deepEqual(groupFaces([P[0], X[0], P[1], X[1]], [0, 0, 1, 1]).map((g, _, a) => g === a[0]), [true, false, true, false]);
+});
+
+test('よく似た別人: 1 つの顔として本人から遠い顔や、覚えた別人により近い顔は、まとまりが本人らしくても選ばない', () => {
+  const v = (m) => normalize(Float32Array.from({ length: 16 }, (_, i) => m[i] || 0));
+  const seeds = [v({ 0: 1, 1: 0.1 }), v({ 0: 1, 2: 0.1 }), v({ 0: 1, 3: 0.1 })];
+  assert.ok(faceFloor(seeds) > 0.7); // 本人の写真どうしはとても近いので、下限も上がる
+  const look = v({ 0: 1, 4: 0.9 }); // よく似た別人（手がかりとの近さ 0.74 前後）
+  assert.equal(findPerson([[look]], seeds)[0].pick, -1);
+  const me = v({ 0: 1, 4: 0.3 });
+  assert.equal(findPerson([[me]], seeds)[0].pick, 0);
+  assert.equal(findPerson([[me]], seeds, [[v({ 0: 1, 4: 0.35 })]])[0].pick, -1); // 外された顔（別人）にもっと近い
 });
 
 test('手がかりがなければ、何も選ばない', () => {

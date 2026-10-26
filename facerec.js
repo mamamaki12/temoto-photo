@@ -51,6 +51,10 @@ export const SAME = 0.5;
 export const MARGIN = 0.05;
 /** 入れた写真の顔どうしを、同じ人のまとまりにする近さ */
 export const LINK = 0.4;
+/** まとまりが本人らしくても、その顔だけで見てこれより遠ければ選ばない（よく似た別人が、本人のまとまりに入ってしまうことがある） */
+export const FACE_MIN = 0.35;
+/** 本人の写真が 3 枚以上あれば、本人の写真どうしの近さ（中央値）からこれ以上離れた顔は選ばない */
+export const FACE_DROP = 0.2;
 
 /**
  * 顔を、同じ人らしいまとまりに分ける（平均連結。まとまりどうしの全部の組の近さの平均が LINK より大きい間、いちばん近いものからつなぐ）。
@@ -82,6 +86,15 @@ export function groupFaces(embs, photo) {
   return id;
 }
 
+/** 1 つの顔として本人と見なせる近さの下限（本人の写真が多ければ、本人の写真どうしの近さに合わせて上げる） */
+export function faceFloor(seeds) {
+  if (seeds.length < 3) return FACE_MIN;
+  const self = [];
+  for (const e of seeds) { const t = seeds.filter((q) => q !== e); self.push(personScore(e, t)); }
+  self.sort((a, b) => a - b);
+  return Math.max(FACE_MIN, self[self.length >> 1] - FACE_DROP);
+}
+
 /**
  * 写真ごとの顔の特徴から、本人の顔を選ぶ。
  * 1 つの顔と手がかりの近さだけで決めると、暗い写真の顔が手がかりのときに間違えやすいので、入れた写真の顔を同じ人のまとまりに分け、
@@ -95,16 +108,21 @@ export function groupFaces(embs, photo) {
 export function findPerson(photos, seeds, others = []) {
   if (!seeds.length) return photos.map(() => ({ pick: -1, guess: -1, score: -1 }));
   const embs = photos.flat(); const photo = photos.flatMap((fs, i) => fs.map(() => i));
-  const id = groupFaces(embs, photo);
+  const raw = embs.map((e) => personScore(e, seeds)); const floor = faceFloor(seeds);
+  const otherRaw = embs.map((e) => Math.max(-1, ...others.map((o) => personScore(e, o))));
+  // 1 つの顔として本人と見なせない顔（遠すぎる・覚えた別人の方が近い）は、まとまりに入れない（本人のまとまりの平均を下げないように）
+  const fit = raw.map((r, i) => r >= floor && r > otherRaw[i]);
+  const idx = fit.map((f, i) => (f ? i : -1)).filter((i) => i >= 0);
+  const sub = groupFaces(idx.map((i) => embs[i]), idx.map((i) => photo[i]));
+  const id = embs.map((_, i) => -1 - i); idx.forEach((i, k) => { id[i] = idx[sub[k]]; });
   const mean = (vals) => { const sum = new Map(); const cnt = new Map(); id.forEach((g, i) => { sum.set(g, (sum.get(g) || 0) + vals[i]); cnt.set(g, (cnt.get(g) || 0) + 1); }); return (i) => sum.get(id[i]) / cnt.get(id[i]); };
-  const own = mean(embs.map((e) => personScore(e, seeds)));
-  const other = mean(embs.map((e) => Math.max(-1, ...others.map((o) => personScore(e, o)))));
+  const own = mean(raw); const other = mean(otherRaw);
   let o = 0;
   return photos.map((fs) => {
     const s = fs.map((_, k) => own(o + k)); const base = o; o += fs.length;
     if (!fs.length) return { pick: -1, guess: -1, score: -1 };
     const order = s.map((_, k) => k).sort((a, b) => s[b] - s[a]); const best = order[0]; const second = order.length > 1 ? s[order[1]] : -1;
-    const ok = s[best] >= SAME && s[best] - second >= MARGIN && s[best] > other(base + best);
+    const ok = s[best] >= SAME && s[best] - second >= MARGIN && s[best] > other(base + best) && fit[base + best];
     return { pick: ok ? best : -1, guess: s[best] >= SAME * 0.7 ? best : -1, score: s[best] };
   });
 }
