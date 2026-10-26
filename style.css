@@ -416,19 +416,45 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .export progress[hidden] { display: none; }
 
 /* 顔 AI */
+.faceai-step { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: .95rem; font-weight: 600; }
+.faceai-step span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; background: var(--accent); color: #0b0f0c; font-size: .8rem; }
 .faceai-faces { display: grid; gap: 8px; margin: 8px 0; }
-.faceai-face { display: flex; gap: 10px; align-items: center; }
-.faceai-face canvas { width: 72px; height: 72px; border-radius: 10px; flex: none; }
-.faceai-face-ctl { display: grid; gap: 6px; min-width: 0; flex: 1; }
-.faceai-face-ctl select { width: 100%; }
-.faceai-whole { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
-.faceai-person { border: 1px solid var(--line); border-radius: 12px; padding: 8px; margin: 8px 0; display: grid; gap: 8px; }
-.faceai-person-head { display: flex; gap: 6px; align-items: center; }
-.faceai-person-head input { flex: 1; min-width: 0; }
+.faceai-face { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.faceai-face[data-on="true"] { border-color: var(--select); }
+.faceai-tog { display: flex; width: 100%; gap: 10px; align-items: center; padding: 8px; border: 0; border-radius: 0; background: transparent; text-align: left; min-height: 0; }
+.faceai-face[data-on="true"] .faceai-tog { background: var(--accent-soft); }
+.faceai-thumb { position: relative; flex: none; line-height: 0; }
+.faceai-thumb canvas { width: 64px; height: 64px; border-radius: 10px; }
+.faceai-thumb b { position: absolute; top: -6px; left: -6px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; background: #fff; color: #111; font-size: .8rem; line-height: 1; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
+.faceai-face[data-on="true"] .faceai-thumb b { background: var(--accent); }
+.faceai-face-txt { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.faceai-face-txt strong { font-size: .92rem; }
+.faceai-status { font-size: .8rem; color: var(--muted); }
+.faceai-face[data-on="true"] .faceai-status { color: var(--accent-text); }
+.faceai-sw { flex: none; width: 40px; height: 24px; border-radius: 999px; background: var(--line); position: relative; transition: background .15s; }
+.faceai-sw::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 999px; background: #fff; transition: left .15s; }
+.faceai-tog[aria-pressed="true"] .faceai-sw { background: var(--accent); }
+.faceai-tog[aria-pressed="true"] .faceai-sw::after { left: 19px; }
+.faceai-who { display: none; gap: 6px; align-items: center; padding: 6px 8px 8px; font-size: .82rem; color: var(--muted); border-top: 1px solid var(--line); }
+.faceai-face[data-on="true"] .faceai-who { display: flex; }
+.faceai-who select { flex: 1; min-width: 0; }
+.faceai-whole { margin-top: 10px; }
+.faceai-people { display: grid; gap: 8px; margin: 8px 0; }
+.faceai-person { border: 1px solid var(--line); border-radius: 12px; padding: 8px; display: grid; gap: 8px; }
+.faceai-person[data-used="true"] { border-color: var(--select); }
+.faceai-person-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.faceai-person-head input { flex: 1; min-width: 6em; }
+.faceai-used { font-size: .75rem; color: var(--accent-text); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px; }
 .faceai-refs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .faceai-ref { position: relative; display: inline-block; }
 .faceai-ref img { width: 64px; height: 64px; border-radius: 8px; display: block; }
 .faceai-ref .x { position: absolute; top: -6px; right: -6px; width: 24px; height: 24px; min-height: 24px; padding: 0; border-radius: 999px; font-size: .8rem; }
+.handles .face-ring { fill: none; stroke: #fff; stroke-opacity: .8; stroke-dasharray: 6 5; }
+.handles .face-ring.on { stroke: var(--accent); stroke-opacity: 1; stroke-dasharray: none; }
+.handles .face-num { fill: #fff; stroke: rgb(0 0 0 / 50%); stroke-width: 1; }
+.handles .face-num.on { fill: var(--accent); }
+.handles .face-num-t { fill: #111; font-weight: 700; pointer-events: none; }
+.stage[data-tool="faceai"] { cursor: pointer; }
 .faceai-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .faceai-pick-face { padding: 2px; border-radius: 12px; }
 .faceai-pick-face img { width: 96px; height: 96px; border-radius: 10px; display: block; }
