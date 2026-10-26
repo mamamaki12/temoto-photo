@@ -27,14 +27,14 @@ test('明るく・暗く: なぞった所だけ明るく（暗く）なり、元
   const R = [0.3, 0.4, 0.7, 0.6]; const other = [0.0, 0.85, 0.15, 1.0];
   const b0 = lum(await viewMean(page, R)); const o0 = lum(await viewMean(page, other));
   await openTool(page, '明暗');
-  await expect(page.getByRole('button', { name: '明るく', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#item-dodge-dodge')).toHaveAttribute('aria-selected', 'true');
   await setSize(page, 15);
   await stroke(page, [[0.32, 0.5], [0.68, 0.5]]);
   expect((await ops(page)).map((o) => o.type)).toEqual(['dodge']);
   const b1 = lum(await viewMean(page, R));
   expect(b1).toBeGreaterThan(b0 + 4);
   expect(Math.abs(lum(await viewMean(page, other)) - o0)).toBeLessThan(1); // なぞっていない所は変わらない
-  await page.getByRole('button', { name: '暗く', exact: true }).click();
+  await openTool(page, '暗く');
   await setSize(page, 15); // 大きさは種類ごとに覚える
   await stroke(page, [[0.32, 0.5], [0.68, 0.5]]); await stroke(page, [[0.32, 0.5], [0.68, 0.5]]);
   expect(lum(await viewMean(page, R))).toBeLessThan(b1 - 4);
@@ -59,14 +59,13 @@ test('形を整える: なぞった向きに画素が動く（なぞっている
   const e1 = await viewMean(page, edge);
   expect(Math.abs(lum(e1) - lum(e0)) + Math.abs(e1[0] - e0[0])).toBeGreaterThan(3);
   for (const [tool, mode, type] of [['しわ取り', null, 'wrinkle'], ['顔', '目元', 'eyes'], ['顔', '歯', 'teeth']]) {
-    await openTool(page, tool);
-    if (mode) await page.getByRole('button', { name: mode, exact: true }).click();
+    await openTool(page, mode || tool);
     const n = (await ops(page)).length;
     await stroke(page, [[0.55, 0.2], [0.7, 0.3]]);
     await page.waitForFunction((n) => window.__temoto.state.retouch.length > n && !document.querySelector('.stage.busy'), n, { timeout: 60000 }); // 歯は口を AI で探してから当てる
     expect((await ops(page)).at(-1).type).toBe(type);
   }
-  await expect(page.getByText(/なぞった回数: 2/)).toBeVisible(); // 目元・歯は 2 回
+  await expect(page.getByText(/当てた回数: 1/)).toBeVisible(); // 歯は 1 回（回数は項目ごと）
 });
 
 test('書き出し（元の大きさ）でも、編集中と同じ所に同じように当たる（写真の一部だけを読み出して当てても同じ）', async ({ page }) => {
@@ -126,9 +125,9 @@ test('ブラシの大きさ: スライダーを動かすと写真の上に丸が
   const r5 = Number(await page.locator('.handles circle.cursor').getAttribute('r'));
   expect(r10 / r5).toBeCloseTo(2, 1);
   await expect(page.locator('.handles circle.cursor')).toHaveCount(0, { timeout: 3000 }); // しばらくすると消える
-  await page.getByRole('button', { name: '暗く', exact: true }).click();
+  await openTool(page, '暗く');
   await expect(size).toHaveValue('3'); // 暗くは別に覚える
-  await page.getByRole('button', { name: '明るく', exact: true }).click();
+  await openTool(page, '明るく');
   await expect(size).toHaveValue('5');
   await openTool(page, '顔');
   await expect(size).toHaveValue('1.5');

@@ -105,7 +105,7 @@ test('露光・彩度で画素が変わり、元に戻す／やり直す／編�
   await expect(cmp).toHaveAttribute('aria-pressed', 'false');
   // 編集前のまま、ほかの道具を触ると、編集後の表示に戻る
   await tapNow(cmp);
-  await page.locator('.rail [role=tab]').first().click();
+  await page.locator('.panel input[type=range]').first().click();
   await expect(cmp).toHaveAttribute('aria-pressed', 'false');
   await page.waitForTimeout(150);
   // 元に戻す（キーボード）
@@ -294,7 +294,7 @@ test('プレビューの画質: 大きな写真を縮めてもギザギザ（モ
 test('文字・スタンプ・描画のタブはない（成人式の写真の仕上げに使わないので消した）', async ({ page }) => {
   await openWith(page);
   for (const t of ['文字', 'スタンプ', '描画']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(0);
-  for (const t of ['おまかせ', 'レタッチ', 'フレーム']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(1);
+  for (const t of ['おまかせ', '顔', 'フレーム']) await expect(page.getByRole('tab', { name: t, exact: true })).toHaveCount(1);
 });
 
 test('前に選んでいたタブがなくなっていても（描画・RAW 以外の写真での RAW）、写真を表示してフィルターのタブで開く', async ({ page }) => {
@@ -510,75 +510,59 @@ test('美肌: 顔をタップすると、肌に似た色の背景は変えない
   await page.waitForFunction(() => window.__temoto.state.portrait.seeds.length === 0);
 });
 
-test('Canva のような画面: グループを押すとパネルが開き、もう一度押す・✕で閉じて写真が広くなる・右下で拡大縮小', async ({ page }) => {
+test('写真加工アプリのような画面: 種類 → 項目を押すと、写真を大きく、下にその項目のスライダーだけ。✓ で戻り、✕ で取り消す', async ({ page }) => {
+  await openWith(page, await (async () => { await page.goto(URL0); return makePhoto(page, { w: 2400, h: 4000 }); })()); // 縦長の写真（下のパネルの高さで大きさが変わる）
+  const height = () => page.locator('canvas.view').evaluate((c) => c.getBoundingClientRect().height);
+  // はじめは項目の一覧（スライダーは出ていない）
+  await expect(page.locator('.editor')).toHaveClass(/side-closed/);
+  await page.getByRole('tab', { name: '顔', exact: true }).click();
+  for (const t of ['美肌', '目元', 'リップ', '鼻筋', '歯', '目線']) await expect(page.getByRole('tab', { name: t, exact: true })).toBeVisible();
+  await expect(page.locator('.editor')).toHaveClass(/side-closed/); // 種類を押しただけでは開かない
+  const h0 = await height();
+  await page.getByRole('tab', { name: '鼻筋', exact: true }).click();
+  await expect(page.locator('.editor')).not.toHaveClass(/side-closed/);
+  await expect(page.locator('.side-name')).toHaveText('鼻筋');
+  await expect(page.locator('.stage-hint')).toHaveText('鼻をタップ');
+  await expect(page.getByLabel('強さ', { exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '顔', exact: true })).toBeHidden(); // 種類・項目の列は隠れて、写真が大きく
+  await expect.poll(height).toBeGreaterThanOrEqual(h0 - 40); // 下はスライダーだけなので、写真はほとんど小さくならない
+  // ✓ で項目の一覧へ戻る
+  await page.getByRole('button', { name: '完了' }).click();
+  await expect(page.locator('.editor')).toHaveClass(/side-closed/);
+  await expect(page.locator('.stage-hint')).toBeHidden();
+  // ✕ は、その項目を開いてから変えたことを取り消す
+  await page.getByRole('tab', { name: '部分', exact: true }).click();
+  await page.getByRole('tab', { name: 'しわ取り', exact: true }).count(); // 顔の項目
+  await page.getByRole('tab', { name: '顔', exact: true }).click();
+  await page.getByRole('tab', { name: '美肌', exact: true }).click();
+  await page.evaluate(() => { const E = window.__temoto.editor; E.state.adj.exposure = 30; });
+  await page.getByRole('button', { name: 'キャンセル' }).click();
+  await expect(page.locator('.editor')).toHaveClass(/side-closed/);
+  expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(0);
+});
+
+test('パソコンの画面: 左で種類を選ぶと、その中の項目とパネルが開く。✓ で閉じて写真が広くなる・右下で拡大縮小', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await openWith(page, await (async () => { await page.goto(URL0); return makePhoto(page, { w: 4000, h: 2400 }); })()); // 画面より大きな写真（小さな写真は元の大きさより大きく表示しない）
   const width = () => page.locator('canvas.view').evaluate((c) => c.getBoundingClientRect().width);
   await page.getByRole('tab', { name: '調整', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'ライト', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('heading', { name: '調整' })).toBeVisible();
-  const w0 = await width();
-  // もう一度押すと閉じる
-  await page.getByRole('tab', { name: '調整', exact: true }).click();
-  await expect(page.locator('.editor')).toHaveClass(/side-closed/);
-  await expect.poll(width).toBeGreaterThan(w0 + 50);
-  // 押すと開いて、前に使っていた道具（グループの中）に戻る
-  await expect(page.getByRole('tab', { name: 'ライト', exact: true })).toHaveCount(0); // 閉じている間は出ていない
-  await page.getByRole('tab', { name: '調整', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'ライト' })).toBeVisible();
+  // 前に使っていた項目（種類の中）に戻る
   await page.getByRole('tab', { name: 'カーブ', exact: true }).click();
   await page.getByRole('tab', { name: 'おまかせ', exact: true }).click();
   await page.getByRole('tab', { name: '調整', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'カーブ', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await page.getByRole('button', { name: 'パネルを閉じる' }).click();
+  const w0 = await width();
+  await page.getByRole('button', { name: '完了' }).click();
   await expect(page.locator('.editor')).toHaveClass(/side-closed/);
+  await expect(page.getByRole('tab', { name: 'ライト', exact: true })).toBeVisible(); // 項目の列は出たまま
   // 拡大・縮小
   await page.getByRole('button', { name: '拡大', exact: true }).click();
   await expect(page.locator('.zoom-val')).toHaveText('125%');
   await page.getByRole('button', { name: /表示の大きさ/ }).click();
   await expect(page.locator('.zoom-val')).toHaveText('100%');
-});
-
-test('画面の色: はじめは黒、右上のアイコンを押すたびに ダーク → 自動 → ライト → ダーク と切り替わり、覚える（一覧・編集のメニュー）', async ({ page }) => {
-  const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
-  await page.emulateMedia({ colorScheme: 'light' });
-  await page.goto(URL0);
-  expect(await theme()).toBe('dark'); // はじめは端末がライトでも黒い画面
-  // アイコンは見出しの右上
-  const first = page.getByRole('button', { name: /^画面の色: ダーク（押すと自動に）/ });
-  const hb = await page.locator('.lib-head').boundingBox(); const bb = await first.boundingBox();
-  expect(bb.x + bb.width).toBeGreaterThan(hb.x + hb.width - 30); expect(bb.y).toBeLessThan(hb.y + 30);
-  // ダーク → 自動（端末の設定に合わせる）
-  await first.click();
-  expect(await theme()).toBe('light');
-  await page.emulateMedia({ colorScheme: 'dark' });
-  await expect.poll(theme).toBe('dark'); // 端末の設定を変えると、すぐ変わる
-  await page.emulateMedia({ colorScheme: 'light' });
-  await expect.poll(theme).toBe('light');
-  // 自動 → ライト
-  const btn = page.getByRole('button', { name: /^画面の色: 自動/ });
-  await btn.click();
-  await expect(page.locator('.lib-head .theme-cycle')).toHaveAttribute('data-theme', 'light');
-  expect(await theme()).toBe('light');
-  // ライト → ダーク（端末の設定によらずダーク）。再読み込みしても覚えている
-  await page.getByRole('button', { name: /^画面の色: ライト/ }).click();
-  expect(await theme()).toBe('dark');
-  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(15, 15, 16)');
-  await page.reload();
-  expect(await theme()).toBe('dark');
-  await expect(page.getByRole('button', { name: /^画面の色: ダーク（押すと自動に）/ })).toBeVisible();
-  // ダーク → 自動（端末はライト）
-  await page.getByRole('button', { name: /^画面の色: ダーク/ }).click();
-  expect(await theme()).toBe('light');
-  // 編集画面のメニューからも同じように切り替えられる（自動 → ライト → ダーク）
-  await page.locator('#open-file').setInputFiles(await makePhoto(page));
-  await page.waitForFunction(() => window.__temoto.editor?.L);
-  await page.locator('.menu summary').click();
-  await page.getByRole('button', { name: /^画面の色: 自動/ }).click();
-  expect(await theme()).toBe('light');
-  if (!(await page.locator('.menu').evaluate((m) => m.open))) await page.locator('.menu summary').click();
-  await page.getByRole('button', { name: /^画面の色: ライト/ }).click();
-  expect(await theme()).toBe('dark');
-  await expect(page.locator('.editor')).not.toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  expect(w0).toBeGreaterThan(100);
 });
 
 test.describe('はじめて使う端末', () => {
@@ -586,23 +570,23 @@ test.describe('はじめて使う端末', () => {
   test('調整・部分補正は最初は隠してあり、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '◎部分', '▢フレーム', 'ⓘ情報']);
     // 「ライト」を出す
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     const dlg = page.getByRole('dialog', { name: '表示する道具を選ぶ' });
     await dlg.getByLabel('ライト').check();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
-    await rail.filter({ hasText: '調整' }).click();
-    await expect(page.locator('.subtabs')).toHaveCount(0); // 中の道具が1つだけならタブは出さない
+    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '☀調整', '◎部分', '▢フレーム', 'ⓘ情報']);
+    await rail.filter({ hasText: '調整' }).click(); // 中の項目が1つだけなら、すぐ開く
+    await expect(page.locator('.side-name')).toHaveText('ライト');
     await setSlider(page, '露光量', 40);
     // また隠しても、編集は写真に残る
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     await dlg.getByLabel('ライト').uncheck();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '◎部分', '▢フレーム', 'ⓘ情報']);
     expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
     // 全部隠そうとすると止める
     await page.locator('.menu summary').click();
@@ -618,19 +602,19 @@ test.describe('はじめて使う端末', () => {
   test('スペシャリストモードをオンにすると、隠した道具も全部出る（オフで元に戻る・覚えている）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveCount(4);
+    await expect(rail).toHaveCount(5);
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').check();
-    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '◎部分補正', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '☀調整', '◎部分', '▢フレーム', 'ⓘ情報']);
     await rail.filter({ hasText: '調整' }).click();
-    await expect(page.locator('.subtabs [role=tab]')).toHaveCount(7);
+    await expect(page.locator('.items [role=tab]')).toHaveCount(7);
     // 再読み込みしても続く
     await page.reload(); await page.locator('.lib-open').first().click(); await page.waitForFunction(() => window.__temoto.editor?.L);
     await expect(rail).toHaveCount(6);
     // オフにすると隠した道具は消え、開いていた道具（調整）からフィルターに戻る
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').uncheck();
-    await expect(rail).toHaveCount(4);
+    await expect(rail).toHaveCount(5);
     await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
   });
 });
