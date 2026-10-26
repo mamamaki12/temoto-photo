@@ -1,5 +1,6 @@
 // Service Worker: 一度開いたら、オフラインでも開けるようにする（ネットワーク優先・失敗したらキャッシュ）
-const CACHE = 'temoto-photo-v56';
+const CACHE = 'temoto-photo-v57';
+const VERSION = '1.28.1'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
@@ -8,6 +9,11 @@ self.addEventListener('activate', (e) => {
     for (const k of await caches.keys()) if (k !== CACHE && !k.startsWith('temoto-faceai-')) await caches.delete(k);
     await self.clients.claim();
   })());
+});
+
+// 画面から「今の版は？」と聞かれたら答える（新しい sw.js が入ったのに、画面が古いままかを確かめる）
+self.addEventListener('message', (e) => {
+  if (e.data?.type === 'version') e.ports[0]?.postMessage({ version: VERSION, cache: CACHE });
 });
 
 self.addEventListener('fetch', (e) => {
@@ -28,7 +34,9 @@ self.addEventListener('fetch', (e) => {
   }
   e.respondWith((async () => {
     try {
-      const res = await fetch(req);
+      // ブラウザの HTTP キャッシュ（GitHub Pages は10分）を使わず、毎回サーバーに確かめる（変わっていなければ 304 で軽い）。
+      // こうしないと、更新したあと一部のファイルだけ古い版が混ざることがある
+      const res = await fetch(req, { cache: 'no-cache' });
       if (res.ok && res.type === 'basic') { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
     } catch {

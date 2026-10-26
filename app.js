@@ -1,5 +1,6 @@
 // てもとフォト: 写真を端末の外に出さずに編集する（読み込み・編集・保存・書き出しのすべてがこの端末の中）
 import { h, add, render, $, toast, uid, download } from './lib.js';
+import { initUpdate, updateButton } from './update.js';
 import * as S from './state.js';
 import { Engine } from './engine.js';
 import { effective, LOOKS } from './presets.js';
@@ -28,7 +29,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.28.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.28.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -363,6 +364,7 @@ async function showLibrary() {
   render(app,
     h('header', { class: `lib-head${projects.length ? ' compact' : ''}` },
       h('h1', {}, h('span', { class: 'logo', 'aria-hidden': 'true' }), 'てもとフォト'),
+      updateButton(toast),
       themeButton()),
     h('main', { class: 'lib-main' },
       h('label', { class: `drop${projects.length ? ' compact' : ''}`, for: 'open-file', id: 'drop' },
@@ -863,6 +865,7 @@ function buildEditor() {
       }).el),
       h('button', { type: 'button', onclick: openToolPicker }, '表示する道具を選ぶ…'),
       themeButton({ withLabel: true }),
+      updateButton(toast, { withLabel: true }),
       h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
   // 項目を選んだら・外側を押したらメニューを閉じる
   menu.addEventListener('click', (e) => { if (e.target.closest('.menu-list button')) menu.open = false; });
@@ -2344,7 +2347,8 @@ addEventListener('pagehide', flushSave);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
 // ホーム画面のアプリとして「ファイルを開く」から起動されたとき
 if ('launchQueue' in window) window.launchQueue.setConsumer(async (p) => { const files = await Promise.all((p.files || []).map((f) => f.getFile())); if (files.length) importFiles(files); });
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register(new URL('./sw.js', import.meta.url), { scope: new URL('./', import.meta.url).pathname }).catch(() => {});
+// Service Worker の登録と、新しい版の確認（アプリに戻ってきたときも）。更新で読み込み直す前に、編集を保存する
+initUpdate(VERSION, { flush: flushSave });
 applyTheme();
 showLibrary();
 // テスト・デバッグ用（中身の確認だけ。外部には何も送らない）
