@@ -1,6 +1,6 @@
 // Service Worker: 一度開いたら、オフラインでも開けるようにする（ネットワーク優先・失敗したらキャッシュ）
-const CACHE = 'temoto-photo-v74';
-const VERSION = '1.32.1'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
+const CACHE = 'temoto-photo-v75';
+const VERSION = '1.33.0'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {

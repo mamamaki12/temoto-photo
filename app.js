@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.32.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.33.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -2169,6 +2169,7 @@ function fxAction(tool, c, p) {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'face');
           if (!face) { toast(face === null ? '顔を見つける AI を使えないので、鼻筋は補正できませんでした' : '顔が見つかりませんでした（小さい顔は拡大してからタップ）'); return; }
           op.nose = {}; for (const [k, ids] of Object.entries(NOSE_POINTS)) op.nose[k] = ids.map((i) => [+face[i][0].toFixed(5), +face[i][1].toFixed(5)]);
+          op.v = 2; // 2 版（はっきり効く・鼻の横を細くする）
           addRetouch(op); commit(); buildPanel(); requestRender();
         });
         return;
