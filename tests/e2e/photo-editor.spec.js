@@ -653,6 +653,32 @@ test('書き出し: 「写真アプリに保存」で共有メニューに画像
   await expect(dlg.getByRole('button', { name: '写真アプリに保存' })).toBeVisible();
 });
 
+test('書き出し: 写真アプリに保存できる端末では、1枚でもまとめてでも緑のボタンは「写真アプリに保存」。まとめては全部を一度に渡す', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__shared = [];
+    navigator.canShare = (d) => !!d?.files?.length;
+    navigator.share = async (d) => { window.__shared.push(d.files.map((f) => f.name)); };
+  });
+  await openWith(page);
+  const green = page.getByRole('dialog').locator('.dlg-actions button.primary');
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  await expect(green).toHaveText('写真アプリに保存');
+  await page.getByRole('dialog').getByRole('button', { name: '閉じる' }).click();
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await page.locator('#open-file').setInputFiles(await makePhoto(page, { w: 600, h: 900 }));
+  await expect(page.locator('canvas.view')).toBeVisible({ timeout: 20000 });
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await expect(page.locator('.lib-item')).toHaveCount(2);
+  await page.getByRole('button', { name: 'すべて選択' }).click();
+  await page.getByRole('button', { name: 'まとめて書き出し' }).click();
+  await expect(green).toHaveText('写真アプリに保存');
+  await expect(page.getByRole('dialog').getByRole('button', { name: '2枚を書き出す' })).toBeVisible();
+  await green.click();
+  await expect.poll(() => page.evaluate(() => window.__shared)).toHaveLength(1);
+  const [names] = await page.evaluate(() => window.__shared);
+  expect(names).toHaveLength(2); expect(names.every((n) => n.endsWith('_edit.jpg'))).toBe(true);
+});
+
 test('編集の見出し: 戻るボタンは「‹」だけ（「写真」の文字は出さない）', async ({ page }) => {
   await openWith(page);
   await expect(page.locator('.ed-head .back')).toHaveText('‹');

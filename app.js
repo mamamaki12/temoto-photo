@@ -28,7 +28,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.27.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.27.4'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -2022,7 +2022,8 @@ function openExport({ batch }) {
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
   const go = h('button', { type: 'button', class: 'primary' }, batch ? `${batch.length}枚を書き出す` : '書き出す');
   const SHARE_LABEL = '写真アプリに保存';
-  const shareBtn = h('button', { type: 'button', class: 'primary', hidden: !(navigator.canShare && !batch) }, SHARE_LABEL);
+  // 写真アプリへの保存（iPhone など）は、1枚でもまとめてでも、いつも緑のボタンにする
+  const shareBtn = h('button', { type: 'button', class: 'primary', hidden: !navigator.canShare }, SHARE_LABEL);
   if (!shareBtn.hidden) go.classList.remove('primary');
   name.addEventListener('input', () => { ready = null; shareBtn.textContent = SHARE_LABEL; });
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'exp-h' },
@@ -2036,7 +2037,7 @@ function openExport({ batch }) {
       chips([['display-p3', 'Display P3（鮮やかなまま）'], ['srgb', 'sRGB（プリント店・古い機器向け）']], opt.space, (v) => { opt.space = v; save(); }, { label: '色' }).el,
       h('p', { class: 'muted small' }, 'プリント店向けは sRGB')] : []),
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
-    ...(navigator.canShare && !batch ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
+    ...(navigator.canShare ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
     h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status, exportProgress,
     h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), shareBtn, go));
@@ -2059,42 +2060,46 @@ function openExport({ batch }) {
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
   };
+  /** まとめて書き出す。1枚できるごとに onFile(blob, ファイル名) */
+  const many = async (onFile) => {
+    let i = 0;
+    // まとめて書き出すときも、全体の進み具合をバーに出す（暗所補正・ブレ補正のある写真は 1 枚に数分かかる）
+    exportProgress.hidden = false; exportProgress.value = 0;
+    const step = (t) => { exportProgress.value = Math.min(99, Math.floor(100 * (i - 1 + t) / batch.length)); };
+    for (const p of batch) {
+      status.textContent = `書き出しています… ${++i}/${batch.length}`; step(0);
+      const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
+      if (portraitActive(S.validateState(p.state).portrait)) await ensureSkinSeg(ctx2d(toCanvas(prep.base, prep.W, prep.H), { willReadFrequently: true }).getImageData(0, 0, prep.W, prep.H)); // 美肌の肌を AI で見分ける
+      if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
+        status.textContent = `RAW を元の大きさで現像しています… ${i}/${batch.length}`;
+        try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
+      }
+      let r;
+      try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: step }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
+      await onFile(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
+    }
+    exportProgress.value = 100; status.textContent = `✓ ${batch.length}枚を書き出しました`;
+  };
   go.addEventListener('click', async () => {
     go.disabled = true;
     try {
       if (!batch) { const r = await one(); download(r.blob, r.file); toast('書き出しました'); }
-      else {
-        let i = 0;
-        // まとめて書き出すときも、全体の進み具合をバーに出す（暗所補正・ブレ補正のある写真は 1 枚に数分かかる）
-        exportProgress.hidden = false; exportProgress.value = 0;
-        const step = (t) => { exportProgress.value = Math.min(99, Math.floor(100 * (i - 1 + t) / batch.length)); };
-        for (const p of batch) {
-          status.textContent = `書き出しています… ${++i}/${batch.length}`; step(0);
-          const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
-          if (portraitActive(S.validateState(p.state).portrait)) await ensureSkinSeg(ctx2d(toCanvas(prep.base, prep.W, prep.H), { willReadFrequently: true }).getImageData(0, 0, prep.W, prep.H)); // 美肌の肌を AI で見分ける
-          if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
-            status.textContent = `RAW を元の大きさで現像しています… ${i}/${batch.length}`;
-            try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
-          }
-          let r;
-          try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: step }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
-          download(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
-          await new Promise((res) => setTimeout(res, 400));
-        }
-        exportProgress.value = 100; status.textContent = `✓ ${batch.length}枚を書き出しました`;
-      }
+      else await many(async (blob, file) => { download(blob, file); await new Promise((res) => setTimeout(res, 400)); });
     } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });
   shareBtn.addEventListener('click', async () => {
     shareBtn.disabled = true;
-    let file = ready;
+    let files = ready;
     try {
-      if (!file) { const r = await one(); file = new File([r.blob], r.file, { type: opt.format }); }
-      if (!navigator.canShare({ files: [file] })) { download(file, file.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
-      await navigator.share({ files: [file] }); ready = null; shareBtn.textContent = SHARE_LABEL;
+      if (!files) {
+        if (batch) { files = []; await many((blob, f) => { files.push(new File([blob], f, { type: opt.format })); }); }
+        else { const r = await one(); files = [new File([r.blob], r.file, { type: opt.format })]; }
+      }
+      if (!navigator.canShare({ files })) { for (const f of files) download(f, f.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
+      await navigator.share({ files }); ready = null; shareBtn.textContent = SHARE_LABEL;
     } catch (e) {
-      if (e?.name === 'NotAllowedError' && file) { // 書き出しに時間がかかって、押したことが切れた。用意はできたので、もう一度押してもらう
-        ready = file; shareBtn.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
+      if (e?.name === 'NotAllowedError' && files) { // 書き出しに時間がかかって、押したことが切れた。用意はできたので、もう一度押してもらう
+        ready = files; shareBtn.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
       } else if (e?.name !== 'AbortError') status.textContent = '写真アプリに保存できませんでした';
     } finally { shareBtn.disabled = false; }
   });
