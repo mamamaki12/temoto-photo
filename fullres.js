@@ -16,7 +16,7 @@ import { jpegEncoder, pngEncoder, readJpegIcc } from './encode.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 import { enhancePhoto, smallPixels, withoutLowlight } from './restoration-photo.js';
 import { finishBand } from './deblur-photo.js';
-import { mergeFacesFull } from './face-photo.js';
+import { mergeFacesFull, mergeWholeFull } from './face-photo.js';
 
 const TILE = 1024; // 美肌を当てる一部の大きさ
 const STRIP_PIXELS = 4_000_000; // 帯 1 本の画素数の目安
@@ -49,11 +49,12 @@ async function iccFor(space) {
  * @param {{res:object|null,amount:number,grain:number}|null} [a.deblur] ブレ補正（暗所補正の後に、編集中に AI で求めた差分を足し、そのあと細かい粒を足す）。
  *   暗所補正があるときの粒の強さは、grain ではなく、暗所補正で測ったノイズの量で決まる（grainFor）
  * @param {{list:object[],editW:number,amount:number}|null} [a.faces] 顔 AI（編集中に求めた顔ごとの結果。暗所補正・ブレ補正の後に、元の大きさの写真に当て直す）
+ * @param {{width:number,height:number,data:Int8Array}|null} [a.whole] 全体 AI（編集中に求めた差分。顔 AI の前に、引き伸ばして足す）
  * @param {HTMLCanvasElement|ImageBitmap} [a.lowlightFrom] 暗所補正の明るさの曲線を決める、補正する前の編集用の写真（work が補正済みのとき）
  * @param {Promise<object|null>|null} [a.lowlightPre] precomputeLowlight の結果（同じ写真・同じ暗所補正の設定で先に計算したもの）。あれば暗所補正を計算し直さない
  * @param {(t:number)=>void} [a.onProgress] 0〜1
  */
-export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, deblur = null, faces = null, lowlightFrom = work, lowlightPre = null, onProgress: report = () => {} }) {
+export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, deblur = null, faces = null, whole = null, lowlightFrom = work, lowlightPre = null, onProgress: report = () => {} }) {
   const glc = canvas(1, 1); const eng = new Engine(glc);
   try {
     // 写真が GPU で扱える大きさを超えるときは、そこまで縮める
@@ -96,6 +97,11 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
         onProgress(0.02 * (y / FH)); await later();
       }
     } else eng.putSource(0, 0, src);
+    if (whole) {
+      // 全体 AI: 編集中に求めた差分を、元の大きさに引き伸ばして足す（顔は、このあと顔 AI で置き換わる）
+      await mergeWholeFull((x, y, w, h) => eng.readSource(x, y, w, h), (x, y, w, h, d) => eng.putSourcePixels(x, y, w, h, d), whole, FW, FH);
+      src = { width: FW, height: FH, region: (x, y, w, h) => eng.readSource(x, y, w, h) };
+    }
     if (faces?.list?.length) {
       // 顔 AI: 顔のまわりだけを読み出して当てる（美肌・修復は、当てたものに）
       await mergeFacesFull((x, y, w, h) => eng.readSource(x, y, w, h), (x, y, w, h, d) => eng.putSourcePixels(x, y, w, h, d), faces.list, FW, FH, FW / faces.editW, faces.amount);

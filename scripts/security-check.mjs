@@ -23,6 +23,8 @@ const VENDOR = {
   'vendor/deblur': ['nafnet-gopro-w32.onnx', 'LICENSE.txt'],
   // 顔専用 AI のモデル（GFPGAN v1.4。170MB を 2 つに分けた。Worker の中で同じサイトのファイルだけを読む）
   'vendor/faceai': ['gfpgan-v1.4-int8.onnx', 'LICENSE.txt'],
+  // 全体 AI のモデル（Real-ESRGAN realesr-general-x4v3、5MB。Worker の中で同じサイトのファイルだけを読む）
+  'vendor/wholeai': ['realesr-general-x4v3.onnx', 'LICENSE.txt'],
 };
 // vendor/ のスクリプトに書かれていてよい URL（警告の文に出てくる説明のページ。読み込みはしない）
 const DOC_URLS = [/https:\/\/web\.dev\/cross-origin-isolation-guide\/?/g];

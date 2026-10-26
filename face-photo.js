@@ -1,9 +1,10 @@
 // 顔専用 AI（編集画面の「おまかせ → 顔 AI」）を、写真（Canvas）に当てる。計算は faceai.js、AI は face-worker.js で。
 // 暗い写真・ブレの大きい写真で、選んだ顔だけに当てる（明るい写真は、今までの歯・目元の道具で十分なので、自動では使わない）。
-// 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 → 顔 AI」。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
+// 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 →（全体 AI）→ 顔 AI」。全体 AI（wholeai.js）は髪・服・背景の細かい所を整え、顔だけ浮かないようにする。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
 // AI は編集用の大きさの写真で 1 回だけ動かし、書き出しでは、その結果を元の大きさの写真に当て直す（mergeFace は大きさによらない）
-import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, mergeFace } from './faceai.js';
-import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg } from './skinseg.js';
+import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace } from './faceai.js';
+import { addDetail, applyDetail } from './wholeai.js';
+import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg, segParts } from './skinseg.js';
 import { releaseDeblur } from './deblur-photo.js';
 import { getPeople, putPeople } from './db.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
@@ -12,6 +13,8 @@ import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 export const faceaiActive = (st) => !!st.faceai?.faces?.some((f) => f.on);
 /** 強さ（0〜1） */
 export const faceaiAmount = (st) => (st.faceai?.amount ?? 100) / 100;
+/** 顔 AI と一緒に、髪・服・背景も全体 AI で整えるか（顔だけくっきりして、まわりとの差が目立たないように。はじめは使う） */
+export const faceaiWhole = (st) => faceaiActive(st) && st.faceai.whole !== false;
 
 const abortError = () => new DOMException('処理を中止しました', 'AbortError');
 const later = () => new Promise((r) => setTimeout(r, 0));
@@ -165,6 +168,7 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
     if (!f.on) continue;
     const g = matchFace(dets, f); if (!g) continue;
     const p = await prepare(img, g.pts);
+    p.seg = await segParts(toImageData(p.crop)); // 切り出した顔の髪（AI の髪も当てる。hairMask）
     const refs = [];
     for (const r of list.find((q) => q.id === f.person)?.refs || []) refs.push(await loadRef(r));
     prepared.push(p); jobs.push({ crop: Float32Array.from(p.crop), pts: p.pts, refs });
@@ -175,10 +179,65 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
   releaseDeblur(); releaseSkinSeg();
   let outs;
   try { outs = await runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }); } finally { worker?.terminate(); worker = null; }
-  const faces = prepared.map((p, k) => ({ M: p.M, out: outs[k], mask: faceMask(p.pts) }));
+  const faces = prepared.map((p, k) => ({ M: p.M, out: outs[k], mask: hairMask(faceMask(p.pts), p.seg) }));
   mergeFacesCanvas(x, W, H, faces, faceaiAmount({ faceai }));
   onProgress(1);
   return { canvas: c, faces };
+}
+let wholeWorker = null;
+/**
+ * 写真（Canvas、編集用の大きさ）の全体を全体 AI に通して、足す差分を求める（顔 AI の前に。顔は、そのあと顔 AI で置き換わる）
+ * @returns {Promise<{width:number,height:number,data:Int8Array}>} 足す差分（wholeCanvas で当てる。書き出しでも使う）
+ */
+export async function wholeResidual(image, W, H, { signal, onProgress = () => {} } = {}) {
+  if (signal?.aborted) throw abortError();
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
+  const img = x.getImageData(0, 0, W, H, { colorSpace: COLOR_SPACE }); c.width = 0; c.height = 0;
+  // 大きな AI を同時に抱えないよう、ブレ補正の AI は片付けておく（全体 AI は 5MB と小さく、終わったら片付ける）
+  releaseDeblur();
+  wholeWorker = new Worker(new URL('./whole-worker.js', import.meta.url), { type: 'module' });
+  const wk = wholeWorker;
+  try {
+    const r = await new Promise((resolve, reject) => {
+      const onAbort = () => reject(abortError());
+      signal?.addEventListener('abort', onAbort, { once: true });
+      wk.onmessage = ({ data: m }) => {
+        if (m.type === 'progress') onProgress(m.phase === 'load' ? 0.05 * m.t : 0.05 + 0.95 * m.t);
+        else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m); } else if (m.type === 'error') reject(new Error(m.message));
+      };
+      wk.onerror = () => reject(friendly('MEMORY'));
+      wk.postMessage({ type: 'run', img: img.data, W, H }, [img.data.buffer]);
+    });
+    onProgress(1);
+    return { width: W, height: H, data: r.res };
+  } finally { wk.terminate(); if (wholeWorker === wk) wholeWorker = null; }
+}
+/** 写真（編集用の大きさ）に全体 AI の差分を足して、新しい Canvas を返す（帯ごとに。差分だけを取っておき、Canvas は取っておかない） */
+export async function wholeCanvas(image, W, H, res) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
+  const rows = Math.max(16, Math.floor(2_000_000 / W));
+  for (let y = 0; y < H; y += rows) {
+    const n = Math.min(rows, H - y); const d = x.getImageData(0, y, W, n, { colorSpace: COLOR_SPACE });
+    addDetail(d.data, res.data.subarray(y * W * 3, (y + n) * W * 3));
+    x.putImageData(d, 0, y);
+    await later();
+  }
+  return c;
+}
+/**
+ * 書き出し（元の大きさ）: 編集用の大きさで求めた全体 AI の差分を、引き伸ばして写真全体に足す（帯ごとに読み書き）
+ * read(x, y, w, h) → RGBA、write(x, y, w, h, RGBA)
+ */
+export async function mergeWholeFull(read, write, res, W, H) {
+  const rows = Math.max(16, Math.floor(2_000_000 / W));
+  for (let y = 0; y < H; y += rows) {
+    const n = Math.min(rows, H - y); const data = read(0, y, W, n);
+    applyDetail(data, n, { y0: y, fullW: W, fullH: H }, res);
+    write(0, y, W, n, data);
+    await later();
+  }
 }
 /** Canvas（2D）の、顔のまわりだけを読み出して結果を当てる */
 function mergeFacesCanvas(x, W, H, faces, amount) {

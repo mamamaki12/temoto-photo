@@ -425,6 +425,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .faceai-face canvas { width: 72px; height: 72px; border-radius: 10px; flex: none; }
 .faceai-face-ctl { display: grid; gap: 6px; min-width: 0; flex: 1; }
 .faceai-face-ctl select { width: 100%; }
+.faceai-whole { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .faceai-person { border: 1px solid var(--line); border-radius: 12px; padding: 8px; margin: 8px 0; display: grid; gap: 8px; }
 .faceai-person-head { display: flex; gap: 6px; align-items: center; }
 .faceai-person-head input { flex: 1; min-width: 0; }
