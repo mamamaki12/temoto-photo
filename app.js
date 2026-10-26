@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.31.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.31.4'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -463,6 +463,7 @@ async function openEditor(id) {
   const proj = await db.getProject(id); const blob = await db.getBlob(id);
   if (!proj || !blob) { toast('写真が見つかりませんでした'); showLibrary(); return; }
   const savedHq = db.getHq(id).catch(() => null);
+  const peopleP = loadPeople(); // 顔 AI の鍵（本人の写真）に使う。読み終わる前に鍵を作ると、保存した結果と合わずに計算し直してしまう
   const glCanvas = document.createElement('canvas');
   let engine;
   try { engine = new Engine(glCanvas); } catch {
@@ -481,7 +482,8 @@ async function openEditor(id) {
   // 前に計算した暗所補正・ブレ補正・顔 AI の結果があれば、計算し直さずにすぐ見せる（書き出しでは元の大きさで計算し直す）。
   // 読み込む間は「写真を開いています」のまま（補正前の暗い写真を一瞬見せない）
   if (E.rawLin) E.rawKey = JSON.stringify({ ...state.raw, ca: null }); // rebuildSource と同じ（hqKey に使う）
-  const e0 = E; const key = hqKey(state);
+  const e0 = E; await peopleP; if (E !== e0) return;
+  const key = hqKey(state);
   const hqc = key ? await loadHq(await savedHq) : null;
   if (E !== e0) return; // 読み込む間に別の写真・一覧に移った（closeEditor が片付け済み）
   if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; }
@@ -718,12 +720,12 @@ const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
 async function saveHq(e0, key, canvas) {
   await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
-  if (E !== e0 || E.hq?.key !== key || E.hq.canvas !== canvas) return;
+  if (e0.hq?.key !== key || e0.hq.canvas !== canvas) return; // 写真一覧に戻っても保存は続ける（計算してすぐ戻ると、次に開いたときまた計算し直すことになる）
   try {
     const px = ctx2d(canvas, { willReadFrequently: true }).getImageData(0, 0, e0.W, e0.H, { colorSpace: COLOR_SPACE }).data;
     let data = new Blob([px]);
     if (canZip) data = await new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob();
-    if (E !== e0 || E.hq?.key !== key) return;
+    if (e0.hq?.key !== key) return;
     await db.putHq(e0.id, { key, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
     await db.pruneHq(HQ_KEEP);
   } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
