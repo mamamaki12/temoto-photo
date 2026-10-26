@@ -154,7 +154,10 @@ function validRetouch(r) {
       // AI で見つけた鼻の点（まん中・左右のふち・左右の頬の境目）。なければ何もしない操作になる
       const poly = (q) => (Array.isArray(q) ? q.slice(0, 8).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
       const nose = { mid: poly(r.nose.mid), li: poly(r.nose.li), ri: poly(r.nose.ri), lo: poly(r.nose.lo), ro: poly(r.nose.ro) };
-      if (nose.mid.length >= 3 && nose.li.length && nose.ri.length && nose.lo.length && nose.ro.length) op.nose = nose;
+      // 2 版: 小鼻のふち（al / ar）も持ち、影・ハイライトを強め、鼻の横を細くする。1 版で保存したものは 1 版のまま描く
+      const al = poly(r.nose.al); const ar = poly(r.nose.ar);
+      if (r.v === 2 && al.length && ar.length) { nose.al = al; nose.ar = ar; }
+      if (nose.mid.length >= 3 && nose.li.length && nose.ri.length && nose.lo.length && nose.ro.length) { op.nose = nose; if (nose.al) op.v = 2; }
     }
     return op;
   }

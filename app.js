@@ -2064,6 +2064,7 @@ function fxAction(tool, c, p) {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'face');
           if (!face) { toast(face === null ? '顔を見つける AI を使えないので、鼻筋は補正できませんでした' : '顔が見つかりませんでした（小さい顔は拡大してからタップ）'); return; }
           op.nose = {}; for (const [k, ids] of Object.entries(NOSE_POINTS)) op.nose[k] = ids.map((i) => [+face[i][0].toFixed(5), +face[i][1].toFixed(5)]);
+          op.v = 2; // 2 版（はっきり効く・鼻の横を細くする）
           addRetouch(op); commit(); buildPanel(); requestRender();
         });
         return;

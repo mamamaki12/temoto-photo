@@ -82,7 +82,8 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
       const ir = Math.hypot(x - cx - 12, y - 200) < 12; const t = base[k] % 16; eyed[k] = ir ? 40 + t : 220 + t; eyed[k + 1] = ir ? 30 + t : 215 + t; eyed[k + 2] = ir ? 25 + t : 210 + t;
     }
     const out = {};
-    for (const type of BRUSH_TYPES) {
+    for (const name of [...BRUSH_TYPES, 'nose2']) {
+      const type = name === 'nose2' ? 'nose' : name;
       const op = { type, pts: [[0.3, 0.4], [0.36, 0.45], [0.42, 0.47]], r: 0.06, amt: 0.8 };
       if (type === 'gaze') { // 目線は AI が見つけた両目（まぶたのふち 16 点と黒目）に当てる: 作りものの目を 2 つ
         const eye = (cx) => ({ lid: Array.from({ length: 16 }, (_, i) => { const a = Math.PI - (i / 16) * Math.PI * 2; return [(cx + Math.cos(a) * 40) / W, (200 + Math.sin(a) * 16) / H]; }), iris: [[(cx + 12) / W, 200 / H], [(cx + 12) / W, 188 / H], [(cx + 24) / W, 200 / H], [(cx + 12) / W, 212 / H], [cx / W, 200 / H]], pose: [0, 0] });
@@ -90,6 +91,7 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
       }
       // 鼻筋は、AI で見つけた顔の点から範囲を決める（作りものの鼻: まん中の線と、左右のふち・頬の境目）
       if (type === 'nose') { const col = (dx) => [0.2, 0.3, 0.4, 0.5].map((t) => [0.36 + dx, 0.3 + t * 0.4]); op.nose = { mid: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9].map((t) => [0.36, 0.3 + t * 0.4]), li: col(-0.02), ri: col(0.02), lo: col(-0.06), ro: col(0.06) }; }
+      if (name === 'nose2') { op.v = 2; op.nose.al = [[0.36 - 0.07, 0.3 + 0.95 * 0.4], [0.36 - 0.06, 0.3 + 0.9 * 0.4]]; op.nose.ar = [[0.36 + 0.07, 0.3 + 0.95 * 0.4], [0.36 + 0.06, 0.3 + 0.9 * 0.4]]; } // 2 版: 小鼻のふちも
       const src = type === 'gaze' ? eyed : base;
       const whole = { width: W, height: H, data: new Uint8ClampedArray(src) }; applyBrush(whole, op);
       const [rx, ry, rw, rh] = brushBounds(op, W, H); const part = { width: rw, height: rh, data: new Uint8ClampedArray(rw * rh * 4) };
@@ -103,7 +105,7 @@ test('書き出し（元の大きさ）でも、編集中と同じ所に同じ�
           if (inside) maxDiff = Math.max(maxDiff, Math.abs(whole.data[k + c] - part.data[((y - ry) * rw + x - rx) * 4 + c]));
         }
       }
-      out[type] = { maxDiff, changed, outside };
+      out[name] = { maxDiff, changed, outside };
     }
     return out;
   });

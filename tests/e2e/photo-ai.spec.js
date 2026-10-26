@@ -213,7 +213,7 @@ test('鼻筋: 鼻をタップすると、AI で見つけた顔の点から、鼻
   await page.waitForFunction(() => { const r = window.__temoto.state.retouch; return r.length && !document.querySelector('.stage.busy'); }, null, { timeout: 60000 });
   await page.waitForTimeout(300);
   const op = (await page.evaluate(() => window.__temoto.state.retouch))[0];
-  expect(op.type).toBe('nose'); expect(op.nose.mid.length).toBe(7); expect(op.nose.li.length).toBe(5); // 顔の点を見つけ、範囲は自動で
+  expect(op.type).toBe('nose'); expect(op.nose.mid.length).toBe(7); expect(op.nose.li.length).toBe(5); expect(op.v).toBe(2); expect(op.nose.al.length).toBe(4); // 顔の点を見つけ、範囲は自動で（2 版は小鼻のふちも）
   const lum = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
   const { W, H } = await page.evaluate(() => ({ W: window.__temoto.editor.W, H: window.__temoto.editor.H }));
   const before = ([x, y]) => { const k = (Math.round(y * (H - 1)) * W + Math.round(x * (W - 1))) * 4; return org.slice(k, k + 3); };

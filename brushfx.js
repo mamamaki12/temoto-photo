@@ -10,7 +10,7 @@ export const BRUSH_TYPES = ['warp', 'eyes', 'teeth', 'lip', 'nose', 'gaze', 'dod
  * 鼻筋に使う顔の点（MediaPipe の 478 点の番号）。mid: 鼻筋のまん中（眉間→鼻先→鼻先の下）、
  * li/ri: 鼻筋の左右のふち（鼻の上の面と横の面の境目）、lo/ro: 鼻の横の面と頬の境目（小鼻の上まで）
  */
-export const NOSE_POINTS = { mid: [168, 6, 197, 195, 5, 4, 1], li: [122, 196, 3, 51, 45], ri: [351, 419, 248, 281, 275], lo: [174, 236, 131, 115], ro: [399, 456, 360, 344] };
+export const NOSE_POINTS = { mid: [168, 6, 197, 195, 5, 4, 1], li: [122, 196, 3, 51, 45], ri: [351, 419, 248, 281, 275], lo: [174, 236, 131, 115], ro: [399, 456, 360, 344], al: [129, 49, 102, 64], ar: [358, 279, 331, 294] };
 /** リップの色（名前・RGB） */
 // リップの色の見本は、市販の口紅（ディオール・シャネル・イヴ・サンローラン・ジバンシィ・メイベリンの 287 色）を色の系統で分け、
 // それぞれの系統のまん中に近い実際の色にした（ピンク: ディオール 351、コーラル: ディオール 644、レッド: ジバンシィ 13、
@@ -1325,11 +1325,98 @@ function noseShade(img, nose, amt, at) {
   }
 }
 
+/** 鼻筋 2 版の強さ（強さ 100% のとき）。hl: ハイライト（段）、sh: 影（段）、slim: 鼻の横の面・小鼻を内へ寄せる量（幅に対する割合） */
+export const NOSE_V2 = { hl: 0.5, sh: 0.8, slim: 0.16 };
+
+/**
+ * 鼻筋（2 版）: 1 版は自然さを優先して控えめにしすぎ、等倍でも効果が分からなかった。
+ * - ハイライトを細く・強くし、鼻先まで通す（鼻先が少し前に出て見える）
+ * - 影を濃くし、横の面に沿って小鼻の付け根まで下ろす
+ * - 鼻の横の面と小鼻を、鼻筋に向かって少し寄せる（鼻が細く＝高く見える）。まん中と頬の遠くは動かさない
+ * nose: { mid, li, ri, lo, ro, al, ar }（al / ar: 左右の小鼻のふち）
+ */
+function noseShade2(img, nose, amt, at) {
+  const W = img.width; const H = img.height; const d = img.data;
+  const px = (q) => [q[0] * at.W - at.ox, q[1] * at.H - at.oy];
+  const mid = nose.mid.map(px); if (mid.length < 3) return;
+  const cum = [0]; for (let i = 1; i < mid.length; i++) cum.push(cum[i - 1] + Math.hypot(mid[i][0] - mid[i - 1][0], mid[i][1] - mid[i - 1][1]));
+  const L = cum[cum.length - 1]; if (L < 4) return;
+  const side = (pts) => { const tw = pts.map(px).map((q) => { const a = alongLine(mid, cum, q[0], q[1]); return [a.t, Math.abs(a.s)]; }).sort((p, q) => p[0] - q[0]); return tw.length ? tw : null; };
+  const li = side(nose.li); const ri = side(nose.ri); const lo = side(nose.lo); const ro = side(nose.ro); if (!li || !ri || !lo || !ro) return;
+  const sgnL = Math.sign(alongLine(mid, cum, ...px(nose.li[0])).s) || -1;
+  const span = (i, o) => Math.max(1, widthAt(o, 0.5) - widthAt(i, 0.5)); const sl = span(li, lo); const sr = span(ri, ro);
+  const scaleL = sm(sl / sr, 0.35, 0.85); const scaleR = sm(sr / sl, 0.35, 0.85);
+  // 小鼻: 鼻筋からいちばん離れた所までの幅と、鼻筋に沿った位置
+  const ala = (pts) => { const a = pts.map(px).map((q) => alongLine(mid, cum, q[0], q[1])); return { w: Math.max(...a.map((v) => Math.abs(v.s))), t: a.reduce((p, v) => p + v.t, 0) / a.length }; };
+  const aL = ala(nose.al); const aR = ala(nose.ar); const tA = Math.min(1.3, Math.max(0.7, (aL.t + aR.t) / 2));
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const k of ['mid', 'li', 'ri', 'lo', 'ro', 'al', 'ar']) for (const q of nose[k].map(px)) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }
+  const padv = Math.max(L * 0.35, Math.max(aL.w, aR.w) * 0.6); const bx = Math.max(0, Math.floor(x0 - padv)); const by = Math.max(0, Math.floor(y0 - padv));
+  const bx1 = Math.min(W, Math.ceil(x1 + padv)); const by1 = Math.min(H, Math.ceil(y1 + padv)); const w = bx1 - bx; const h = by1 - by; if (w <= 0 || h <= 0) return;
+  const n = w * h; const hl = new Float32Array(n); const sh = new Float32Array(n); const sideL = new Uint8Array(n); const ss = new Float32Array(n); const tt = new Float32Array(n).fill(-9);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const a = alongLine(mid, cum, bx + x + 0.5, by + y + 0.5); const t = a.t; const i = y * w + x; ss[i] = a.s; tt[i] = t; if (t < -0.4 || t > 1.6) continue;
+    const left = Math.sign(a.s) === sgnL; const hi = Math.max(1, widthAt(left ? li : ri, t)); const ho = Math.max(hi * 1.4, widthAt(left ? lo : ro, t));
+    const s = Math.abs(a.s);
+    // ハイライト: 鼻筋のまん中に細く。眉間の少し上から鼻先まで（鼻先は丸く少し広く）
+    const hw = hi * (0.75 + 0.35 * sm(t, 0.75, 1.0));
+    hl[i] = sm(t, -0.3, 0.05) * (1 - sm(s / hw, 0, 1)) * (1 - sm(t, 1.0, 1.15));
+    // 影: ふちのすぐ外がいちばん濃く、頬へなめらかに消える。横の面に沿って小鼻の付け根まで
+    const v = (s - hi) / (ho - hi);
+    sh[i] = sm(t, -0.1, 0.3) * sm(v, -0.25, 0.25) * (1 - sm(v, 0.5, 2.0)) * (1 - sm(t, 0.8, 1.0)) * (left ? scaleL : scaleR);
+    if (left) sideL[i] = 1;
+  }
+  const lum = new Float32Array(n); const ca = new Float32Array(n); const cb = new Float32Array(n); const ref = [[], [], []]; const sideLum = [[], []];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const k = ((by + y) * W + bx + x) * 4; const i = y * w + x; const r = d[k]; const g = d[k + 1]; const b = d[k + 2];
+    lum[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b; ca[i] = (r - g) / (lum[i] + 15); cb[i] = (b - (r + g) / 2) / (lum[i] + 15);
+    if (hl[i] > 0.6) { ref[0].push(lum[i]); ref[1].push(ca[i]); ref[2].push(cb[i]); }
+    if (sh[i] > 0.6) sideLum[sideL[i] ? 0 : 1].push(lum[i]);
+  }
+  if (ref[0].length < 4) return;
+  const med = (v) => { v.sort((p, q) => p - q); return v[v.length >> 1]; }; const rl = med(ref[0]); const ra = med(ref[1]); const rb = med(ref[2]);
+  // もともと陰になっている側は影を減らす（1 版は 0 まで減らしたが、それだと効果が見えない。半分までにとどめる）
+  const coef = sideLum.map((v) => { if (v.length < 4) return NOSE_V2.sh * 0.6; const c = Math.log2((rl + 4) / (med(v) + 4)); return NOSE_V2.sh * (1 - 0.5 * clamp01(Math.max(0, c) / 1.0)); });
+  const hcoef = NOSE_V2.hl * (1 - 0.55 * sm(rl, 170, 225));
+  const soft = Math.max(1, L * 0.03); const hlS = blur(hl, w, h, 1, soft); const shS = blur(sh, w, h, 1, soft * 1.5);
+  // 肌らしさは画素ごとだとざらつき、影がまだらに（汚れのように）なるので、なめらかにしてから使う
+  const sk = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const dc = Math.hypot(ca[i] - ra, cb[i] - rb); sk[i] = Math.exp(-(dc * dc) / (2 * 0.1 * 0.1)) * sm(lum[i] / (rl + 1), 0.3, 0.5); }
+  const skS = blur(sk, w, h, 1, soft * 1.5);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const H1 = hlS[i]; const S1 = shS[i]; if (H1 < 0.003 && S1 < 0.003) continue;
+    const skin = Math.min(sk[i] * 2, skS[i]); // 髪・鼻の穴など、はっきり肌でない所は外したまま
+    const spec = 1 - sm(lum[i] / (rl + 1), 1.08, 1.3);
+    const e = amt * skin * (hcoef * spec * H1 - coef[sideL[i] ? 0 : 1] * S1); if (!e) continue;
+    const k = ((by + y) * W + bx + x) * 4;
+    const r = LIN[d[k]]; const g = LIN[d[k + 1]]; const b = LIN[d[k + 2]]; const Lv = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const f = 2 ** e; const L1 = e > 0 ? Math.min(Lv * f, Lv + (1 - Lv) * 0.6) : Lv * f;
+    // 影の所は色みを少し残す（明るさと同じ割合で色みも減らすと、灰色にくすんで汚れのように見えた）
+    const kc = Lv > 1e-5 ? (e > 0 ? Math.sqrt(L1 / Lv) : (L1 / Lv) ** 0.8) : 1;
+    d[k] = toSrgb(L1 + (r - Lv) * kc); d[k + 1] = toSrgb(L1 + (g - Lv) * kc); d[k + 2] = toSrgb(L1 + (b - Lv) * kc);
+  }
+  // 細く: 横の面と小鼻を鼻筋へ寄せる。鼻筋の向きに直角に、外側の画素を読んでくる（中身が内へ動く）
+  const A = NOSE_V2.slim * amt; if (A <= 0) return;
+  const dx = mid[mid.length - 1][0] - mid[0][0]; const dy = mid[mid.length - 1][1] - mid[0][1]; const dl = Math.hypot(dx, dy) || 1; const nx = dy / dl; const ny = -dx / dl;
+  const src = new Uint8ClampedArray(w * h * 4); for (let y = 0; y < h; y++) src.set(d.subarray(((by + y) * W + bx) * 4, ((by + y) * W + bx + w) * 4), y * w * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const t = tt[i]; if (t < 0 || t > tA + 0.5) continue;
+    const left = Math.sign(ss[i]) === sgnL; const s = Math.abs(ss[i]);
+    const ho = Math.max(widthAt(left ? li : ri, t) * 1.4, widthAt(left ? lo : ro, t)); const aw = (left ? aL : aR).w * 1.1;
+    const R = ho + (Math.max(ho, aw) - ho) * sm(t, 0.45, tA);
+    const D = A * s * (1 - sm(s / R, 0.5, 1.45)) * sm(t, 0.0, 0.35) * (1 - sm(t, tA + 0.12, tA + 0.45)) * (0.5 + 0.5 * (left ? scaleL : scaleR));
+    if (D < 0.02) continue;
+    const sg = ss[i] < 0 ? -1 : 1; const sx = Math.min(w - 1.001, Math.max(0, x + nx * sg * D)); const sy = Math.min(h - 1.001, Math.max(0, y + ny * sg * D));
+    const xi = sx | 0; const yi = sy | 0; const fx = sx - xi; const fy = sy - yi; const j = (yi * w + xi) * 4; const k = ((by + y) * W + bx + x) * 4;
+    for (let c = 0; c < 3; c++) d[k + c] = (src[j + c] * (1 - fx) + src[j + 4 + c] * fx) * (1 - fy) + (src[j + w * 4 + c] * (1 - fx) + src[j + w * 4 + 4 + c] * fx) * fy;
+  }
+}
+
 /** ブラシの操作 1 つを、画像（全体または一部）に当てる */
 export function applyBrush(img, op, at = { W: img.width, H: img.height, ox: 0, oy: 0 }) {
   const { pts, rad, amt } = geom(op, at);
   if (!pts.length) return;
-  if (op.type === 'nose') { if (op.nose) noseShade(img, op.nose, amt, at); return; } // 目印をなぞっただけでは何もしない（顔の点が要る）
+  if (op.type === 'nose') { if (op.nose) (op.v >= 2 && op.nose.al ? noseShade2 : noseShade)(img, op.nose, amt, at); return; } // 目印をなぞっただけでは何もしない（顔の点が要る）
   if (op.type === 'warp') {
     // 区間の長さで動かす量が決まるので、ブラシの大きさ（画素）に合わせて、全体と一部で同じになる
     // 背景の色は、なぞり始めの区間で決めて、最後まで同じものを使う
@@ -1382,7 +1469,9 @@ export function brushBounds(op, W, H) {
   }
   // 鼻筋: 鼻の点ぜんぶと、その高さの 4 割ほど外まで
   if (op.type === 'nose' && op.nose) {
-    const all = Object.values(op.nose).flat(); const ys = all.map((q) => q[1] * H); const m = (Math.max(...ys) - Math.min(...ys)) * 0.4 + 8;
+    const all = Object.values(op.nose).flat(); const ys = all.map((q) => q[1] * H); const xs = all.map((q) => q[0] * W);
+    // 2 版は小鼻の幅のぶんも計算するので、横にも広めに
+    const m = Math.max((Math.max(...ys) - Math.min(...ys)) * (op.v >= 2 ? 0.45 : 0.4), op.v >= 2 ? (Math.max(...xs) - Math.min(...xs)) * 0.4 : 0) + 8;
     for (const [x, y] of all) { x0 = Math.min(x0, x * W - m); y0 = Math.min(y0, y * H - m); x1 = Math.max(x1, x * W + m); y1 = Math.max(y1, y * H + m); }
   }
   // しわ取り・目元のぼかしは、ブラシの外の画素も少し使う（境目が変わらないよう、余白を足す）
