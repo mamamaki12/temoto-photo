@@ -92,19 +92,29 @@ const abortError = () => new DOMException('処理を中止しました', 'AbortE
  * @param {(t:number)=>void} [hooks.onProgress] 0〜1（実際に処理した量）
  * @param {(grain:number)=>void} [hooks.onGrain] 足す粒の強さ（grainFor）。帯より先に 1 回。grain: false のときも、ブレ補正のあとに足す強さとして知らせる
  * @param {AbortSignal} [hooks.signal]
+ * @param {object} [hooks.cache] 途中の結果を取っておく入れ物（編集画面で、同じ写真に対して使い回す。写真が変わったら新しくする）。
+ *   ノイズ除去の重い部分（denoiseBand）の結果を帯ごとに取っておき（cache.keepBands が false なら取っておかない）、
+ *   ノイズ軽減の強さが同じなら、明るさ補正を変えても仕上げ（finishBand）だけをやり直す。結果は 1 ビットも変わらない。
+ *   cache.pv には、スライダーを動かしている間の見本にする、縮めた明るさの曲線の前の絵（tonePreview）、cache.small には明るさの曲線を決める絵が入る
  */
-export async function enhancePhoto({ width, height, read, small }, { nr, light, grain = true, fine = true }, { onBand, onProgress = () => {}, onGrain = () => {}, signal } = {}) {
+export async function enhancePhoto({ width, height, read, small }, { nr, light, grain = true, fine = true }, { onBand, onProgress = () => {}, onGrain = () => {}, signal, cache = null } = {}) {
   const check = () => { if (signal?.aborted) throw abortError(); };
+  if (cache?.pending) await cache.pending; // 前に中止したときの、取っておいた帯が戻るのを待つ
   check();
+  const ckey = JSON.stringify([width, height, nr]);
+  if (cache && cache.key !== ckey) { cache.key = ckey; cache.profile = undefined; cache.bands = []; cache.pv = null; }
+  if (cache && cache.keepBands === false) cache.bands = [];
+  if (cache) cache.small = small;
   // 1. ノイズの量（写真の中央で）
-  let profile = null;
-  if (nr > 0) {
+  let profile = cache?.profile ?? null;
+  if (nr > 0 && cache?.profile === undefined) {
     const rows = Math.min(height, NOISE_SAMPLE); const y0 = (height - rows) >> 1;
     const cw = Math.min(width, NOISE_SAMPLE); const x0 = (width - cw) >> 1;
     const all = await read(y0, rows); const crop = new Uint8ClampedArray(cw * rows * 4);
     for (let y = 0; y < rows; y++) crop.set(all.subarray((y * width + x0) * 4, (y * width + x0 + cw) * 4), y * cw * 4);
     profile = measureNoise(crop, cw, rows);
   }
+  if (cache) cache.profile = profile;
   check(); onProgress(0.02);
   // 2. 明るさの曲線（写真全体で 1 つ）。人物と背景で照明の色の直し方を変えるので、人物の範囲を AI で見分ける
   // 顔が写っていれば、顔の肌の明るさで明るくする量を決める（planTone）
@@ -112,17 +122,35 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light, 
   const face = light > 0 ? await faceSeg(small) : null;
   check();
   const tone = light > 0 ? planTone(small, light, { person, face }) : null;
-  // ノイズ軽減の強さも、明るくする量に合わせる（スライダー 50 で自動の強さ）
-  nr *= autoNr(tone);
+  // ノイズ軽減の強さも、明るくする量に合わせる（スライダー 50 で自動の強さ）。
+  // 明るくする量は、明るさ補正 50 のとき（写真ごとの自動の量）で決める。明るさのスライダーを動かしただけでノイズの取り方まで変わると、
+  // 取っておいたノイズ除去の結果（cache.bands）が使えず、毎回最初からやり直しになる
+  nr *= autoNr(tone && { gain: Math.min(16, tone.auto * (1 + 50 / 400)) });
+  if (cache && cache.nr !== nr) { cache.nr = nr; cache.bands = []; cache.pv = null; }
   onGrain(grainFor(nr, profile, tone));
   // 3. 帯ごとに、いくつかの Worker で
   const ROWS = Math.max(64, Math.min(512, Math.floor(1_000_000 / width / 4) * 4));
   const bands = [];
   for (let y = 0; y < height; y += ROWS) bands.push({ y, rows: Math.min(ROWS, height - y) });
   const done = new Float64Array(bands.length);
-  const report = () => { let s = 0; for (let i = 0; i < bands.length; i++) s += done[i] * bands[i].rows; onProgress(0.02 + 0.98 * Math.min(1, s / height)); };
+  // 取っておいた帯は、仕上げだけなので軽い（進捗の重みを小さく）
+  const keep = !!cache && cache.keepBands !== false && nr > 0 && !!profile;
+  const weight = bands.map((b, i) => b.rows * (cache?.bands[i] ? 0.2 : 1)); const total = weight.reduce((a, b) => a + b, 0);
+  const report = () => { let s = 0; for (let i = 0; i < bands.length; i++) s += done[i] * weight[i]; onProgress(0.02 + 0.98 * Math.min(1, s / total)); };
+  // 見本: 長い辺が 1,600 くらいになるように、2 のべき乗で縮める（帯の行数は 4 の倍数なので、4 まで）
+  const f = Math.max(1, Math.min(4, 2 ** Math.round(Math.log2(Math.max(width, height) / 1600))));
+  const pv = cache ? { f, w: Math.ceil(width / f), h: Math.ceil(height / f) } : null;
+  if (pv) for (const k of ['Y', 'Cb', 'Cr']) pv[k] = new Float32Array(pv.w * pv.h);
   const workers = []; let next = 0; let failed = null; let running = 0;
-  const stop = () => { for (const w of workers) w.terminate(); };
+  // 中止したとき、取っておいた帯を仕上げている Worker は、終わるのを待って帯を返してもらってから止める（仕上げは短い。止めると、その帯のノイズ除去をやり直すことになる）
+  const drains = [];
+  const stop = () => {
+    for (const w of workers) {
+      if (w.holding == null || !cache) { w.terminate(); continue; }
+      drains.push(new Promise((r) => { w.drained = () => { w.terminate(); r(); }; }));
+    }
+    if (drains.length) cache.pending = Promise.all(drains).then(() => { cache.pending = null; });
+  };
   await new Promise((resolve, reject) => {
     const fail = (e) => { if (failed) return; failed = e; stop(); signal?.removeEventListener('abort', onAbort); reject(e); };
     const onAbort = () => fail(abortError());
@@ -134,29 +162,45 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light, 
         return;
       }
       const id = next++; const { y, rows } = bands[id];
+      const options = { nr, profile, tone, grain, fine };
+      const cached = cache?.bands[id];
+      if (cached) {
+        cache.bands[id] = null; // Worker に渡している間
+        worker.holding = id;
+        worker.postMessage({ type: 'lowlight', id, cached, options, pv: pv && f }, [cached.Y.buffer, cached.Y0.buffer, cached.Cb.buffer, cached.Cr.buffer]);
+        return;
+      }
       const top = Math.max(0, y - BAND_MARGIN); const bottom = Math.min(height, y + rows + BAND_MARGIN);
       let data;
       try { data = await read(top, bottom - top); } catch (e) { fail(e); return; }
       if (failed) return;
       worker.postMessage({ type: 'lowlight', id, band: { width, height: bottom - top, data },
-        at: { top: y - top, bottom: y - top + rows, y0: top, fullW: width, fullH: height }, options: { nr, profile, tone, grain, fine } }, [data.buffer]);
+        at: { top: y - top, bottom: y - top + rows, y0: top, fullW: width, fullH: height }, options, keep, pv: pv && f }, [data.buffer]);
     };
     const n = Math.min(workerCount(), bands.length);
     for (let i = 0; i < n; i++) {
       const worker = new Worker(new URL('./restoration-worker.js', import.meta.url), { type: 'module' });
       workers.push(worker); running++;
       worker.onmessage = ({ data: m }) => {
+        if (m.type !== 'progress' && m.id === worker.holding) {
+          worker.holding = null;
+          if (failed) { if (m.type === 'result' && cache.key === ckey && cache.keepBands !== false) cache.bands[m.id] = m.keep; worker.drained?.(); return; }
+        }
+        if (failed) return;
         if (m.type === 'progress') { done[m.id] = Math.min(0.99, m.t); report(); }
         else if (m.type === 'result') {
           done[m.id] = 1; report();
+          if (keep && m.keep) cache.bands[m.id] = m.keep;
+          if (m.pv) { const o = (bands[m.id].y / f) * pv.w; for (const k of ['Y', 'Cb', 'Cr']) pv[k].set(m.pv[k].subarray(0, Math.min(m.pv[k].length, pv[k].length - o)), o); }
           try { onBand(bands[m.id].y, bands[m.id].rows, m.data); } catch (e) { fail(e); return; }
           feed(worker);
         } else if (m.type === 'error') fail(new Error(m.message));
       };
-      worker.onerror = () => fail(new Error('暗所補正の処理を開始・実行できませんでした（端末のメモリが足りない可能性があります）'));
+      worker.onerror = () => { worker.holding = null; worker.drained?.(); fail(new Error('暗所補正の処理を開始・実行できませんでした（端末のメモリが足りない可能性があります）')); };
       feed(worker);
     }
   });
+  if (pv) cache.pv = pv;
   onProgress(1);
 }
 
