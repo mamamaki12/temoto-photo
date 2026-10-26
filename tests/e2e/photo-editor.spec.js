@@ -63,12 +63,11 @@ test.beforeEach(async ({ page }) => {
   page.on('request', (r) => { const u = new URL(r.url()); if (!['127.0.0.1', 'localhost'].includes(u.hostname) && !u.protocol.startsWith('blob') && !u.protocol.startsWith('data')) throw new Error(`外部通信: ${r.url()}`); });
 });
 
-test('写真一覧: 通信を禁止する CSP・プライバシーの説明・横スクロールなし', async ({ page }) => {
+test('写真一覧: 通信を禁止する CSP・横スクロールなし', async ({ page }) => {
   const errors = []; page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(URL0);
   await expect(page.getByRole('heading', { name: 'てもとフォト' })).toBeVisible();
   expect(await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')).toContain("connect-src 'none'");
-  await expect(page.locator('.privacy')).toContainText('この端末から出ません');
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
   // 画像以外は読み込まない
   await page.locator('#open-file').setInputFiles({ name: 'a.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') });

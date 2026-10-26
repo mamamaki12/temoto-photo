@@ -360,12 +360,9 @@ async function showLibrary() {
     return li;
   }));
   if (selecting.size) grid.classList.add('selecting');
-  const usage = h('p', { class: 'muted small' });
-  db.usage().then((u) => { if (u) usage.textContent = `この端末で使っている容量: ${fmtBytes(u.used)}${u.quota ? `（上限の目安 ${fmtBytes(u.quota)}）` : ''}`; });
   render(app,
     h('header', { class: `lib-head${projects.length ? ' compact' : ''}` },
       h('h1', {}, h('span', { class: 'logo', 'aria-hidden': 'true' }), 'てもとフォト'),
-      h('p', { class: 'lib-lead' }, '端末の中だけで編集。アップロード不要・オフライン対応。'),
       themeButton()),
     h('main', { class: 'lib-main' },
       h('label', { class: `drop${projects.length ? ' compact' : ''}`, for: 'open-file', id: 'drop' },
@@ -379,27 +376,19 @@ async function showLibrary() {
       projects.length ? grid : h('div', { class: 'lib-empty' },
         h('h2', {}, 'できること'),
         h('ul', { class: 'feature-list' }, [
-          '暗い舞台写真のノイズ除去・明るさ補正',
-          'AI で被写体ブレをくっきり',
-          '美肌・歯の白さ・リップ・鼻筋・目線',
-          'RAW 現像（キヤノンなど）',
-          'フィルター27種・自動補正',
-          '修復・モザイク・L判/2L判の切り抜き',
-          'フレーム・余白',
-          'グリッド（2〜9枚を1枚に）',
-          '編集はいつでもやり直せる（元の写真はそのまま）',
-          '書き出すと位置情報などは消える',
+          '暗所ノイズ除去・明るさ補正',
+          'AI ブレ補正',
+          '美肌・歯・リップ・鼻筋・目線',
+          'RAW 現像',
+          'フィルター・自動補正',
+          '修復・モザイク・切り抜き',
+          'フレーム・グリッド',
         ].map((t) => h('li', {}, t))),
-        h('h3', {}, 'スペシャリストモードで使える道具'),
-        h('p', { class: 'muted small' }, '編集画面の「⋯」メニューでオン。'),
+        h('h3', {}, 'スペシャリストモード（「⋯」メニュー）'),
         h('ul', { class: 'feature-list' }, [
           '明るさ・色・トーンカーブ・HSL・カラーグレーディング・ディテール・効果',
           '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
-        ].map((t) => h('li', {}, t)))),
-      h('section', { class: 'privacy' },
-        h('h2', {}, '写真はこの端末から出ません'),
-        h('p', {}, '外部と通信しない設定で動き、写真と編集内容はこの端末のブラウザの中だけに保存されます。'),
-        usage)));
+        ].map((t) => h('li', {}, t))))));
   const drop = $('#drop');
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
   for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
@@ -435,7 +424,7 @@ addEventListener('appinstalled', () => { installEvt = null; const slot = $('#ins
 function installCard() {
   if (!installEvt || prefs.get('installHidden', false)) return null;
   return h('div', { class: 'install-card' },
-    h('div', {}, h('b', {}, 'アプリとして入れる'), h('p', { class: 'muted small' }, 'デスクトップやホーム画面から、自分の窓で開けます。オフラインでも使えます。')),
+    h('div', {}, h('b', {}, 'アプリとして入れる'), h('p', { class: 'muted small' }, 'デスクトップやホーム画面から開けます。')),
     h('button', { type: 'button', class: 'primary', onclick: async () => { const e = installEvt; if (!e) return; installEvt = null; render($('#install-slot'), null); await e.prompt().catch(() => {}); } }, '入れる'),
     h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'このお知らせを出さない', title: 'このお知らせを出さない（ブラウザのメニューからも入れられます）', onclick: () => { prefs.set('installHidden', true); render($('#install-slot'), null); } }, '✕'));
 }
@@ -686,7 +675,7 @@ const DARK_RECIPE = { lowlight: 50, noise: 50 };
 function applyDarkRecipe() {
   Object.assign(E.state.adj, DARK_RECIPE); commit(); syncHistoryButtons(); requestRender();
   if (E.tool === 'auto') buildPanel();
-  toast('明るくしています。写真の上のバーが消えるまでお待ちください', 5000);
+  toast('明るくしています…', 5000);
 }
 /** 開いた写真が暗くて、まだ編集していなければ、写真の上に「明るくする」を出す */
 function suggestDark() {
@@ -914,7 +903,7 @@ function openToolPicker() {
   };
   const dlg = h('dialog', { class: 'dlg tool-picker', 'aria-labelledby': 'tp-h' },
     h('h2', { id: 'tp-h' }, '表示する道具を選ぶ'),
-    h('p', { class: 'hint' }, 'チェックを外した道具は表示しません（当てた編集は残ります）。'),
+    h('p', { class: 'hint' }, 'チェックを外した道具を隠します。'),
     h('div', { class: 'tp-groups' }, GROUPS.map(([g, icon, label, tools]) => h('fieldset', { class: 'tp-group' },
       h('legend', {}, h('span', { 'aria-hidden': 'true' }, `${icon} `), label, g === 'raw' ? h('span', { class: 'muted small' }, '（RAW を開いたとき）') : null),
       h('div', { class: 'tp-tools' }, tools.map((t) => { const tg = toggle(TOOL_LABEL[t], !hid.has(t), (v) => { if (v) hid.delete(t); else hid.add(t); }); boxes.push(tg); return tg.el; }))))),
@@ -992,16 +981,15 @@ const PANELS = {
         onInput: live((v) => { E.state.adj.lowlight = v; }), onChange: commit }).el,
       slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
         onInput: live((v) => { E.state.adj.noise = v; }), onChange: commit }).el,
-      hint('ノイズを取ってから明るくします。手を離すと計算を始め、写真の上のバーに残りが出ます。'),
+      hint('ノイズを取ってから明るくします。'),
       h('h3', {}, '動いた手・髪のブレを直す'),
       slider({ label: '被写体ブレの補正', min: 0, max: 100, value: E.state.adj.deblur, def: 0,
         onInput: live((v) => { E.state.adj.deblur = v; }), onChange: commit }).el,
-      hint('動いた手・髪・顔のブレを端末の AI でくっきりさせます（標準 50）。初回は AI（約 65MB）を読み込み、大きな写真は数分かかります。'),
+      hint('初回は AI（約 65MB）を読み込みます。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
       }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); buildPanel(); requestRender(); })),
-      hint('露光・白黒レベル・ホワイトバランスを自動で整えます。'),
     ];
   },
   faceai() {
@@ -1019,7 +1007,7 @@ const PANELS = {
       try { dets = await detectFaces(baseImageData()); } catch (e) { console.warn(e); render(facesBox, hint('顔を見つける AI を使えませんでした。')); return; }
       if (!E || E.tool !== 'faceai') return;
       const people = await loadPeople();
-      if (!dets.length) { render(facesBox, hint('顔が見つかりませんでした（小さすぎる顔・横を向いた顔には使えません）。')); return; }
+      if (!dets.length) { render(facesBox, hint('顔が見つかりませんでした。')); return; }
       const src = srcBase();
       render(facesBox, dets.slice(0, S.MAX_FACEAI).map((g, i) => {
         const f = entry(g, false);
@@ -1070,16 +1058,16 @@ const PANELS = {
               h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id) } : q))) }, '×'));
           }),
           h('label', { for: `fa-file-${p.id}`, class: 'btn small' }, '＋ 写真を追加'), file));
-      }) : hint('まだいません。上の顔の「本人の写真」で「＋ 新しい人」を選ぶと作れます。'));
+      }) : hint('「＋ 新しい人」で追加できます。'));
     };
     drawFaces(); drawPeople();
     return [
       h('h3', {}, '暗い写真・ブレの大きい写真の顔を、明るい所で撮ったように'),
-      hint('選んだ顔だけを顔専用 AI でくっきりさせます（形と色はそのまま）。暗い・ぼやけた顔向け。初回は AI（約 170MB）を読み込みます。'),
+      hint('初回は AI（約 170MB）を読み込みます。'),
       facesBox,
       slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
       h('h3', {}, '本人の写真'),
-      hint(`本人が明るくはっきり写った写真を 10 枚以上（${MAX_REFS} 枚まで）追加すると、目元・歯並びが本人らしくなります。写真は端末の中に保存されます。`),
+      hint(`本人がはっきり写った写真を 10 枚以上（${MAX_REFS} 枚まで）。`),
       peopleBox,
     ];
   },
@@ -1095,7 +1083,7 @@ const PANELS = {
     const presets = h('div', { class: 'presets' });
     const drawPresets = () => {
       const list = prefs.get('presets', []);
-      render(presets, h('div', { class: 'sub-head' }, h('b', {}, 'マイプリセット'), h('span', { class: 'muted small' }, '今の明るさ・色の調整を保存して、ほかの写真にも使えます')),
+      render(presets, h('div', { class: 'sub-head' }, h('b', {}, 'マイプリセット'), h('span', { class: 'muted small' }, '今の調整を保存')),
         list.length ? h('div', { class: 'chips' }, list.map((p) => h('span', { class: 'preset' },
           h('button', { type: 'button', onclick: () => { E.state = S.applyPreset(E.state, p.p); commit(); buildPanel(); requestRender(); } }, p.name),
           h('button', { type: 'button', class: 'x', 'aria-label': `${p.name}を削除`, onclick: () => { prefs.set('presets', list.filter((q) => q.id !== p.id)); drawPresets(); } }, '×')))) : null,
@@ -1116,16 +1104,13 @@ const PANELS = {
     return [
       histo(),
       sl('exposure', 'RAW の露出（白飛び・黒つぶれを戻す）', { min: -3, max: 3, step: 0.1, value: E.state.raw.exposure / 100, def: 0, format: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`, toState: (v) => Math.round(v * 100) }),
-      hint('RAW から現像し直すので、露光量より画質が落ちません。白飛び・黒つぶれの階調を戻せます。'),
       h('p', { class: 'sub-head' }, h('b', {}, 'ノイズとシャープ')),
       sl('nr', 'ノイズ除去', { min: 0, max: 100 }),
       sl('sharpen', 'シャープ（くっきり）', { min: 0, max: 100 }),
-      hint('平らな所だけをならし、肌のきめ・髪・模様は残します。'),
       h('p', { class: 'sub-head' }, h('b', {}, 'レンズの補正')),
       toggle('色にじみを自動で直す（書き出しのとき）', E.state.raw.ca, (v) => { E.state.raw.ca = v; commit(); }).el,
       sl('vignette', '周辺の暗さを明るく', { min: -100, max: 100, format: signed }),
       sl('distortion', 'ゆがみ（＋で樽型・−で糸巻き型を直す）', { min: -100, max: 100, format: signed }),
-      hint('色にじみは書き出し時に自動で直します。建物の線のふくらみは「ゆがみ」で。'),
     ];
   },
   light() {
@@ -1133,7 +1118,7 @@ const PANELS = {
   },
   color() {
     const pickBtn = btn(E.wbPick ? '写真の白・グレーの場所をタップ…' : '⊙ スポイトで白を合わせる', () => { E.wbPick = !E.wbPick; buildPanel(); }, E.wbPick ? 'active' : '');
-    return [row(pickBtn), ...adjSliders('color'), hint('スポイト: 白やグレーの場所をタップすると色かぶりを直します。')];
+    return [row(pickBtn), ...adjSliders('color'), hint('スポイト: 白・グレーの所をタップ')];
   },
   hsl() {
     const band = E.hslBand || 'red';
@@ -1167,14 +1152,14 @@ const PANELS = {
   wrinkle() { return fxPanel('wrinkle'); },
   heal() {
     const size = prefs.get('healSize', 3);
-    return [hint('消したいもの（ほこり・ニキビ・電線など）をタップ、またはなぞります。'),
+    return [hint('消したい所をタップ、またはなぞる'),
       slider({ label: 'ブラシの大きさ', min: 1, max: 12, value: size, def: 3, onChange: (v) => prefs.set('healSize', v) }).el,
       h('p', { class: 'muted small' }, `修復・モザイク: ${E.state.retouch.length}か所`),
       row(btn('修復とモザイクをすべて消す', () => { E.state.retouch = []; rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'))];
   },
   hide() {
     const mode = prefs.get('hideMode', 'mosaic');
-    return [hint('隠したい場所（顔・ナンバーなど）をなぞって囲みます。'),
+    return [hint('隠したい所をなぞる'),
       chips([['mosaic', 'モザイク'], ['blur', 'ぼかし']], mode, (v) => prefs.set('hideMode', v), { label: '隠し方' }).el,
       slider({ label: '強さ', min: 4, max: 60, value: prefs.get('hideSize', 20), def: 20, onChange: (v) => prefs.set('hideSize', v) }).el,
       h('p', { class: 'muted small' }, `修復・モザイク: ${E.state.retouch.length}か所`)];
@@ -1208,7 +1193,7 @@ function pickFaces(cands, name) {
     const chosen = new Set();
     const dlg = h('dialog', { class: 'dlg', 'aria-labelledby': 'pick-h' },
       h('h2', { id: 'pick-h' }, '本人の顔を選んでください'),
-      h('p', { class: 'muted small' }, `${name} に ${cands.length} 人写っています。本人の顔を押してください（複数でも）。`),
+      h('p', { class: 'muted small' }, `${name} に ${cands.length} 人。本人の顔を選んでください。`),
       h('div', { class: 'faceai-pick' }, cands.map((c, i) => {
         const b = h('button', { type: 'button', class: 'faceai-pick-face', 'aria-pressed': 'false', 'aria-label': `${i + 1}人目`, onclick: () => { if (chosen.has(i)) chosen.delete(i); else chosen.add(i); b.setAttribute('aria-pressed', String(chosen.has(i))); } },
           h('img', { src: c.url, alt: '', width: 96, height: 96 }));
@@ -1266,7 +1251,7 @@ function curveEditor() {
   const ch = E.curveCh || 'rgb';
   const NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('viewBox', '-0.03 -0.03 1.06 1.06'); svg.classList.add('curve'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'トーンカーブ（点をドラッグして調整、タップで点を追加、上下の外に出すと削除）');
+  svg.setAttribute('viewBox', '-0.03 -0.03 1.06 1.06'); svg.classList.add('curve'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'トーンカーブ（ドラッグで調整・外に出すと削除）');
   const bg = h('canvas', { class: 'curve-bg', width: 256, height: 256, 'aria-hidden': 'true', dataset: { ch: ch === 'rgb' ? 'l' : ch } });
   const color = (isDark() ? { rgb: '#e8e8e8', r: '#ff6b6b', g: '#5fd47e', b: '#6aa2ff' } : { rgb: '#30333a', r: '#e5484d', g: '#2f9e5b', b: '#3b6fe0' })[ch];
   const draw = () => {
@@ -1336,7 +1321,7 @@ function skinOverlaySource() {
 /** 顔をタップする前に強さを選んだとき: 背景まで変わらないよう、タップを待ってからかける */
 function askSkinTap(levelValues) {
   E.skinPending = levelValues;
-  toast('顔の肌（ほお）をタップしてください。タップした肌の色を覚えて、肌だけを整えます', 4500);
+  toast('顔の肌（ほお）をタップしてください', 4500);
   buildPanel();
 }
 function skinPanel() {
@@ -1350,19 +1335,19 @@ function skinPanel() {
     if (n || k === 'off' || !E.segFailed) applySkin(v, buildPanel); else askSkinTap(v);
   };
   return [
-    hint(n ? 'タップした肌とつながる場所だけを整えます。離れた肌はタップで追加。'
-      : E.segFailed ? '① 顔の肌（ほお）をタップ ② 強さを選ぶ。肌だけを整えます。'
-        : '強さを選ぶと、AI が見つけた肌だけを整えます。肌以外が変わるときは、ほおをタップ。'),
+    hint(n ? '離れた肌はタップで追加'
+      : E.segFailed ? '顔の肌（ほお）をタップして、強さを選ぶ'
+        : '肌以外が変わるときは、ほおをタップ'),
     h('div', { class: 'btn-row' },
       h('span', { class: n ? 'ok-note small' : 'muted small' }, n ? `✓ 肌として選んだ場所: ${n}か所`
         : autoOn ? (E.segFailed ? '肌の場所: 色で自動判定（顔をタップすると正確に）' : '✓ 肌の場所: AI が自動で判定')
-          : E.skinPending ? '👆 写真の、顔の肌をタップしてください' : '肌の場所: 未選択'),
+          : E.skinPending ? '👆 顔の肌をタップ' : '肌の場所: 未選択'),
       n ? btn('選び直す', () => applySkin({ seeds: [] }, buildPanel), 'ghost small') : null),
     n || autoOn ? toggle('肌と判定した範囲を赤で表示', !!E.showSkin, (v) => setShowSkin(v)).el : null,
     chips(SKIN_LEVELS.map(([k, label]) => [k, label]), level ?? (E.skinPending ? SKIN_LEVELS.find(([, , v]) => v === E.skinPending)?.[0] : null), pick, { label: '美肌の強さ' }).el,
     ...(n || autoOn ? PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ [k]: v }, buildPanel) }).el) : []),
     n ? slider({ label: '肌とみなす色の幅', min: 0, max: 100, value: p.tol, def: 50, onChange: (v) => applySkin({ tol: v }, buildPanel) }).el : null,
-    n ? hint('背景まで赤いときは「色の幅」を下げ、肌が抜けるときは上げます。') : null,
+    n ? hint('背景が赤いときは「色の幅」を下げる') : null,
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
       const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
@@ -1371,7 +1356,6 @@ function skinPanel() {
       if (n || !E.segFailed) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
       else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }
     }, 'primary')),
-    hint('おすすめ: おまかせ → 顔 → 修復 → フィルター → 切り抜き'),
   ].filter(Boolean);
 }
 /** 美肌タブ: タップで肌の場所を追加（拡大中のドラッグは移動） */
@@ -1403,7 +1387,7 @@ function cropPanel() {
   const setAspect = (a) => { g.aspect = a; g.crop = fitCrop({ x: 0, y: 0, w: 1, h: 1 }, aspectValue(a, o.w, o.h), o.w, o.h); commit(); requestRender(); };
   const rotate = (d) => { g.rot = (g.rot + d + 4) % 4; const n = orientedSize(g, E.W, E.H); g.crop = fitCrop({ x: 0, y: 0, w: 1, h: 1 }, aspectValue(g.aspect, n.w, n.h), n.w, n.h); commit(); buildPanel(); requestRender(); };
   return [
-    hint('角・辺をドラッグで切り抜き、枠の中で移動。'),
+    hint('角・辺をドラッグ'),
     chips(Object.entries(S.ASPECTS), g.aspect, setAspect, { label: '比率' }).el,
     row(btn('⟲ 左に回転', () => rotate(3), 'small'), btn('⟳ 右に回転', () => rotate(1), 'small'), btn('⇋ 左右反転', () => { g.flipH = !g.flipH; commit(); requestRender(); }, 'small'), btn('⇵ 上下反転', () => { g.flipV = !g.flipV; commit(); requestRender(); }, 'small')),
     slider({ label: '傾き補正', min: -45, max: 45, step: 0.1, value: g.angle, def: 0, unit: '°', onInput: live((v) => { g.angle = v; }), onChange: commit }).el,
@@ -1428,19 +1412,19 @@ function localPanel() {
   };
   const list = h('div', { class: 'chips locals' }, locals.map((l, i) => h('button', { type: 'button', 'aria-pressed': String(l.id === E.sel), onclick: () => { E.sel = l.id; buildPanel(); requestRender(); } }, `${i + 1}. ${S.LOCAL_TYPES[l.type]}`)));
   const adders = h('div', { class: 'chips' }, h('span', { class: 'muted small' }, '追加:'), Object.entries(S.LOCAL_TYPES).map(([k, n]) => btn(`＋ ${n}`, () => add(k), 'small')));
-  if (!cur) return [hint('一部だけ明るく・空だけ青く、などができます。下から種類を選んで追加。'), list, adders];
+  if (!cur) return [hint('下から種類を選んで追加'), list, adders];
   const ctrl = [];
   if (cur.type === 'brush') {
     const b = prefs.get('brush', { size: 8, hard: 50, flow: 100, erase: false });
     const sv = () => prefs.set('brush', b);
-    ctrl.push(hint('補正したい場所を指でなぞって塗ります。'),
+    ctrl.push(hint('補正する所をなぞる'),
       chips([[false, '塗る'], [true, '消す']], b.erase, (v) => { b.erase = v; sv(); }, { label: 'ブラシ' }).el,
       slider({ label: '大きさ', min: 1, max: 40, value: b.size, def: 8, onChange: (v) => { b.size = v; sv(); } }).el,
       slider({ label: '硬さ', min: 0, max: 100, value: b.hard, def: 50, onChange: (v) => { b.hard = v; sv(); } }).el,
       slider({ label: '流量', min: 5, max: 100, value: b.flow, def: 100, onChange: (v) => { b.flow = v; sv(); } }).el);
-  } else if (cur.type === 'linear') ctrl.push(hint('2本の線の丸をドラッグ。1本目の側に効果がかかり、2本目に向かって弱まります。'));
+  } else if (cur.type === 'linear') ctrl.push(hint('2本の線の丸をドラッグ'));
   else if (cur.type === 'radial') {
-    ctrl.push(hint('円の中心や縁の丸をドラッグします。'), slider({ label: 'ぼかし幅', min: 0, max: 100, value: cur.feather, def: 50, onInput: live((v) => { cur.feather = v; }), onChange: commit }).el);
+    ctrl.push(hint('中心・縁の丸をドラッグ'), slider({ label: 'ぼかし幅', min: 0, max: 100, value: cur.feather, def: 50, onInput: live((v) => { cur.feather = v; }), onChange: commit }).el);
   } else if (cur.type === 'color') {
     ctrl.push(row(btn(E.colorPick ? '写真の中の色をタップ…' : '⊙ 写真から色を選ぶ', () => { E.colorPick = !E.colorPick; buildPanel(); }, E.colorPick ? 'active' : '')),
       slider({ label: '色相', min: 0, max: 360, value: cur.hue, def: cur.hue, unit: '°', track: 'hue', onInput: live((v) => { cur.hue = v; }), onChange: commit }).el,
@@ -1486,7 +1470,7 @@ function infoPanel() {
   return [
     h('div', { class: 'field' }, h('label', { for: 'proj-name' }, '名前'), name),
     x?.gps ? h('div', { class: 'gps-warn', role: 'note' }, h('b', {}, '📍 この写真には撮影場所（位置情報）が入っています'), h('span', {}, `緯度 ${x.gps.lat.toFixed(4)}・経度 ${x.gps.lon.toFixed(4)}。書き出した画像には入りません。`))
-      : h('p', { class: 'ok-note' }, '✓ 書き出した画像には、位置情報・カメラ情報などのメタデータは入りません。'),
+      : h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     h('dl', { class: 'info' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
     histo(),
     h('details', { class: 'keys' }, h('summary', {}, 'キーボードショートカット'), h('ul', {}, [['Ctrl/⌘ + Z', '元に戻す'], ['Ctrl/⌘ + Shift + Z / Ctrl + Y', 'やり直す'], ['\\（押している間）', '編集前を表示'], ['Esc', '選択をやめる'], ['0', '表示を画面に合わせる']].map(([k, v]) => h('li', {}, h('kbd', {}, k), ` ${v}`)))),
@@ -1666,13 +1650,13 @@ function localHandles(l) {
 // 初期値は、前撮りに多い全身・上半身の写真（顔の幅が写真の短い辺の 1〜2 割）に合わせる。種類ごとに覚える
 const FX = {
   shape: { modes: null, type: () => 'warp', def: { size: 6, amt: 50 },
-    hint: '動かしたい所（輪郭・あご・腕など）を、動かす向きへゆっくりなぞります。ブラシは大きめにして少しずつ。' },
+    hint: '動かしたい向きへゆっくりなぞる' },
   eyes: { modes: [['eyes', '目元'], ['teeth', '歯'], ['lip', 'リップ'], ['nose', '鼻筋'], ['gaze', '目線']], type: (m) => m, def: { eyes: { size: 1.5, amt: 45 }, teeth: { size: 1, amt: 70 }, lip: { size: 1.2, amt: 50 }, nose: { size: 1, amt: 50 }, gaze: { size: 1, amt: 100 } },
-    hint: { gaze: '目線を直したい人の目のあたりをタップすると、黒目をカメラへ向けます。下の矢印で微調整。小さい顔は拡大してから。', eyes: '目のまわりをなぞると、白目を明るく、黒目・まつげをくっきり、くまを薄くします。', teeth: '歯をタップ（または口をなぞる）と、歯だけを白くします。小さい顔は拡大してから。', lip: '色を選んで唇をタップ（または口をなぞる）。唇だけに色をのせ、つや・しわは残します。', nose: '鼻をタップ（または鼻筋をなぞる）と、ハイライトと影で鼻を高く見せます。強さは 50% くらいが自然。' } },
+    hint: { gaze: '直したい人の目をタップ', eyes: '目のまわりをなぞる', teeth: '歯をタップ', lip: '色を選んで唇をタップ', nose: '鼻をタップ' } },
   dodge: { modes: [['dodge', '明るく'], ['burn', '暗く']], type: (m) => m, def: { dodge: { size: 3, amt: 20 }, burn: { size: 3, amt: 20 } },
-    hint: { dodge: '明るくしたい所（鼻筋・頬・目の下など）をなぞります。重ねるほど明るく。', burn: '暗くしたい所（輪郭・頬の下・あごの下など）をなぞると立体的に。重ねるほど暗く。' } },
+    hint: { dodge: '明るくしたい所をなぞる', burn: '暗くしたい所をなぞる' } },
   wrinkle: { modes: null, type: () => 'wrinkle', def: { size: 4, amt: 85 },
-    hint: '服のしわやほうれい線を、しわの幅のブラシでなぞります。柄や肌のきめは残ります。' },
+    hint: 'しわをなぞる' },
 };
 const fxMode = (tool) => prefs.get(`fx2:${tool}:mode`, FX[tool].modes?.[0][0] ?? null);
 function fxPrefs(tool) {
@@ -1706,7 +1690,6 @@ function fxPanel(tool) {
     f.mode === 'gaze' ? gazeTuner() : null,
     h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
     n ? row(btn(`${TOOL_LABEL[tool]}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small')) : null,
-    hint('うまくいかなければ「元に戻す」。2 本指で拡大すると細かい所をなぞれます。'),
   ];
 }
 /** 目線の微調整: 最後に直した人の黒目を、矢印で少しずつ（黒目の半径の 1 割ずつ）動かす */
@@ -1821,7 +1804,7 @@ function fxAction(tool, c, p) {
         const e0 = E;
         findEyes(baseImageData(), pts, r).then((eyes) => {
           if (E !== e0) return; E.stageEl.classList.remove('busy', 'lips');
-          if (!eyes?.length) { toast(eyes ? '顔が見つかりませんでした。目のあたりをタップしてください（横顔・顔が隠れているときは見つかりません）' : '顔を見つける AI を使えないので、目線は直せません'); return; }
+          if (!eyes?.length) { toast(eyes ? '顔が見つかりませんでした' : '顔を見つける AI を使えないので、目線は直せません'); return; }
           op.eyes = roundEyes(eyes);
           addRetouch(op); commit(); buildPanel(); requestRender();
         });
@@ -1837,7 +1820,7 @@ function fxAction(tool, c, p) {
           else {
             // 口が見つからないときは、今までどおり、なぞった所の唇・歯の色の所だけ
             const what = type === 'lip' ? '唇' : '歯';
-            toast(lips ? `口が見つからなかったので、なぞった所の${what}の色の所だけを補正しました（横顔・顔が隠れているときは見つかりません）` : `口を見つける AI を使えないので、なぞった所の${what}の色の所だけを補正しました`);
+            toast(lips ? `口が見つからないので、なぞった所だけ補正しました` : `なぞった所だけ補正しました`);
           }
           addRetouch(op); commit(); buildPanel(); requestRender();
         });
@@ -2076,10 +2059,10 @@ function openExport({ batch }) {
     chips([[0, batch || !E.proj.w ? '元の大きさ' : `元の大きさ（${E.proj.w}×${E.proj.h}）`], [4096, '4096px'], [2048, '2048px'], [1080, '1080px（SNS）']], opt.maxSide, (v) => { opt.maxSide = v; save(); }, { label: '大きさ' }).el,
     ...(COLOR_SPACE === 'display-p3' ? [h('div', { class: 'sub-head' }, h('b', {}, '色')),
       chips([['display-p3', 'Display P3（鮮やかなまま）'], ['srgb', 'sRGB（プリント店・古い機器向け）']], opt.space, (v) => { opt.space = v; save(); }, { label: '色' }).el,
-      h('p', { class: 'muted small' }, 'プリント店で色が変わるときは sRGB に。')] : []),
+      h('p', { class: 'muted small' }, 'プリント店向けは sRGB')] : []),
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
-    ...(navigator.canShare && !batch ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」で写真アプリへ。「書き出す」はファイルに保存。')] : []),
-    h('p', { class: 'ok-note' }, '✓ 位置情報・撮影日時・カメラ情報などのメタデータは、書き出した画像には入りません。'),
+    ...(navigator.canShare && !batch ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
+    h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status, exportProgress,
     h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), shareBtn, go));
   dlg.addEventListener('close', () => dlg.remove());
@@ -2209,7 +2192,7 @@ function gridPanel() {
     body = [h('div', { class: 'sub-head' }, h('b', {}, '比率')),
       chips(Object.keys(GRID_ASPECTS).map((k) => [k, k]), G.aspect, (v) => { G.aspect = v; saveGridStyle(); drawGridView(); }, { label: '比率' }).el,
       h('div', { class: 'sub-head' }, h('b', {}, 'レイアウト')), thumbs,
-      hint('写真の間の線をドラッグで大きさの割合を変更。'),
+      hint('線をドラッグで大きさを変更'),
       Object.keys(G.lines || {}).length ? btn('線の位置を元に戻す', () => { G.lines = {}; gridPanel(); drawGridView(); }, 'ghost small') : null];
   } else if (GR.tab === 'style') {
     const upd = (k, f = (v) => v) => (v) => { G[k] = f(v); saveGridStyle(); drawGridView(); };
@@ -2222,11 +2205,11 @@ function gridPanel() {
   } else {
     const i = GR.sel; const cell = G.cells[i];
     body = cell ? [
-      hint(GR.swap ? '入れ替える相手の写真をタップしてください。' : 'ドラッグで写真の見える位置を動かせます。ほかの写真と入れ替えることもできます。'),
+      hint(GR.swap ? '入れ替える相手の写真をタップしてください。' : 'ドラッグで位置を調整'),
       slider({ label: '拡大', min: 100, max: 400, value: Math.round(cell.zoom * 100), def: 100, unit: '%', onInput: (v) => { cell.zoom = v / 100; drawGridView(); } }).el,
       row(btn(GR.swap ? '入れ替えをやめる' : '⇄ ほかの写真と入れ替え', () => { GR.swap = !GR.swap; gridPanel(); }, GR.swap ? 'active' : ''),
         btn('位置と拡大をリセット', () => { Object.assign(cell, { zoom: 1, ox: 0, oy: 0 }); gridPanel(); drawGridView(); }, 'ghost small')),
-    ] : [hint('写真をタップして選ぶと、見える位置・拡大・入れ替えを変えられます。')];
+    ] : [hint('写真をタップして選択')];
   }
   GR.panel.setAttribute('aria-labelledby', `gtab-${GR.tab}`);
   render(GR.panel, h('div', { class: 'panel-inner' }, body));
@@ -2336,7 +2319,7 @@ function openGridExport() {
     h('div', { class: 'sub-head' }, h('b', {}, '大きさ（長い辺）')),
     chips([[1080, '1080px（SNS）'], [2048, '2048px'], [4096, '4096px']], opt.size, (v) => { opt.size = v; prefs.set('gridExport', opt); }, { label: '大きさ' }).el,
     h('div', { class: 'field' }, h('label', { for: 'grid-name' }, 'ファイル名'), name),
-    h('p', { class: 'ok-note' }, '✓ 書き出した画像には、位置情報などのメタデータは入りません。'),
+    h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status,
     h('div', { class: 'dlg-actions' },
       h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'),
@@ -2344,7 +2327,7 @@ function openGridExport() {
         try {
           const r = await make(); const id = uid(); const bmp = await createImageBitmap(r.blob);
           await db.addProject({ id, name: name.value.trim().slice(0, 80) || 'グリッド', fileName: fileName(), created: Date.now(), updated: Date.now(), w: r.w, h: r.h, size: r.blob.size, type: opt.format, exif: null, state: S.defaultState(), thumb: await thumbBlob(bmp), thumbV: THUMB_V }, r.blob);
-          bmp.close?.(); status.textContent = '写真一覧に保存しました。文字やフレームを足すなど、続けて編集できます。'; toast('写真一覧に保存しました');
+          bmp.close?.(); status.textContent = '写真一覧に保存しました。'; toast('写真一覧に保存しました');
         } catch { status.textContent = '保存できませんでした'; }
       } }, '写真一覧に保存'),
       h('button', { type: 'button', hidden: !navigator.canShare, onclick: async () => {
