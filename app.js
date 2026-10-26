@@ -33,7 +33,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.31.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.31.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -460,6 +460,7 @@ async function openEditor(id) {
   closeEditor();
   const proj = await db.getProject(id); const blob = await db.getBlob(id);
   if (!proj || !blob) { toast('写真が見つかりませんでした'); showLibrary(); return; }
+  const savedHq = db.getHq(id).catch(() => null);
   const glCanvas = document.createElement('canvas');
   let engine;
   try { engine = new Engine(glCanvas); } catch {
@@ -475,6 +476,13 @@ async function openEditor(id) {
     base: p.base, W: p.W, H: p.H, scaled: p.scaled, rawLin: p.lin, src: null, srcData: null, maskCache: new Map(), skinCache: {},
     sel: null, showOriginal: false, showMask: false, zoom: 1, pan: [0, 0], raf: 0, L: null, hist: null,
   };
+  // 前に計算した暗所補正・ブレ補正・顔 AI の結果があれば、計算し直さずにすぐ見せる（書き出しでは元の大きさで計算し直す）。
+  // 読み込む間は「写真を開いています」のまま（補正前の暗い写真を一瞬見せない）
+  if (E.rawLin) E.rawKey = JSON.stringify({ ...state.raw, ca: null }); // rebuildSource と同じ（hqKey に使う）
+  const e0 = E; const key = hqKey(state);
+  const hqc = key ? await loadHq(await savedHq) : null;
+  if (E !== e0) return; // 読み込む間に別の写真・一覧に移った（closeEditor が片付け済み）
+  if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; }
   buildEditor();
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
@@ -668,7 +676,7 @@ async function runLowlight() {
   const key = hqKey(E.state);
   if ((E.hq?.key ?? null) === key) return;
   E.hq?.ctrl?.abort();
-  if (!key) { E.hq = null; E.hqLast = null; hqBar(null); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
+  if (!key) { E.hq = null; E.hqLast = null; hqBar(null); db.deleteHq(E.id).catch(() => {}); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
   const e0 = E; const ctrl = new AbortController();
   if (E.pre && E.pre.key !== preKey(E.state)) { E.pre.ctrl.abort(); E.pre = null; }
   E.hq = { key, canvas: null, ctrl };
@@ -681,12 +689,42 @@ async function runLowlight() {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas, res, faces, whole, bokeh, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender(); E.onHq?.();
-    startPrecompute();
+    startPrecompute(); saveHq(e0, key, canvas);
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.();
     if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : lowlightActive(E.state.adj) ? 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています' : '背景をぼかせませんでした'); }
   }
+}
+// ── 暗所補正・ブレ補正・顔 AI の結果を、写真ごとに端末に保存する ──
+// 編集の値（スライダー・ブラシ・顔 AI の選んだ顔）は前から保存しているが、重い補正の結果は保存していなかったので、
+// 写真を開き直すたびに一から計算し直し、その間（iPhone では数十秒）は補正前の暗い写真に見えていた。
+// 画素をそのまま（色空間もそのまま）保存して、開いたときに編集の値が同じならすぐ見せる。PNG にしないのは、Display P3 の色が変わらないように
+const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
+const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
+async function saveHq(e0, key, canvas) {
+  await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
+  if (E !== e0 || E.hq?.key !== key || E.hq.canvas !== canvas) return;
+  try {
+    const px = ctx2d(canvas, { willReadFrequently: true }).getImageData(0, 0, e0.W, e0.H, { colorSpace: COLOR_SPACE }).data;
+    let data = new Blob([px]);
+    if (canZip) data = await new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob();
+    if (E !== e0 || E.hq?.key !== key) return;
+    await db.putHq(e0.id, { key, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
+    await db.pruneHq(HQ_KEEP);
+  } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
+}
+/** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
+async function loadHq(rec) {
+  if (!rec || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE || !(rec.data instanceof Blob)) return null;
+  if (rec.z && !canZip) return null;
+  try {
+    const buf = rec.z ? await new Response(rec.data.stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer() : await rec.data.arrayBuffer();
+    if (buf.byteLength !== rec.W * rec.H * 4) return null;
+    const c = document.createElement('canvas'); c.width = rec.W; c.height = rec.H;
+    ctx2d(c).putImageData(imageData(new Uint8ClampedArray(buf), rec.W, rec.H), 0, 0);
+    return c;
+  } catch (err) { console.warn('保存した補正の結果を読めませんでした', err); return null; }
 }
 /** 書き出しの暗所補正の先読みの鍵（暗所補正を使わないときは null）。書き出しの補正の結果を決める値だけ */
 const preKey = (st) => (lowlightActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, deblurActive(st.adj)]) : null);
@@ -2261,7 +2299,7 @@ function openExport({ batch }) {
     const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
     const lowlightPre = E.pre && E.pre.key === preKey(st) ? E.pre.promise : null;
-    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), hqWhole: hqWhole(), hqBokeh: hqBokeh(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() && !E.hq.saved ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), hqWhole: hqWhole(), hqBokeh: hqBokeh(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
