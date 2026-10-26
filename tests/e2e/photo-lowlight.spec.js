@@ -235,30 +235,43 @@ test('暗い写真の補正は、明暗ブラシ・露光量と重ねて使え�
   expect(lum(out.R)).toBeGreaterThan(lum(out.other) + 3);
 });
 
-test('暗い写真を開くと「明るくする」をすすめ、押すとノイズ軽減・明るさ補正をおすすめの強さで当てる（明るい写真ではすすめない）', async ({ page }) => {
+test('暗い写真を開くと、何も押さなくてもおまかせで明るくする（元に戻せる。切り替えで、すすめるだけにもできる。明るい写真ではしない）', async ({ page }) => {
   await page.goto('/');
+  await page.evaluate(() => localStorage.setItem('temoto:autoDark', 'true'));
   await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#2a221c', { w: 160, h: 120, name: 'dark.png' }));
   await page.waitForFunction(() => window.__temoto?.editor?.L);
   const box = page.getByRole('region', { name: 'おすすめ' });
+  await expect(box).toContainText('自動で整えました');
+  await expect.poll(() => page.evaluate(() => [window.__temoto.state.adj.lowlight, window.__temoto.state.adj.noise])).toEqual([50, 50]);
+  // 元に戻すと 1 回で戻る。パネルのボタンでも当て直せる
+  await box.getByRole('button', { name: '元に戻す' }).click();
+  await expect(box).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.adj.lowlight)).toBe(0);
+  await openTool(page, '自動補正');
+  await page.getByRole('button', { name: '✦ おまかせで明るくする' }).click();
+  expect(await page.evaluate(() => window.__temoto.state.adj.noise)).toBe(50);
+  await expect(page.getByText('おまかせ中')).toBeVisible();
+  // 自動で明るくしない設定では、すすめるだけ
+  await page.getByLabel('暗い写真を開いたら自動で明るくする').uncheck();
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#2a221c', { w: 160, h: 120, name: 'dark2.png' }));
+  await page.waitForFunction(() => window.__temoto?.editor?.proj?.name?.startsWith('dark2'));
   await expect(box).toContainText('暗い写真です');
+  expect(await page.evaluate(() => window.__temoto.state.adj.lowlight)).toBe(0);
   await box.getByRole('button', { name: '✦ 明るくする' }).click();
   await expect(box).toHaveCount(0);
   expect(await page.evaluate(() => [window.__temoto.state.adj.lowlight, window.__temoto.state.adj.noise])).toEqual([50, 50]);
-  await expect(page.getByRole('tab', { name: '自動補正', exact: true })).toHaveAttribute('aria-selected', 'true');
-  // 元に戻すと 1 回で戻る。パネルのボタンでも当て直せる
-  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click();
-  await expect.poll(() => page.evaluate(() => window.__temoto.state.adj.lowlight)).toBe(0);
-  await page.getByRole('button', { name: '✦ おすすめの強さで明るくする' }).click();
-  expect(await page.evaluate(() => window.__temoto.state.adj.noise)).toBe(50);
   // 明るい写真・編集した写真では出さない
+  await page.evaluate(() => localStorage.setItem('temoto:autoDark', 'true'));
   await page.getByRole('button', { name: '‹ 写真' }).click();
   await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#c8b8a8', { w: 160, h: 120, name: 'bright.png' }));
   await page.waitForFunction(() => window.__temoto?.editor?.proj?.name?.startsWith('bright'));
   await page.waitForTimeout(300);
   await expect(box).toHaveCount(0);
+  expect(await page.evaluate(() => window.__temoto.state.adj.lowlight)).toBe(0);
   await page.getByRole('button', { name: '‹ 写真' }).click();
-  await page.getByRole('button', { name: /^dark.*を編集$/ }).click();
-  await page.waitForFunction(() => window.__temoto?.editor?.proj?.name?.startsWith('dark'));
+  await page.getByRole('button', { name: /^dark2.*を編集$/ }).click();
+  await page.waitForFunction(() => window.__temoto?.editor?.proj?.name?.startsWith('dark2'));
   await page.waitForTimeout(300);
   await expect(box).toHaveCount(0);
 });

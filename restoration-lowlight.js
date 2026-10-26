@@ -434,23 +434,35 @@ const logLum = (r, g, b) => Math.log(0.2126 * toLinear(r) + 0.7152 * toLinear(g)
  * @param {{m:Float32Array,w:number,h:number}|null} [o.person] 人物の地図（0〜1。skinseg.js の personSeg）。
  *   人物（肌・衣装・髪）と背景で、照明の色の直し方を変える。ないときは、その間
  */
-export function planTone(small, light, { person = null, sat = SAT_EXP, target = TARGET, wbPerson = WB_PERSON, wbBack = WB_BACK } = {}) {
-  const { w, h, a, b, mean, p999, hiY, wb, wbP, pm } = toneBase(small, person, wbPerson, wbBack);
+export function planTone(small, light, { person = null, face = null, faceTarget = FACE_TARGET, sat = SAT_EXP, target = TARGET, wbPerson = WB_PERSON, wbBack = WB_BACK } = {}) {
+  const tb = toneBase(small, person, wbPerson, wbBack, sat);
+  const { mean, p999, base } = tb;
   // 自動の倍率: ベースの平均の明るさが TARGET くらい（明るい場所で撮った写真の肌に近い明るさ）になるように。12 倍まで
-  const auto = Math.min(12, Math.max(1, target / Math.exp(mean)));
-  const gain = Math.min(16, Math.exp(Math.log(auto) * light / 50) * (1 + light / 400));
+  let auto = Math.min(12, Math.max(1, target / Math.exp(mean)));
   // 白い所が飛ばないよう、明るい側を押さえる（いちばん明るい 0.1% の明るさが、白より少し手前に来るように。白い衣装のレースの模様を残す）
-  const white = Math.max(0.25, gain * p999 * 1.1);
-  return { w, h, a, b, gain, white, hiY, wb, wbP, sat, person: pm };
+  const withGain = (gain) => ({ ...base, gain, white: Math.max(0.25, gain * p999 * 1.1) });
+  const gainAt = (au) => Math.min(16, Math.exp(Math.log(au) * light / 50) * (1 + light / 400));
+  // 顔が写っていれば、顔の肌の明るさで決め直す（写真全体の平均では、暗い幕が多い写真は顔が明るくなりすぎ、
+  // 逆光・横からの照明で顔だけ暗い写真は顔が暗いまま。テスト写真で顔の明るさが 74〜125 とばらついた）
+  // 顔だけに合わせると、顔が影の写真では幕・白い衣装まで白く飛ぶ（IMG_9296）。写真全体で決めた倍率と FACE_WEIGHT の割合で混ぜる
+  // 顔で決める倍率も明るさ補正の値によらないので、同じ顔の地図・同じ狙いなら前の結果を使う
+  let fa = null;
+  if (face) {
+    const k = tb.fa;
+    if (k && k.face === face && k.faceTarget === faceTarget && k.auto === auto) fa = k.v;
+    else { fa = faceAuto(small, face, auto, withGain, faceTarget); tb.fa = { face, faceTarget, auto, v: fa }; }
+  }
+  if (fa) auto = Math.min(12, Math.max(1, auto ** (1 - FACE_WEIGHT) * fa ** FACE_WEIGHT));
+  return { ...withGain(gainAt(auto)), auto, byFace: !!fa };
 }
 /**
  * 明るさの曲線のうち、明るさ補正の値によらない部分（ベースの係数・明るい所・照明の色・人物の地図）。
  * スライダーを動かすたびに作り直さないよう、同じ絵・同じ人物の地図なら前の結果を使う（中身はまったく同じ）
  */
 let lastBase = null;
-function toneBase(small, person, wbPerson, wbBack) {
+function toneBase(small, person, wbPerson, wbBack, sat) {
   const c = lastBase;
-  if (c && c.data === small.data && c.person === person && c.wbPerson === wbPerson && c.wbBack === wbBack) return c.v;
+  if (c && c.data === small.data && c.person === person && c.wbPerson === wbPerson && c.wbBack === wbBack && c.sat === sat) return c.v;
   const { width: w, height: h, data } = small; const n = w * h;
   const logL = new Float32Array(n);
   for (let i = 0; i < n; i++) logL[i] = logLum(data[i * 4] / 255, data[i * 4 + 1] / 255, data[i * 4 + 2] / 255);
@@ -459,9 +471,42 @@ function toneBase(small, person, wbPerson, wbBack) {
   let mean = 0; for (let i = 0; i < n; i++) mean += a[i] * logL[i] + b[i]; mean /= n;
   const L = new Float32Array(n); for (let i = 0; i < n; i++) L[i] = Math.exp(logL[i]);
   L.sort(); const p999 = L[Math.floor(n * 0.999)];
-  const v = { w, h, a, b, mean, p999, hiY: toSrgb(0.55 * p999), wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), pm: person && smoothMask(person) };
-  lastBase = { data: small.data, person, wbPerson, wbBack, v };
+  const base = { w, h, a, b, hiY: toSrgb(0.55 * p999), wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), sat, person: person && smoothMask(person) };
+  const v = { mean, p999, base, fa: null };
+  lastBase = { data: small.data, person, wbPerson, wbBack, sat, v };
   return v;
+}
+
+/**
+ * 顔の肌（真ん中の明るさ）が faceTarget（8bit の輝度 ÷ 255）になる自動の倍率。顔が小さすぎる・見つからないときは null。
+ * 写真全体で決めた倍率 auto の FACE_RANGE 倍の範囲に収める（顔の見分けちがいで、極端に明るく・暗くしない）
+ */
+function faceAuto(small, face, auto, withGain, faceTarget) {
+  const { width: w, height: h, data } = small; const idx = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = face.m[Math.min(face.h - 1, Math.floor((y + 0.5) * face.h / h)) * face.w + Math.min(face.w - 1, Math.floor((x + 0.5) * face.w / w))];
+    if (v > 0.5) idx.push(y * w + x);
+  }
+  if (idx.length < Math.max(40, w * h * FACE_MIN)) return null;
+  const Yf = new Float32Array(idx.length); const Cbf = new Float32Array(idx.length); const Crf = new Float32Array(idx.length);
+  const sub = new Uint8ClampedArray(idx.length * 4);
+  for (let k = 0; k < idx.length; k++) for (let c = 0; c < 4; c++) sub[k * 4 + c] = data[idx[k] * 4 + c];
+  const [Y, Cb, Cr] = toYCC(sub, idx.length, 1); Yf.set(Y); Cbf.set(Cb); Crf.set(Cr);
+  const faceLuma = (au) => {
+    // 顔の画素だけを、1 画素ずつ本当の位置で明るくする（applyTone と同じ計算）
+    const tone = withGain(Math.min(16, au * FACE_LIGHT50)); const v = new Float32Array(idx.length); const px = new Uint8ClampedArray(4);
+    for (let k = 0; k < idx.length; k++) {
+      const x = idx[k] % w; const y = (idx[k] - x) / w;
+      applyTone(Yf.subarray(k, k + 1), Cbf.subarray(k, k + 1), Crf.subarray(k, k + 1), 1, 1, tone, { y0: y, fullW: w, fullH: h, x0: x }, px);
+      v[k] = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]) / 255;
+    }
+    return v.sort()[v.length >> 1];
+  };
+  let lo = Math.log(Math.max(1, auto / FACE_RANGE)); let hi = Math.log(Math.min(12, auto * FACE_RANGE));
+  if (faceLuma(Math.exp(hi)) <= faceTarget) return Math.exp(hi);
+  if (faceLuma(Math.exp(lo)) >= faceTarget) return Math.exp(lo);
+  for (let it = 0; it < 14; it++) { const m = (lo + hi) / 2; if (faceLuma(Math.exp(m)) < faceTarget) lo = m; else hi = m; }
+  return Math.exp((lo + hi) / 2);
 }
 
 /**
@@ -520,6 +565,12 @@ const BLACK = 0.012;
 // 中間の明るさのメリハリ（1 で変えない）。局所的な明るさの補正（ベース）は平らになりがちなので、少しだけ全体に戻す
 const CONTRAST = 1.06;
 const TARGET = 0.12; // 自動の明るさの狙い（ベースの平均、リニア）。0.16 では顔が同じ舞台を明るく撮った写真（IMG_9228）より 3 割明るく、光の頬が飛んで平らに見えた
+// 顔の肌の明るさの狙い（8bit の輝度 ÷ 255、真ん中の値）。同じ会場で明るく撮れた IMG_9228 の顔は 95、日中の顔は 90〜136
+const FACE_TARGET = 105 / 255;
+const FACE_MIN = 0.0015; // 顔の肌がこれより小さい（写真の割合）ときは、写真全体の明るさで決める
+const FACE_RANGE = 2; // 顔で決める倍率は、写真全体で決めた倍率の 1/2〜2 倍まで
+const FACE_WEIGHT = 0.6; // 顔で決めた倍率を混ぜる割合（残りは写真全体で決めた倍率）
+const FACE_LIGHT50 = 1 + 50 / 400; // 明るさ補正 50 のときの倍率の上乗せ（planTone の gainAt）
 export const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる（2 - KNEE で白に届く）
 function whiteBalance(data, n, amount) {
   const lum = new Float32Array(n); const lin = new Float32Array(n * 3);
@@ -553,11 +604,11 @@ function sampleGrid(g, gw, gh, fx, fy) {
 /**
  * 輝度・色差（ノイズを取ったもの）を明るくして 8bit の RGBA にする
  * @param {object|null} tone planTone の結果（null なら明るさは変えない）
- * @param {{y0:number,fullW:number,fullH:number}} at この帯が写真全体のどこか
+ * @param {{y0:number,fullW:number,fullH:number,x0?:number}} at この帯が写真全体のどこか（x0: 1 列目が写真全体の何列目か。ふつうは 0）
  */
 export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray(w * h * 4)) {
   const sx = tone ? tone.w / at.fullW : 0; const sy = tone ? tone.h / at.fullH : 0;
-  const Wp2 = tone ? tone.white * tone.white : 1;
+  const Wp2 = tone ? tone.white * tone.white : 1; const ox = at.x0 || 0;
   for (let y = 0; y < h; y++) {
     const gy = (at.y0 + y + 0.5) * sy - 0.5;
     for (let x = 0; x < w; x++) {
@@ -566,10 +617,10 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
       let r = toLinear(r0); let g = toLinear(g0); let bl = toLinear(b0);
       if (tone) {
         // 人物と背景で、照明の色の直し方を変える（人物の地図がないときは、その間）
-        const p = tone.person ? sampleGrid(tone.person.m, tone.person.w, tone.person.h, (x + 0.5) * tone.person.w / at.fullW - 0.5, (at.y0 + y + 0.5) * tone.person.h / at.fullH - 0.5) : 0.5;
+        const p = tone.person ? sampleGrid(tone.person.m, tone.person.w, tone.person.h, (x + ox + 0.5) * tone.person.w / at.fullW - 0.5, (at.y0 + y + 0.5) * tone.person.h / at.fullH - 0.5) : 0.5;
         r *= tone.wb[0] + (tone.wbP[0] - tone.wb[0]) * p; g *= tone.wb[1] + (tone.wbP[1] - tone.wb[1]) * p; bl *= tone.wb[2] + (tone.wbP[2] - tone.wb[2]) * p;
         const L = 0.2126 * r + 0.7152 * g + 0.0722 * bl; const lg = Math.log(L + 1e-4);
-        const gx = (x + 0.5) * sx - 0.5;
+        const gx = (x + ox + 0.5) * sx - 0.5;
         // ベース（明るさの大きな流れ）。縮めた絵の係数を、この画素の明るさに当てる（輪郭は元の大きさのまま保たれる）
         const base = sampleGrid(tone.a, tone.w, tone.h, gx, gy) * lg + sampleGrid(tone.b, tone.w, tone.h, gx, gy);
         const xb = Math.max(0, Math.exp(base) - 1e-4) * tone.gain;
@@ -592,7 +643,7 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
         if (Lc > 1e-5) { const f = (Lc / 0.18) ** (CONTRAST - 1); r *= f; g *= f; bl *= f; }
       }
       // 8bit にするとき、ごく弱いディザ（位置で決まるので、帯に分けても同じ）
-      const p = (at.y0 + y) * at.fullW + x;
+      const p = (at.y0 + y) * at.fullW + x + ox;
       let d = ((((p * 2654435761) >>> 0) / 4294967296) - 0.5) / 255;
       if (at.grain) {
         // 細かい粒（位置で決まる）
@@ -824,6 +875,15 @@ export function grainFor(nr, profile = null, tone = null) {
   const out = s * 255 * (tone ? tone.gain : 1) ** 0.45;
   return Math.min(1, nr) * Math.min(GRAIN_MAX, Math.max(FILM_GRAIN, GRAIN_REL * out));
 }
+
+// ノイズ軽減の自動の強さ（ノイズ軽減 50 のときの倍率）。ノイズは明るくした分だけ目立つので、大きく明るくする写真ほど強く。
+// あまり明るくしない写真（倍率 1〜6）は弱めて、肌のきめ・髪・生地の細かさを多く残す（強く取ると絵のように見える）。
+// 写真の中のノイズの量そのものは、ノイズ除去が測った値で合わせる（measureNoise）ので、ここでは明るくする倍率だけで決める
+// （編集中の縮めた写真と書き出しの元の大きさで、同じ強さになるように）
+const NR_MIN = 0.8;
+const NR_FULL_GAIN = 6;
+/** @param {object|null} tone planTone の結果（null なら明るくしない） */
+export const autoNr = (tone) => NR_MIN + (1 - NR_MIN) * Math.min(1, Math.log(Math.max(1, tone ? tone.gain : 1)) / Math.log(NR_FULL_GAIN));
 
 /**
  * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）

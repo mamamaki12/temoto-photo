@@ -10,8 +10,9 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:4173',
     locale: 'ja-JP',
     timezoneId: 'Asia/Tokyo',
-    // テストでは、最初から隠している道具（調整・切り抜き・部分補正）も全部出しておく
-    storageState: { cookies: [], origins: [{ origin: 'http://127.0.0.1:4173', localStorage: [{ name: 'temoto:hiddenTools', value: '[]' }] }] },
+    // テストでは、最初から隠している道具（調整・切り抜き・部分補正）も全部出しておく。
+    // 暗い写真を開いても自動で明るくしない（スライダーの操作を確かめるテストが多いので。自動のテストでは切り替える）。暗所補正のスライダーは開いておく
+    storageState: { cookies: [], origins: [{ origin: 'http://127.0.0.1:4173', localStorage: [{ name: 'temoto:hiddenTools', value: '[]' }, { name: 'temoto:autoDark', value: 'false' }, { name: 'temoto:fineTuneOpen', value: 'true' }] }] },
   },
   projects: [
     { name: 'mobile', use: { browserName: 'chromium', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 } },
