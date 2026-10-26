@@ -71,13 +71,16 @@ export function savedExposures(page) {
   }));
 }
 
-/** 道具のグループ（左・下の列）。中に道具が複数あるものは、パネルの上のタブで選ぶ */
-const GROUP_OF = { フィルター: 'おまかせ', 自動補正: 'おまかせ', '顔 AI': 'おまかせ', ライト: '調整', カラー: '調整', HSL: '調整', カーブ: '調整', グレーディング: '調整', ディテール: '調整', 効果: '調整', 美肌: 'レタッチ', 形: 'レタッチ', '顔': 'レタッチ', 明暗: 'レタッチ', しわ取り: 'レタッチ', 修復: 'レタッチ', モザイク: 'レタッチ' };
-/** 道具を開く（グループを選んでから、その中のタブを選ぶ。開いているグループをもう一度押すとパネルが閉じるので、押さない） */
+/** 項目の種類（下の文字のタブ）。項目を選ぶと、下にその項目のスライダーだけが出る */
+const GROUP_OF = { フィルター: 'おまかせ', 自動補正: 'おまかせ', '顔 AI': 'おまかせ', ライト: '調整', カラー: '調整', HSL: '調整', カーブ: '調整', グレーディング: '調整', ディテール: '調整', 効果: '調整', 美肌: '顔', 目元: '顔', リップ: '顔', 鼻筋: '顔', 歯: '顔', 目線: '顔', 輪郭: '顔', しわ取り: '顔', 部分補正: '部分', 明るく: '部分', 暗く: '部分', 修復: '部分', モザイク: '部分' };
+/** 前の道具の名前 → 今の項目 */
+const ALIAS = { 明暗: '明るく', 形: '輪郭', 顔: '目元' };
+/** 項目を開く（開いている項目があれば ✓ で閉じてから、種類のタブ → 項目） */
 export async function openTool(page, name) {
+  name = ALIAS[name] || name;
+  const done = page.getByRole('button', { name: '完了', exact: true });
+  if (await page.locator('.editor:not(.side-closed)').count() && await done.isVisible()) await done.click();
   const g = GROUP_OF[name] || name;
-  const gtab = page.getByRole('tab', { name: g, exact: true });
-  const open = (await gtab.getAttribute('aria-selected')) === 'true' && !(await page.locator('.editor.side-closed').count());
-  if (!open) await gtab.click();
+  await page.getByRole('tab', { name: g, exact: true }).click();
   if (GROUP_OF[name]) await page.getByRole('tab', { name, exact: true }).click();
 }

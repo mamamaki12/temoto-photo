@@ -351,7 +351,6 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .rail { padding: 6px calc(4px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) + 2px)) calc(4px + env(safe-area-inset-left, 0px)); justify-content: space-around; }
   .rail button { min-height: 48px; min-width: 52px; flex: 1 0 52px; max-width: 96px; padding: 2px 4px; gap: 0; font-size: clamp(10px, .65rem, 13px); }
   .rail .tab-icon { width: 40px; height: 36px; font-size: 21px; border-radius: 10px; }
-  .editor:not(.grid-editor) .rail .tab-label { display: none; }
 }
 /* 長押し（比較ボタンなど）で iPhone の選択メニューが出ないように */
 .ed-head button, .rail button, .stage { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
@@ -486,3 +485,44 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .update-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 101; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; max-width: calc(100% - 32px); background: var(--toast-bg); color: var(--toast-text); border-radius: 10px; box-shadow: 0 6px 24px rgb(14 19 24 / 30%); font-size: .9rem; white-space: nowrap; }
 .update-bar .primary { min-height: 36px; padding: 0 16px; }
 .update-bar .update-later { min-height: 36px; width: 36px; padding: 0; background: transparent; border-color: transparent; color: inherit; }
+
+/* ── 写真加工アプリのような編集画面: 下に「種類」の文字のタブと「項目」のアイコンの列。項目を選ぶと、写真を大きく、下にその項目のスライダーだけ ── */
+.editor:not(.grid-editor) { grid-template-rows: auto minmax(0, 1fr) auto auto auto; grid-template-areas: "head" "stage" "side" "rail" "items"; }
+.items { grid-area: items; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; padding: 8px calc(6px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) + 2px)) calc(6px + env(safe-area-inset-left, 0px)); background: var(--bg); }
+.items::-webkit-scrollbar { display: none; }
+.items.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.items button { flex: none; width: 66px; min-height: 0; padding: 2px 0; border: none; background: transparent; display: grid; justify-items: center; gap: 5px; font-size: clamp(10px, .7rem, 13px); color: var(--muted); font-weight: 500; white-space: nowrap; }
+.item-icon { width: 48px; height: 48px; border-radius: 14px; background: var(--surface); display: grid; place-items: center; color: var(--text); }
+.item-icon svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.items button[aria-selected="true"] { color: var(--accent-text); font-weight: 600; }
+.items button[aria-selected="true"] .item-icon { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1.5px var(--select); }
+@media (hover: hover) { .items button:hover .item-icon { background: var(--surface-2); } }
+.side-bar { display: grid; grid-template-columns: 56px minmax(0, 1fr) 56px; align-items: center; border-top: 1px solid var(--line); background: var(--bg); }
+.side-bar button, .side-bar button:hover:not(:disabled) { min-height: 48px; height: 48px; padding: 0; border: none; background: transparent; font-size: 1.35rem; color: var(--text); }
+.side-bar .side-done { color: var(--accent-text); font-size: 1.5rem; font-weight: 700; }
+.side-name { margin: 0; text-align: center; font-size: .95rem; font-weight: 600; letter-spacing: .06em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage-hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2; max-width: calc(100% - 24px); padding: 6px 14px; border-radius: 999px; background: rgb(0 0 0 / 62%); color: #fff; font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.stage-hint[hidden], .stage.busy .stage-hint, .stage:has(.suggest) .stage-hint, .stage:has(.orig-badge:not([hidden])) .stage-hint { display: none; }
+.editor:not(.grid-editor) .side { grid-template-rows: minmax(0, 1fr) auto; }
+@media (max-width: 899px) {
+  /* 項目を開いている間は、種類と項目の列を隠して、写真を大きく */
+  .editor:not(.grid-editor):not(.side-closed) .rail, .editor:not(.grid-editor):not(.side-closed) .items { display: none; }
+  .editor:not(.grid-editor) .side { height: auto; max-height: min(42dvh, 380px); border-top: 1px solid var(--line); }
+  .editor:not(.grid-editor) .side-bar { padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+  /* 種類は文字だけのタブ */
+  .editor:not(.grid-editor) .rail { justify-content: flex-start; gap: 4px; padding: 6px calc(10px + env(safe-area-inset-right, 0px)) 0 calc(10px + env(safe-area-inset-left, 0px)); border-top: 1px solid var(--line); }
+  .editor:not(.grid-editor) .rail button { flex: none; min-width: 0; max-width: none; min-height: 36px; padding: 4px 12px; border-radius: 0; font-size: clamp(13px, .86rem, 16px); position: relative; }
+  .editor:not(.grid-editor) .rail .tab-icon { display: none; }
+  .editor:not(.grid-editor) .rail button[aria-selected="true"] { color: var(--text); background: transparent; }
+  .editor:not(.grid-editor) .rail button[aria-selected="true"]::after { content: ''; position: absolute; left: 30%; right: 30%; bottom: 2px; height: 2px; border-radius: 2px; background: var(--accent); }
+  .editor:not(.grid-editor) .panel-inner { padding: 10px 16px 6px; gap: 8px; }
+  .fx-count { justify-content: space-between; align-items: center; }
+  .fx-count button { min-height: 30px; padding-block: 2px; }
+}
+@media (min-width: 900px) {
+  .editor:not(.grid-editor) { grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "head head head" "rail items stage" "rail side stage"; }
+  .editor:not(.grid-editor).side-closed { grid-template-columns: auto clamp(320px, 22rem, 40vw) minmax(0, 1fr); } /* 閉じても項目の列は出しておく */
+  .items { flex-wrap: wrap; overflow: visible; padding: 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .editor:not(.grid-editor).side-closed .items { align-self: start; border-bottom: none; }
+  .editor:not(.grid-editor).side-closed .items { grid-row: 2 / 4; }
+}

@@ -94,7 +94,7 @@ test('キヤノンなどの RAW は LibRaw で RAW データから現像し、�
   expect(Math.max(...gray) - Math.min(...gray)).toBeLessThan(12);
   // RAW の露出を下げると暗くなる（16bit のデータから現像し直す）
   const before = lum(gray);
-  await page.getByRole('tab', { name: 'RAW' }).click();
+  await openTool(page, 'RAW');
   await page.getByLabel('RAW の露出（白飛び・黒つぶれを戻す）').evaluate((el) => { el.value = -1; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
   await page.waitForFunction(() => window.__temoto.state.raw.exposure === -100);
   await page.waitForFunction(() => !document.querySelector('.stage.busy'));
