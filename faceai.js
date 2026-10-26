@@ -45,6 +45,11 @@ export function invertMatrix([a, b, tx, ty]) {
   return [ia, ib, -(ia * tx - ib * ty), -(ib * tx + ia * ty)];
 }
 export const applyMatrix = ([a, b, tx, ty], x, y) => [a * x - b * y + tx, b * x + a * y + ty];
+/** 切り出しを、真ん中を中心に k 倍広くする変換（顔が 1/k の大きさに写り、まわりの髪まで入る） */
+export function widenMatrix([a, b, tx, ty], k, size = SIZE) {
+  const c = size / 2;
+  return [a / k, b / k, (tx - c) / k + c, (ty - c) / k + c];
+}
 /** 切り出しの 1 画素が、写真の何画素か */
 export const matrixScale = ([a, b]) => 1 / Math.hypot(a, b);
 

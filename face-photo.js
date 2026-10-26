@@ -2,7 +2,7 @@
 // 暗い写真・ブレの大きい写真で、選んだ顔だけに当てる（明るい写真は、今までの歯・目元の道具で十分なので、自動では使わない）。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 →（全体 AI）→ 顔 AI」。全体 AI（wholeai.js）は髪・服・背景の細かい所を整え、顔だけ浮かないようにする。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
 // AI は編集用の大きさの写真で 1 回だけ動かし、書き出しでは、その結果を元の大きさの写真に当て直す（mergeFace は大きさによらない）
-import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace } from './faceai.js';
+import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace, widenMatrix } from './faceai.js';
 import { addDetail, applyDetail } from './wholeai.js';
 import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg, segParts } from './skinseg.js';
 import { releaseDeblur } from './deblur-photo.js';
@@ -69,6 +69,8 @@ async function prepare(img, pts) {
   if (!p512) p512 = pts.map(([x, y]) => applyMatrix(M, x, y));
   return { M, crop, pts: p512 };
 }
+
+const WIDE = 1.5; // 髪のための、広い切り出し（顔の切り出しの何倍か）
 
 const faceStore = new Map(); // 写真の指紋 → 見つけた顔
 /**
@@ -163,7 +165,7 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
   const dets = await detectFaces(img, { onProgress: (t) => onProgress(0.1 * t) });
   if (signal?.aborted) throw abortError();
   const list = await loadPeople();
-  const jobs = []; const prepared = [];
+  const jobs = []; const prepared = []; const wide = [];
   for (const f of faceai.faces) {
     if (!f.on) continue;
     const g = matchFace(dets, f); if (!g) continue;
@@ -172,6 +174,10 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
     const refs = [];
     for (const r of list.find((q) => q.id === f.person)?.refs || []) refs.push(await loadRef(r));
     prepared.push(p); jobs.push({ crop: Float32Array.from(p.crop), pts: p.pts, refs });
+    // 髪だけ、顔を小さく（1.5 倍広く）切り出してもう一度 AI に通す（顔のすぐまわりより外の髪も、一本一本が出る。顔は上の切り出しの結果を使う）
+    const Mw = widenMatrix(p.M, WIDE); const wcrop = cropFace(img, Mw);
+    const wseg = await segParts(toImageData(wcrop));
+    if (wseg) { wide.push({ p, M: Mw, seg: wseg }); jobs.push({ crop: wcrop, pts: [], refs: [] }); }
   }
   if (!jobs.length) { onProgress(1); return { canvas: c, faces: [] }; }
   onProgress(0.12);
@@ -179,7 +185,14 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
   releaseDeblur(); releaseSkinSeg();
   let outs;
   try { outs = await runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }); } finally { worker?.terminate(); worker = null; }
-  const faces = prepared.map((p, k) => ({ M: p.M, out: outs[k], mask: hairMask(faceMask(p.pts), p.seg) }));
+  // 広く切り出した髪を先に当て、顔と顔のまわりの髪（切り出しの結果）をその上に当てる
+  const faces = []; let k = 0;
+  for (const p of prepared) {
+    const face = { M: p.M, out: outs[k++], mask: hairMask(faceMask(p.pts), p.seg) };
+    const w = wide.find((q) => q.p === p);
+    if (w) faces.push({ M: w.M, out: outs[k++], mask: hairMask(new Float32Array(SIZE * SIZE), w.seg) });
+    faces.push(face);
+  }
   mergeFacesCanvas(x, W, H, faces, faceaiAmount({ faceai }));
   onProgress(1);
   return { canvas: c, faces };

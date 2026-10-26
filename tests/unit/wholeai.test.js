@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SCALE, TILE, TILE_IN, PAD, smallFrom, tiles, tileInput, tileRect, regionOf, tileResidual, putResidual, addDetail, applyDetail } from '../../wholeai.js';
-import { SIZE, hairMask } from '../../faceai.js';
+import { SIZE, hairMask, widenMatrix, applyMatrix, invertMatrix } from '../../faceai.js';
 import { validateState } from '../../state.js';
 
 /** W×H の RGBA。fn(x, y) → 0〜255（灰色） */
@@ -100,4 +100,12 @@ test('髪の範囲: 髪は顔の輪郭に足し、飾り（ティアラ）のま
 test('編集内容: 髪・服・背景の全体 AI は、はじめは使う（切ったら切ったまま）', () => {
   assert.equal(validateState({}).faceai.whole, true);
   assert.equal(validateState({ faceai: { whole: false } }).faceai.whole, false);
+});
+
+test('髪の広い切り出し: 真ん中はそのまま、顔は 1/k の大きさに写る', () => {
+  const M = [0.8, 0.3, -120, -60]; const Mw = widenMatrix(M, 1.5);
+  const c = applyMatrix(invertMatrix(M), SIZE / 2, SIZE / 2); const cw = applyMatrix(Mw, ...c);
+  assert.ok(Math.hypot(cw[0] - SIZE / 2, cw[1] - SIZE / 2) < 1e-9);
+  const p = applyMatrix(invertMatrix(M), 400, 100); const pw = applyMatrix(Mw, ...p);
+  assert.ok(Math.abs(pw[0] - (SIZE / 2 + (400 - SIZE / 2) / 1.5)) < 1e-9 && Math.abs(pw[1] - (SIZE / 2 + (100 - SIZE / 2) / 1.5)) < 1e-9);
 });
