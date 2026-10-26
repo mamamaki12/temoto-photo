@@ -16,10 +16,10 @@
 | ファイル | 役割 |
 | --- | --- |
 | `faceai.js` | 計算（DOM なし）。顔の点からの位置合わせ（`alignMatrix`）、512 に切り出す（`cropFace`）、本人の写真を顔の点の三角形ごとに曲げて重ねる（`delaunay`・`meshWarp`）、形が合う所だけ細かい模様を移す（`transferDetail`）、写真に戻す（`mergeFace`） |
-| `face-worker.js` | Worker。モデルを読み込み（初回 170MB）、`transferDetail` の後に AI に通す。WebGPU があれば GPU、なければ CPU |
+| `face-worker.js` | Worker。モデルを読み込み（初回 87MB。4MB ずつ取って保存し、切れたら取り直す・次は続きから）、`transferDetail` の後に AI に通す。WebGPU があれば GPU、なければ CPU |
 | `face-photo.js` | 画面側。顔を探す（`detectFaces`）、本人の写真から顔を切り出す（`facesFromPhoto`）、人の保存、Canvas と書き出しへの当て方 |
 | `skinseg.js` | `findAllFaces`：写真全体と、半分・4 分の 1 の区画（半分ずつ重ねる）を MediaPipe に渡して、全部の顔の 478 点を探す（舞台の写真では顔が小さく、全体を縮めると見つからない） |
-| `vendor/faceai/` | GFPGAN v1.4（Apache-2.0）を ONNX にしたもの。重みは半精度、2 つに分けて置く（GitHub の 1 ファイル 100MB の上限） |
+| `vendor/faceai/` | GFPGAN v1.4（Apache-2.0）を ONNX にしたもの。重みは 8bit（`scripts/face-proto/quantize_int8.py`） |
 | `app.js` | `enhanceSource`：暗所補正 → ブレ補正 → 粒 → **顔 AI**。顔 AI の結果（顔ごとの AI の絵と位置）は取っておき、書き出しで使う |
 | `fullres.js` | 元の大きさの書き出し。暗所補正・ブレ補正の後に、編集中に求めた顔の結果を元の大きさの写真に当て直す（AI は動かし直さない） |
 
@@ -47,4 +47,15 @@
 - GFPGAN の重みは FFHQ（顔写真の集まり）で学んだもの。GFPGAN 自体は Apache-2.0 だが、中の StyleGAN2 の部分には NVIDIA の非営利のライセンスが含まれる（`vendor/faceai/LICENSE.txt`）。このアプリは無料・広告なしなので問題ないが、有料にするなら見直す。
 - 顔が小さすぎる（幅 96 画素未満）・横を向いた顔には使えない。
 - 512 に切り出すので、写真の中の顔が 512 より大きいときは、AI の細かさは少し足りない（大まかな形は写真のまま、細かい所は 512 からの引き伸ばし）。
-- iPhone で 170MB のモデルを読み込めるか（メモリ）は、実機で確かめる。読み込めないときは「顔 AI をできませんでした」と出る。
+
+## iPhone で止まる・落ちる（1.26.0 の不具合、1.27.1 で直した）
+1.26.0 を iPhone で使うと、(1) ダウンロードが途中で止まって「Load failed」、(2)「保存できませんでした（容量不足）」、(3) 顔 AI の途中でホーム画面に戻される、が起きた。
+- (1)(2)：Service Worker が 85MB のファイルを丸ごとメモリに抱えてキャッシュに入れていた。回線が一度切れると最初からで、端末の保存領域も圧迫して、編集中の写真の保存が失敗した。
+  → `face-worker.js` が 4MB ずつ Range で取り、取れた所から Cache API（`temoto-faceai-…`）に保存する。切れたら 1・2・4・8・15 秒あけて取り直し、だめなら「通信が切れた」と出して、次は続きから。空きが少ないときは保存しない。Service Worker は Range の読み込みに手を出さない。古いモデルのキャッシュは消す。
+- (3)：メモリ不足。PC の Chromium で、補正＋顔 AI のいちばん大きいメモリが 2758MB。
+  - ONNX Runtime のグラフの最適化を切る（`OPTS`）：重みを前もって単精度に広げた写しを作らなくなり、約 330MB 減。結果・速さは同じ。
+  - 顔 AI の前に、ブレ補正・肌の AI の Worker を片付ける。顔 AI の Worker も終わるたびに片付ける（WebAssembly のメモリは縮まない）。スマホは WebGPU を試さない。
+  - 重みを半精度 → 8bit（出力チャンネルごと）に：170MB → 87MB。半精度との差は 1 画素あたり平均 0.15/255、書き出した写真の目・口を 100% で見ても区別できない。
+  - 合わせて 2758MB → 1674MB（顔 AI の分は補正のいちばん大きい所から約 +110MB）。
+- 失敗したときの表示は `face-photo.js` の `friendly`（DOWNLOAD：通信、MEMORY：メモリ）。
+- 実機（iPhone）では、まだ確かめていない。

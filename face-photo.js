@@ -3,7 +3,8 @@
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 → 顔 AI」。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
 // AI は編集用の大きさの写真で 1 回だけ動かし、書き出しでは、その結果を元の大きさの写真に当て直す（mergeFace は大きさによらない）
 import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, mergeFace } from './faceai.js';
-import { faceMeshes, findAllFaces, fingerprint } from './skinseg.js';
+import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg } from './skinseg.js';
+import { releaseDeblur } from './deblur-photo.js';
 import { getPeople, putPeople } from './db.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 
@@ -116,7 +117,16 @@ async function loadRef(r) {
   return refCache.get(r.crop);
 }
 
-let worker = null; // AI を読み込んだ Worker は使い回す
+/** Worker からの失敗を、使う人に分かる言葉にする（err.friendly: そのまま見せてよい文） */
+function friendly(code) {
+  const text = {
+    DOWNLOAD: '顔 AI のダウンロード（はじめてだけ約 90MB）が途中で切れました。電波のよい所か Wi-Fi で、もう一度試してください。ダウンロードできた所は、次は続きから読み込みます',
+    MEMORY: '端末のメモリが足りず、顔 AI を動かせませんでした。ほかのアプリやタブを閉じてから、もう一度試してください',
+  }[code];
+  return Object.assign(new Error(text || code), { friendly: !!text });
+}
+
+let worker = null; // AI を読み込んだ Worker（使い終わったら片付ける。2 回目からは端末に保存したものを読むので、数秒で読み込める）
 function runWorker(faces, { onProgress, signal }) {
   if (signal?.aborted) return Promise.reject(abortError());
   if (!worker) worker = new Worker(new URL('./face-worker.js', import.meta.url), { type: 'module' });
@@ -131,9 +141,9 @@ function runWorker(faces, { onProgress, signal }) {
     wk.onmessage = ({ data: m }) => {
       if (m.type === 'progress') onProgress(m.phase === 'load' ? 0.3 * m.t : 0.3 + 0.7 * m.t);
       else if (m.type === 'result') done(null, m.outs);
-      else if (m.type === 'error') done(new Error(m.message));
+      else if (m.type === 'error') done(friendly(m.message));
     };
-    wk.onerror = () => done(new Error('顔専用 AI を開始・実行できませんでした（端末のメモリが足りない可能性があります）'));
+    wk.onerror = () => done(friendly('MEMORY'));
     wk.postMessage({ type: 'run', faces }, faces.flatMap((f) => [f.crop.buffer]));
   });
 }
@@ -161,7 +171,10 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
   }
   if (!jobs.length) { onProgress(1); return { canvas: c, faces: [] }; }
   onProgress(0.12);
-  const outs = await runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) });
+  // 顔専用 AI は大きい（読み込むと数百 MB）。スマホでページごと落とされないよう、ほかの AI を片付けてから動かし、終わったら AI も片付ける
+  releaseDeblur(); releaseSkinSeg();
+  let outs;
+  try { outs = await runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }); } finally { worker?.terminate(); worker = null; }
   const faces = prepared.map((p, k) => ({ M: p.M, out: outs[k], mask: faceMask(p.pts) }));
   mergeFacesCanvas(x, W, H, faces, faceaiAmount({ faceai }));
   onProgress(1);
