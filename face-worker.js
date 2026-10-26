@@ -3,6 +3,9 @@
 // 返す: { type: 'progress', phase: 'load' | 'run', t } … { type: 'result', outs: [Float32Array（512×512 の RGB、0〜255）] } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { SIZE, transferDetail } from './faceai.js';
+import { limitOrtMemory, outOfMemory } from './cores.js';
+
+limitOrtMemory(768); // 動かすと約 585MB
 
 // モデルは 87MB（重みを 8bit にしたもの。scripts/face-proto/quantize_int8.py）
 const PARTS = ['./vendor/faceai/gfpgan-v1.4-int8.onnx'].map((p) => new URL(p, import.meta.url));
@@ -158,6 +161,6 @@ self.onmessage = async ({ data }) => {
     }
     self.postMessage({ type: 'result', outs }, outs.map((o) => o.buffer));
   } catch (error) {
-    self.postMessage({ type: 'error', message: error?.message || String(error) });
+    self.postMessage({ type: 'error', message: outOfMemory(error) ? 'MEMORY' : error?.message || String(error) });
   }
 };
