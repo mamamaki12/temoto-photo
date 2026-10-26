@@ -27,7 +27,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.27.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.27.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -591,7 +591,7 @@ async function runLowlight() {
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null);
-    if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
+    if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
   }
 }
 /** 写真の上の進捗バー（t: 0〜1、null で隠す） */
@@ -1063,7 +1063,7 @@ const PANELS = {
     drawFaces(); drawPeople();
     return [
       h('h3', {}, '暗い写真・ブレの大きい写真の顔を、明るい所で撮ったように'),
-      hint('初回は AI（約 170MB）を読み込みます。'),
+      hint('初回は AI（約 90MB）を読み込みます（Wi-Fi がおすすめ。切れても続きから）。'),
       facesBox,
       slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
       h('h3', {}, '本人の写真'),

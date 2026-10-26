@@ -23,6 +23,9 @@ let worker = null; // AI を読み込んだ Worker は使い回す（読み込�
  * @param {{onProgress?:(t:number)=>void, signal?:AbortSignal, denoise?:boolean}} hooks onProgress は 0〜1。
  *   denoise: AI に渡す前に、縮めた絵のノイズを取る（ノイズ軽減を使っていない写真。ざらつきを AI がブレと見て格子を作るのを防ぐ）
  */
+/** ブレ補正の AI を片付けて、メモリを空ける（顔専用 AI のような大きな AI を動かす前に。次に使うときは読み込み直す） */
+export function releaseDeblur() { worker?.terminate(); worker = null; }
+
 export async function deblurResidualFor(image, W, H, origW, origH, { onProgress = () => {}, signal, denoise = false } = {}) {
   if (signal?.aborted) throw abortError();
   const { width: w, height: h } = deblurSize(origW || W, origH || H);

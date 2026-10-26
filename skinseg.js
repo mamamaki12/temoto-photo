@@ -20,6 +20,8 @@ function stopWorker(why) {
   for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(new Error(why)); }
   waiting.clear();
 }
+/** 顔・肌を見つける AI を片付けて、メモリを空ける（使っていないときだけ。次に使うときは読み込み直す） */
+export function releaseSkinSeg() { if (!waiting.size) stopWorker('release'); }
 function call(msg, transfer) {
   if (!worker) {
     worker = new Worker(new URL('vendor/mediapipe/seg-worker.js', import.meta.url));
