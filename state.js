@@ -22,6 +22,7 @@ export const ADJ = [
   ['noise', 'ノイズ軽減', 0, 100, 'detail'],
   ['deblur', '被写体ブレの補正', 0, 100, 'detail'],
   ['bokeh', '背景をぼかす', 0, 100, 'detail'],
+  ['crisp', '髪・服をくっきり', 0, 100, 'detail'],
   ['vignette', '周辺光量', -100, 100, 'effect'],
   ['vignetteMid', '周辺光量の範囲', 0, 100, 'effect'],
   ['grain', '粒子', 0, 100, 'effect'],

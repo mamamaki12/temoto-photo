@@ -35,6 +35,16 @@ self.onmessage = async ({ data }) => {
     }
     return;
   }
+  // 人物の割合の地図だけ（crisp-photo.js から。髪・服をくっきりの重みに使う）
+  if (data.type === 'alpha') {
+    try {
+      const alpha = personAlpha(data.rgba, data.w, data.h, data.person);
+      self.postMessage({ type: 'result', alpha }, [alpha.buffer]);
+    } catch (error) {
+      self.postMessage({ type: 'error', message: error.message });
+    }
+    return;
+  }
   const { image, options } = data;
   try {
     const result = await restoreLinear(image, options, {
