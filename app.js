@@ -33,7 +33,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.31.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.31.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -733,24 +733,36 @@ function looksDark() {
   const at = (q) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * q) return v; } return 255; };
   return at(0.5) < 72 && at(0.9) < 140;
 }
-/** 暗い写真のおすすめ（テスト写真 21 枚で確かめた値。ノイズ軽減 50・明るさ補正 50 が標準の強さ） */
+/**
+ * 暗い写真のおまかせ。ノイズ軽減 50・明るさ補正 50 で、写真ごとに自動で決めた強さになる
+ * （顔の肌の明るさ・写真全体の明るさから明るくする量を、明るくする量からノイズ軽減の強さを決める。restoration-lowlight.js の planTone・autoNr）
+ */
 const DARK_RECIPE = { lowlight: 50, noise: 50 };
+const isDarkRecipe = (adj) => adj.lowlight === DARK_RECIPE.lowlight && adj.noise === DARK_RECIPE.noise;
+/** 暗い写真を開いたら、何も押さなくても、おまかせで明るくする（「暗い写真を明るく」の切り替えで止められる） */
+const autoDark = () => prefs.get('autoDark', true) === true;
 function applyDarkRecipe() {
   Object.assign(E.state.adj, DARK_RECIPE); commit(); syncHistoryButtons(); requestRender();
   if (E.tool === 'auto') buildPanel();
   toast('明るくしています…', 5000);
 }
-/** 開いた写真が暗くて、まだ編集していなければ、写真の上に「明るくする」を出す */
+/**
+ * 開いた写真が暗くて、まだ編集していなければ、おまかせで明るくする（写真の上に「元に戻す」を出す）。
+ * 自動で明るくしない設定のときは、「明るくする」をすすめる
+ */
 function suggestDark() {
   if (S.isEdited(E.state) || !looksDark()) return;
   const close = () => box.remove();
+  const auto = autoDark();
   const box = h('div', { class: 'suggest', role: 'region', 'aria-label': 'おすすめ' },
-    h('p', {}, h('b', {}, '暗い写真です。'), 'ノイズを取ってから明るくできます。'),
-    h('div', { class: 'suggest-actions' },
-      btn('✦ 明るくする', () => { close(); setTool('auto'); applyDarkRecipe(); }, 'primary small'),
-      btn('そのまま', close, 'ghost small')));
+    auto ? h('p', {}, h('b', {}, '暗い写真なので、'), '明るさとノイズを自動で整えました。')
+      : h('p', {}, h('b', {}, '暗い写真です。'), 'ノイズを取ってから明るくできます。'),
+    h('div', { class: 'suggest-actions' }, ...(auto
+      ? [btn('OK', close, 'primary small'), btn('元に戻す', () => { close(); undo(); }, 'ghost small')]
+      : [btn('✦ 明るくする', () => { close(); setTool('auto'); applyDarkRecipe(); }, 'primary small'), btn('そのまま', close, 'ghost small')])));
   for (const ev of ['pointerdown', 'dblclick', 'wheel']) box.addEventListener(ev, (e) => e.stopPropagation()); // 写真の上の操作にしない
   E.suggestEl = box; E.stageEl.append(box);
+  if (auto) { Object.assign(E.state.adj, DARK_RECIPE); commit(); syncHistoryButtons(); requestRender(); if (E.tool === 'auto') buildPanel(); }
 }
 
 // ── 履歴（元に戻す・やり直す）と保存 ──
@@ -1033,13 +1045,22 @@ const PANELS = {
     return [
       histo(),
       h('h3', {}, '暗い写真を明るく'),
-      E.state.adj.lowlight === DARK_RECIPE.lowlight && E.state.adj.noise === DARK_RECIPE.noise ? null
-        : row(btn('✦ おすすめの強さで明るくする', () => { E.suggestEl?.remove(); applyDarkRecipe(); }, 'primary')),
-      slider({ label: '写真全体の明るさ補正', min: 0, max: 100, value: E.state.adj.lowlight, def: 0,
-        onInput: live((v) => { E.state.adj.lowlight = v; }), onChange: commit }).el,
-      slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
-        onInput: live((v) => { E.state.adj.noise = v; }), onChange: commit }).el,
-      hint('ノイズを取ってから明るくします。'),
+      isDarkRecipe(E.state.adj)
+        ? h('p', { class: 'auto-on' }, '✓ おまかせ中。この写真に合わせて、明るさとノイズ軽減の強さを自動で決めています')
+        : row(btn(E.state.adj.lowlight || E.state.adj.noise ? '✦ おまかせに戻す' : '✦ おまかせで明るくする', () => { E.suggestEl?.remove(); applyDarkRecipe(); }, 'primary')),
+      (() => {
+        // スライダーはふだん使わない（おまかせの 50 から、好みで明るめ・暗めにするだけ）。開いたかどうかは覚えておく。動かしたことがあれば開いておく
+        const d = h('details', { class: 'fine-tune', open: prefs.get('fineTuneOpen', false) === true || (!isDarkRecipe(E.state.adj) && !!(E.state.adj.lowlight || E.state.adj.noise)) },
+          h('summary', {}, '細かく調整する（ふつうは不要）'),
+          slider({ label: '写真全体の明るさ補正', min: 0, max: 100, value: E.state.adj.lowlight, def: 0,
+            onInput: live((v) => { E.state.adj.lowlight = v; }), onChange: () => { commit(); buildPanel(); } }).el,
+          slider({ label: 'ノイズ軽減', min: 0, max: 100, value: E.state.adj.noise, def: 0,
+            onInput: live((v) => { E.state.adj.noise = v; }), onChange: () => { commit(); buildPanel(); } }).el,
+          hint('50 がおまかせの強さです。大きくすると明るく・ノイズを強く取ります。'));
+        d.addEventListener('toggle', () => prefs.set('fineTuneOpen', d.open));
+        return d;
+      })(),
+      toggle('暗い写真を開いたら自動で明るくする', autoDark(), (v) => prefs.set('autoDark', v)).el,
       h('h3', {}, '動いた手・髪のブレを直す'),
       slider({ label: '被写体ブレの補正', min: 0, max: 100, value: E.state.adj.deblur, def: 0,
         onInput: live((v) => { E.state.adj.deblur = v; }), onChange: commit }).el,

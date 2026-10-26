@@ -1,7 +1,7 @@
 import { restoreInWorker } from './restoration-client.js';
-import { measureNoise, planTone, grainFor, BAND_MARGIN } from './restoration-lowlight.js';
+import { measureNoise, planTone, grainFor, autoNr, BAND_MARGIN } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
-import { personSeg } from './skinseg.js';
+import { personSeg, faceSeg } from './skinseg.js';
 import { workerCount } from './cores.js';
 
 // 一度にWorkerへ送る範囲を限定する。3画素の探索+1画素のパッチ分を重ねて継ぎ目を防ぐ。
@@ -69,7 +69,7 @@ export async function restorePhoto(input, { amount = 60, noise = 3, strength = 1
 
 /** この編集で、暗所補正を使うか */
 export const lowlightActive = (adj) => adj.noise > 0 || adj.lowlight > 0;
-/** 編集の値（0〜100）→ 補正の設定。ノイズ軽減 50 で標準の強さ、明るさ補正 50 で自動の狙いどおり */
+/** 編集の値（0〜100）→ 補正の設定。ノイズ軽減 50・明るさ補正 50 で、写真ごとに自動で決めた強さ（enhancePhoto・planTone・autoNr） */
 export const lowlightOptions = (adj) => ({ nr: adj.noise / 50, light: adj.lowlight });
 /** 補正を当てたあとの描画では、GPU の簡易版（ノイズ軽減・明るさ）を二重にかけない */
 export const withoutLowlight = (state) => ({ ...state, adj: { ...state.adj, noise: 0, lowlight: 0 } });
@@ -107,9 +107,13 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light, 
   }
   check(); onProgress(0.02);
   // 2. 明るさの曲線（写真全体で 1 つ）。人物と背景で照明の色の直し方を変えるので、人物の範囲を AI で見分ける
+  // 顔が写っていれば、顔の肌の明るさで明るくする量を決める（planTone）
   const person = light > 0 ? await personSeg(small) : null;
+  const face = light > 0 ? await faceSeg(small) : null;
   check();
-  const tone = light > 0 ? planTone(small, light, { person }) : null;
+  const tone = light > 0 ? planTone(small, light, { person, face }) : null;
+  // ノイズ軽減の強さも、明るくする量に合わせる（スライダー 50 で自動の強さ）
+  nr *= autoNr(tone);
   onGrain(grainFor(nr, profile, tone));
   // 3. 帯ごとに、いくつかの Worker で
   const ROWS = Math.max(64, Math.min(512, Math.floor(1_000_000 / width / 4) * 4));
