@@ -163,22 +163,6 @@ test('HSL・カーブ・カラーグレーディング・効果', async ({ page 
   expect(lum(await viewMean(page, [0, 0, 0.08, 0.08]))).toBeLessThan(corner0 - 15);
 });
 
-test('切り抜き（比率・回転）と書き出しの大きさ', async ({ page }) => {
-  await openWith(page);
-  await tab(page, '切り抜き');
-  await page.getByRole('button', { name: '1:1' }).click();
-  await page.getByRole('button', { name: '⟳ 右に回転' }).click();
-  await tab(page, 'ライト');
-  await page.waitForTimeout(150);
-  const ratio = await page.locator('canvas.view').evaluate((c) => c.width / c.height);
-  expect(Math.abs(ratio - 1)).toBeLessThan(0.02);
-  const f = await exportFile(page, { format: 'PNG（劣化なし）' });
-  expect(f.name).toMatch(/\.png$/);
-  expect([...f.buf.subarray(1, 4)].map((c) => String.fromCharCode(c)).join('')).toBe('PNG');
-  const [w, hh] = await imageSize(page, f.buf, 'image/png');
-  expect(w).toBe(hh); expect(w).toBe(800);
-});
-
 test('位置情報入りの写真: 警告を出し、書き出した JPEG には Exif が残らない', async ({ page }) => {
   await page.goto(URL0);
   const file = withExif(await makePhoto(page));
@@ -250,7 +234,7 @@ test('スポット修復で黒い点が消え、モザイクで細部が消え�
   expect(await sd()).not.toBe(before);
 });
 
-test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ねられる・プリントの比率で切り抜ける', async ({ page }) => {
+test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ねられる', async ({ page }) => {
   await openWith(page);
   const FACE = [0.28, 0.57, 0.32, 0.63]; // テスト画像の肌色の円
   const f0 = lum(await viewMean(page, FACE)); const s0 = await viewMean(page, SKY);
@@ -279,11 +263,6 @@ test('美肌: 肌だけ明るく整い、空は変わらない・修復と重ね
   await tab(page, '美肌');
   await page.getByRole('button', { name: '✦ 写真館風におまかせ仕上げ' }).click();
   await page.waitForFunction(() => window.__temoto.state.look.id === 'studio-clear' && window.__temoto.state.portrait.smooth === 50);
-  // L判（横の写真なので横長 127:89）
-  await tab(page, '切り抜き');
-  await page.getByRole('button', { name: 'L判', exact: true }).click();
-  const c = await page.evaluate(() => window.__temoto.state.geo.crop);
-  expect(Math.abs((c.w * 1200) / (c.h * 800) - 127 / 89)).toBeLessThan(0.01);
 });
 
 test('プレビューの画質: 大きな写真を縮めてもギザギザ（モアレ）にならない・拡大すると細かく描き直す', async ({ page }) => {
@@ -395,7 +374,7 @@ test('a11y: 編集画面（重大な違反なし）', async ({ page }) => {
   await openWith(page);
   const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
   const axe = await readFile(axePath, 'utf8');
-  for (const t of ['フィルター', '切り抜き', 'フレーム']) {
+  for (const t of ['フィルター', 'フレーム']) {
     await tab(page, t);
     await page.evaluate(axe); // CSP は script-src 'self' だが evaluate は CDP 経由なので注入できる
     const res = await page.evaluate(async () => window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] } }));
@@ -604,17 +583,17 @@ test('画面の色: はじめは黒、右上のアイコンを押すたびに �
 
 test.describe('はじめて使う端末', () => {
   test.use({ storageState: { cookies: [], origins: [] } }); // 設定なし
-  test('調整・部分補正は最初は隠してあり（切り抜きは出しておく）、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
+  test('調整・部分補正は最初は隠してあり、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveText(['✦おまかせ', '⌗切り抜き', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     // 「ライト」を出す
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     const dlg = page.getByRole('dialog', { name: '表示する道具を選ぶ' });
     await dlg.getByLabel('ライト').check();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '⌗切り抜き', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     await rail.filter({ hasText: '調整' }).click();
     await expect(page.locator('.subtabs')).toHaveCount(0); // 中の道具が1つだけならタブは出さない
     await setSlider(page, '露光量', 40);
@@ -623,7 +602,7 @@ test.describe('はじめて使う端末', () => {
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     await dlg.getByLabel('ライト').uncheck();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '⌗切り抜き', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
     // 全部隠そうとすると止める
     await page.locator('.menu summary').click();
@@ -633,25 +612,25 @@ test.describe('はじめて使う端末', () => {
     await expect(page.locator('.toast').last()).toContainText('1つは表示');
     await dlg.getByRole('button', { name: 'すべて表示' }).click();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveCount(7);
+    await expect(rail).toHaveCount(6);
   });
 
   test('スペシャリストモードをオンにすると、隠した道具も全部出る（オフで元に戻る・覚えている）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveCount(5);
+    await expect(rail).toHaveCount(4);
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').check();
-    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '⌗切り抜き', '◎部分補正', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['✦おまかせ', '☀調整', '◎部分補正', '❀レタッチ', '▢フレーム', 'ⓘ情報']);
     await rail.filter({ hasText: '調整' }).click();
     await expect(page.locator('.subtabs [role=tab]')).toHaveCount(7);
     // 再読み込みしても続く
     await page.reload(); await page.locator('.lib-open').first().click(); await page.waitForFunction(() => window.__temoto.editor?.L);
-    await expect(rail).toHaveCount(7);
+    await expect(rail).toHaveCount(6);
     // オフにすると隠した道具は消え、開いていた道具（調整）からフィルターに戻る
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').uncheck();
-    await expect(rail).toHaveCount(5);
+    await expect(rail).toHaveCount(4);
     await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
   });
 });

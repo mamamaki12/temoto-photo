@@ -44,8 +44,6 @@ export const MAX_BRUSH_POINTS = 600; // なぞった線 1 本の点の数
 export const MAX_SKIN_SEEDS = 12;
 export const MAX_FACEAI = 8;
 export const ASPECTS = { free: '自由', original: '元の比率', '1:1': '1:1', '4:5': '4:5', '3:4': '3:4', '2:3': '2:3', '9:16': '9:16', '16:9': '16:9', '3:2': '3:2', '4:3': '4:3', 'print-L': 'L判', 'print-2L': '2L判', 'print-6': '六つ切り', 'print-A4': 'A4' };
-/** プリントの大きさ（短い辺:長い辺）。写真の向き（縦・横）に合わせて使う */
-export const PRINT_ASPECTS = { 'print-L': [89, 127], 'print-2L': [127, 178], 'print-6': [203, 254], 'print-A4': [210, 297] };
 export const PADS = { none: 'なし', '1:1': '正方形 1:1', '4:5': '縦 4:5', '9:16': 'ストーリー 9:16', '16:9': '横 16:9' };
 
 const zeroAdj = () => Object.fromEntries(ADJ.map(([k]) => [k, ADJ_DEFAULT[k] ?? 0]));
