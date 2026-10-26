@@ -159,7 +159,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .ed-head .menu-list button.danger { color: var(--danger); }
 
 .stage { position: relative; overflow: hidden; background: var(--stage); display: grid; place-items: center; touch-action: none; user-select: none; -webkit-user-select: none; }
-.stage[data-tool="crop"], .stage[data-tool="hide"], .stage[data-tool="draw"] { cursor: crosshair; }
+.stage[data-tool="hide"], .stage[data-tool="draw"] { cursor: crosshair; }
 .stage[data-tool="heal"], .stage[data-tool="local"] { cursor: none; }
 .handles .skin-seed { fill: #ff7aa8; stroke: #fff; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .stage.busy.seg::after { content: '肌を見分けています…'; }
@@ -170,11 +170,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .view-wrap { position: relative; transform-origin: center; line-height: 0; }
 .view { display: block; box-shadow: 0 4px 24px var(--shadow); }
 .handles { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-.handles .shade { fill: rgb(0 0 0 / 55%); }
-.handles .crop-box { fill: none; stroke: #fff; }
-.handles .thirds { stroke: rgb(255 255 255 / 45%); }
 .handles .hd { fill: #fff; stroke: var(--stage); stroke-width: 2; }
-.handles .hd-sq { fill: #fff; }
 .handles .guide { fill: none; stroke: #fff; stroke-opacity: .85; }
 .handles .dashed { stroke-dasharray: 6 6; }
 .handles .heal-path { fill: none; stroke: rgb(111 208 196 / 45%); stroke-linecap: round; stroke-linejoin: round; }
