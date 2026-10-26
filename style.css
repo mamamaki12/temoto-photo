@@ -433,3 +433,21 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .faceai-pick-face { padding: 2px; border-radius: 12px; }
 .faceai-pick-face img { width: 96px; height: 96px; border-radius: 10px; display: block; }
 .faceai-pick-face[aria-pressed="true"] { border: 3px solid var(--select); }
+
+/* アプリの更新: 一覧の見出しのボタン（新しい版があると緑の点）と、どの画面でも下に出る「新しい版があります」 */
+.lib-head .app-update { margin-left: auto; position: relative; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; background: transparent; color: #fff; border: 1px solid transparent; }
+.lib-head .app-update + .theme-cycle { margin-left: 0; }
+.lib-head .app-update:hover:not(:disabled) { background: rgb(255 255 255 / 14%); }
+.update-icon { display: grid; place-items: center; }
+.update-svg { width: 21px; height: 21px; display: block; }
+.app-update.checking .update-svg { animation: update-spin 1s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .app-update.checking .update-svg { animation: none; } }
+.update-dot { display: none; }
+.app-update.has-update .update-dot { display: block; position: absolute; top: 7px; right: 7px; width: 9px; height: 9px; border-radius: 50%; background: #3ecf8e; box-shadow: 0 0 0 2px var(--header); }
+.app-update.labeled { justify-content: flex-start; gap: 10px; min-height: 40px; border-radius: 8px; position: relative; }
+.app-update.labeled .update-svg { width: 20px; height: 20px; }
+.app-update.labeled.has-update .update-dot { position: static; box-shadow: none; order: 3; margin-left: auto; }
+.update-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 101; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; max-width: calc(100% - 32px); background: var(--toast-bg); color: var(--toast-text); border-radius: 10px; box-shadow: 0 6px 24px rgb(14 19 24 / 30%); font-size: .9rem; white-space: nowrap; }
+.update-bar .primary { min-height: 36px; padding: 0 16px; }
+.update-bar .update-later { min-height: 36px; width: 36px; padding: 0; background: transparent; border-color: transparent; color: inherit; }

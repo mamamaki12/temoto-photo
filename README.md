@@ -74,6 +74,7 @@ PR の CI（`.github/workflows/ci.yml`）が通ると、`.github/workflows/auto-
 ```
 index.html, style.css, manifest.webmanifest, icon.svg, sw.js   ページ・見た目・ホーム画面用・オフライン用
 app.js        画面と操作
+update.js     アプリの更新（新しい版の確認・「新しい版があります」・読み込み直し）。版を上げるときは app.js・sw.js・package.json の版をそろえる（テストで確かめる）
 engine.js     WebGL2 の描画（補正・色の処理）
 state.js      編集レシピ（保存する内容）と検証
 geometry.js   切り抜き・回転・遠近の座標変換（切り抜きの道具は 1.27.3 でなくした。前に切り抜いた写真の表示・書き出し用に残す）
