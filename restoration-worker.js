@@ -1,5 +1,5 @@
 import { restoreLinear } from './restoration.js';
-import { enhanceBand } from './restoration-lowlight.js';
+import { denoiseBand, finishBand, keepBand, previewPlanes, tonePreview } from './restoration-lowlight.js';
 import { deconvResidual } from './deblur.js';
 import { personAlpha, computeBokeh } from './bokeh.js';
 
@@ -15,13 +15,30 @@ self.onmessage = async ({ data }) => {
     return;
   }
   // 暗所補正の帯（restoration-photo.js の enhancePhoto から。1 つの Worker が何本も続けて受け取る）
+  // cached: 前に取っておいたノイズ除去の結果（明るさ補正だけを変えたとき。仕上げだけをやり直して、そのまま返す）。
+  // keep: ノイズ除去の結果を取っておくために返す。pv: スライダーを動かしている間の見本の縮める倍率
   if (data.type === 'lowlight') {
     try {
-      const out = enhanceBand(data.band, data.at, data.options, (t) => self.postMessage({ type: 'progress', id: data.id, t }));
-      self.postMessage({ type: 'result', id: data.id, data: out }, [out.buffer]);
+      const prog = (t) => self.postMessage({ type: 'progress', id: data.id, t });
+      const c = data.cached;
+      const d = c ? { ...c, Y: Float32Array.from(c.Y) } : denoiseBand(data.band, data.at, data.options, prog);
+      const at = c ? c.at : data.at;
+      const keep = c || (data.keep && d.Y0 ? keepBand(d, at) : null);
+      const out = finishBand(d, at, data.options, prog);
+      const pv = data.pv ? previewPlanes(d, at, data.pv) : null;
+      const list = [out.buffer];
+      if (keep) list.push(keep.Y.buffer, keep.Y0.buffer, keep.Cb.buffer, keep.Cr.buffer);
+      if (pv) list.push(pv.Y.buffer, pv.Cb.buffer, pv.Cr.buffer);
+      self.postMessage({ type: 'result', id: data.id, data: out, keep, pv }, list);
     } catch (error) {
       self.postMessage({ type: 'error', id: data.id, message: error.message });
     }
+    return;
+  }
+  // スライダーを動かしている間の見本（縮めた絵に、明るさの曲線だけを当てる）
+  if (data.type === 'tone') {
+    const out = tonePreview(data.pv, data.tone);
+    self.postMessage({ type: 'tone', id: data.id, data: out }, [out.buffer]);
     return;
   }
   // 背景のぼかし（bokeh-photo.js から。4 分の 1 に縮めた写真と人物の地図）

@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/lowlight-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureNoise, planTone, enhanceBand, boxBlur, addGrain, fineScale, grainFor, autoNr, applyTone, BAND_MARGIN } from '../../restoration-lowlight.js';
+import { measureNoise, planTone, enhanceBand, denoiseBand, finishBand, keepBand, previewPlanes, tonePreview, boxBlur, addGrain, fineScale, grainFor, autoNr, applyTone, BAND_MARGIN } from '../../restoration-lowlight.js';
 
 function randomNormal(seed = 521) {
   const uniform = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
@@ -45,6 +45,40 @@ test('lowlight: 帯に分けて処理しても、写真全体を一度に処理�
       { top: y - top, bottom: end - top, y0: top, fullW: w, fullH: h }, o);
     assert.deepEqual(part, all.subarray(y * w * 4, end * w * 4), `${y} 行目からの帯`);
   }
+});
+
+test('lowlight: ノイズ除去の結果を取っておいて、明るさ補正だけを変えて仕上げ直しても、最初から処理したのと同じ', () => {
+  const w = 160; const h = 300; const rand = randomNormal(19);
+  const data = rgba(w, h, (x, y) => [30 + 25 * Math.sin(x / 9) + 6 * rand(), 20 + (y % 40 < 20 ? 15 : 0) + 6 * rand(), 12 + 6 * rand()]);
+  const profile = measureNoise(data, w, h);
+  const small = { width: 80, height: 150, data: rgba(80, 150, (x, y) => [data[(y * 2 * w + x * 2) * 4], data[(y * 2 * w + x * 2) * 4 + 1], data[(y * 2 * w + x * 2) * 4 + 2]]) };
+  const ROWS = 64;
+  for (let y = 0; y < h; y += ROWS) {
+    const end = Math.min(h, y + ROWS); const top = Math.max(0, y - BAND_MARGIN); const bottom = Math.min(h, end + BAND_MARGIN);
+    const band = () => ({ width: w, height: bottom - top, data: data.slice(top * w * 4, bottom * w * 4) });
+    const at = { top: y - top, bottom: end - top, y0: top, fullW: w, fullH: h };
+    const kept = keepBand(denoiseBand(band(), at, { nr: 1, profile }), at);
+    for (const light of [20, 50, 90]) {
+      const o = { nr: 1, profile, tone: planTone(small, light) };
+      const again = finishBand({ ...kept, Y: Float32Array.from(kept.Y) }, kept.at, o);
+      assert.deepEqual(again, enhanceBand(band(), at, o), `${y} 行目からの帯・明るさ ${light}`);
+    }
+  }
+});
+
+test('lowlight: スライダーの見本は、縮めた絵に明るさの曲線を当てたもの（全体の明るさは、元の大きさで仕上げたのとほぼ同じ）', () => {
+  const w = 160; const h = 128; const rand = randomNormal(23);
+  const data = rgba(w, h, (x) => [30 + 25 * Math.sin(x / 9) + 6 * rand(), 22 + 6 * rand(), 12 + 6 * rand()]);
+  const profile = measureNoise(data, w, h); const at = { top: 0, bottom: h, y0: 0, fullW: w, fullH: h };
+  const small = { width: 80, height: 64, data: rgba(80, 64, (x) => [30 + 25 * Math.sin(x * 2 / 9), 22, 12]) };
+  const o = { nr: 1, profile, tone: planTone(small, 70), grain: false };
+  const d = denoiseBand({ width: w, height: h, data }, at, o);
+  const full = finishBand(d, at, o);
+  const pv = previewPlanes(d, at, 4);
+  assert.equal(pv.w, 40); assert.equal(pv.h, 32);
+  const prev = tonePreview(pv, o.tone);
+  const mean = (a) => { let s = 0; for (let i = 0; i < a.length; i += 4) s += a[i] + a[i + 1] + a[i + 2]; return s / (a.length / 4 * 3); };
+  assert.ok(Math.abs(mean(prev) - mean(full)) < 2, `${mean(prev).toFixed(1)} と ${mean(full).toFixed(1)}`);
 });
 
 test('lowlight: ノイズを先に取ってから明るくする。平らな所のざらつきが減り、境目は残る', () => {

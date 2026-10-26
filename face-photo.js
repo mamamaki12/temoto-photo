@@ -338,6 +338,16 @@ export async function mergeWholeFull(read, write, res, W, H) {
     await later();
   }
 }
+/**
+ * applyFaceAI の結果（faces）を、強さを変えて当て直す（強さのスライダーでは AI を動かし直さない。applyFaceAI と同じ結果になる）
+ * @returns {HTMLCanvasElement}
+ */
+export function remergeFaces(image, W, H, faces, amount) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
+  mergeFacesCanvas(x, W, H, faces, amount);
+  return c;
+}
 /** Canvas（2D）の、顔のまわりだけを読み出して結果を当てる */
 function mergeFacesCanvas(x, W, H, faces, amount) {
   for (const f of faces) {
