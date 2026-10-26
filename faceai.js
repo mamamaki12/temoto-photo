@@ -24,16 +24,18 @@ export const OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 
  * 写真の画素の座標の顔の点（[[x, y], …478 点]）→ 写真から 512 の切り出しへの変換 [a, b, tx, ty]
  * （u = a·x − b·y + tx、v = b·x + a·y + ty。回転・拡大・移動だけ）
  */
-export function alignMatrix(pts) {
+export const alignMatrix = (pts) => fitMatrix(pts, ALIGN_IDX, ALIGN_TPL, ALIGN_WT);
+/** 顔の点のうち idx の点を、目標の位置 tpl（[x0, y0, x1, y1, …]）に重みつき最小二乗で合わせる変換（回転・拡大・移動だけ） */
+export function fitMatrix(pts, idx, tpl, wt = null) {
   let sw = 0; let mx = 0; let my = 0; let ux = 0; let uy = 0;
-  for (let k = 0; k < ALIGN_IDX.length; k++) {
-    const w = ALIGN_WT[k]; const p = pts[ALIGN_IDX[k]]; sw += w; mx += w * p[0]; my += w * p[1]; ux += w * ALIGN_TPL[k * 2]; uy += w * ALIGN_TPL[k * 2 + 1];
+  for (let k = 0; k < idx.length; k++) {
+    const w = wt ? wt[k] : 1; const p = pts[idx[k]]; sw += w; mx += w * p[0]; my += w * p[1]; ux += w * tpl[k * 2]; uy += w * tpl[k * 2 + 1];
   }
   mx /= sw; my /= sw; ux /= sw; uy /= sw;
   let a = 0; let b = 0; let n = 0;
-  for (let k = 0; k < ALIGN_IDX.length; k++) {
-    const w = ALIGN_WT[k]; const p = pts[ALIGN_IDX[k]];
-    const sx = p[0] - mx; const sy = p[1] - my; const dx = ALIGN_TPL[k * 2] - ux; const dy = ALIGN_TPL[k * 2 + 1] - uy;
+  for (let k = 0; k < idx.length; k++) {
+    const w = wt ? wt[k] : 1; const p = pts[idx[k]];
+    const sx = p[0] - mx; const sy = p[1] - my; const dx = tpl[k * 2] - ux; const dy = tpl[k * 2 + 1] - uy;
     a += w * (sx * dx + sy * dy); b += w * (sx * dy - sy * dx); n += w * (sx * sx + sy * sy);
   }
   a /= n; b /= n;
@@ -71,7 +73,7 @@ function sampleRGBA(data, W, H, x, y, out, o) {
   }
 }
 /** RGB（Float32、ch 個ずつ）の画像を双一次で読む */
-function sampleF(img, w, h, ch, x, y, out, o) {
+export function sampleF(img, w, h, ch, x, y, out, o) {
   x = Math.min(w - 1, Math.max(0, x)); y = Math.min(h - 1, Math.max(0, y));
   const x0 = Math.floor(x); const y0 = Math.floor(y); const x1 = Math.min(w - 1, x0 + 1); const y1 = Math.min(h - 1, y0 + 1); const fx = x - x0; const fy = y - y0;
   for (let c = 0; c < ch; c++) {
