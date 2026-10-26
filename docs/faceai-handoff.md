@@ -60,7 +60,7 @@
 - 失敗したときの表示は `face-photo.js` の `friendly`（DOWNLOAD：通信、MEMORY：メモリ）。
 - 実機（iPhone）では、まだ確かめていない。
 
-## iPhone の「no available backend found. ERR: [wasm] RangeError: Out of memory」（1.29.1 で直した）
+## iPhone の「no available backend found. ERR: [wasm] RangeError: Out of memory」（1.29.2 で直した）
 1.27.1 以降、iPhone で顔 AI を使うと、この表示で失敗した（2026-10-26、全体 AI・本人の顔の見分けが入った後）。
 - 原因: ONNX Runtime Web（1.30.0、スレッド版）の WebAssembly のメモリは共有メモリで、上限が 4GB（65536 ページ）。iPhone の Safari は共有メモリの上限の分を前もって予約するので、AI を起動するたびに 4GB ずつ予約する。全体 AI（Worker 2 つ）・顔の見分け・顔 AI・ブレ補正（Worker 2 つ）と何個も起動すると（片付けた Worker のメモリもすぐには空かない）、予約できなくなる。PC の Chromium では起きない。
 - 直し方: `vendor/ort/ort-wasm-simd-threaded.asyncify.mjs` の `new WebAssembly.Memory({initial:256,maximum:65536,shared:!0})` の上限を `globalThis.ORT_WASM_MAX_PAGES` から読むように 1 か所だけ変え（ORT を入れ替えたら入れ直す。`tests/unit/cores.test.js` が確かめる）、iPhone・iPad では AI ごとに使う量に抑える（`cores.js` の `limitOrtMemory`、Worker の最初で呼ぶ）。
