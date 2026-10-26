@@ -27,7 +27,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.26.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.27.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -65,18 +65,19 @@ const prefs = {
 // ── 画面の色（自動＝端末の設定に合わせる／ライト／ダーク） ──
 const darkMQ = matchMedia('(prefers-color-scheme: dark)');
 const THEMES = [['auto', '自動'], ['light', 'ライト'], ['dark', 'ダーク']];
+const DEFAULT_THEME = 'dark'; // はじめは黒い画面（写真が引き立つ）。自動・ライトにも切り替えられる
 function applyTheme() {
-  const t = prefs.get('theme', 'auto');
+  const t = prefs.get('theme', DEFAULT_THEME);
   const dark = t === 'dark' || (t === 'auto' && darkMQ.matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#1e1f23' : '#7d2ae8');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#19191b'); // 見出しはライトでも黒
 }
 const isDark = () => document.documentElement.dataset.theme === 'dark';
 function setTheme(t) {
   prefs.set('theme', t); applyTheme();
   if (E) { buildPanel(); requestRender(); } else if (GR) gridPanel();
 }
-darkMQ.addEventListener?.('change', () => { if (prefs.get('theme', 'auto') === 'auto') setTheme('auto'); });
+darkMQ.addEventListener?.('change', () => { if (prefs.get('theme', DEFAULT_THEME) === 'auto') setTheme('auto'); });
 /** 画面の色のアイコン（押すたびに 自動 → ライト → ダーク → 自動 … と切り替える） */
 // アイコンは絵で描く（文字の記号は端末によって小さかったり絵文字になったりする）
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -94,9 +95,9 @@ const themeName = (t) => THEMES.find(([k]) => k === t)[1];
 const nextTheme = (t) => THEMES[(THEMES.findIndex(([k]) => k === t) + 1) % THEMES.length][0];
 function themeButton({ withLabel = false } = {}) {
   const icon = h('span', { class: 'theme-icon', 'aria-hidden': 'true' }); const label = h('span', { class: 'theme-label' });
-  const b = h('button', { type: 'button', class: withLabel ? 'theme-cycle labeled' : 'theme-cycle', onclick: () => { const t = nextTheme(prefs.get('theme', 'auto')); setTheme(t); sync(); toast(`画面の色: ${themeName(t)}${t === 'auto' ? '（端末の設定に合わせる）' : ''}`); } }, icon, withLabel ? label : null);
+  const b = h('button', { type: 'button', class: withLabel ? 'theme-cycle labeled' : 'theme-cycle', onclick: () => { const t = nextTheme(prefs.get('theme', DEFAULT_THEME)); setTheme(t); sync(); toast(`画面の色: ${themeName(t)}${t === 'auto' ? '（端末の設定に合わせる）' : ''}`); } }, icon, withLabel ? label : null);
   function sync() {
-    const t = prefs.get('theme', 'auto'); icon.replaceChildren(themeSvg(t)); label.textContent = `画面の色: ${themeName(t)}`;
+    const t = prefs.get('theme', DEFAULT_THEME); icon.replaceChildren(themeSvg(t)); label.textContent = `画面の色: ${themeName(t)}`;
     const tip = `画面の色: ${themeName(t)}（押すと${themeName(nextTheme(t))}に）`; b.setAttribute('aria-label', tip); b.title = tip; b.dataset.theme = t;
   }
   sync(); return b;
@@ -2201,7 +2202,7 @@ function gridPanel() {
   if (GR.tab === 'layout') {
     const thumbs = h('div', { class: 'grid-layouts', role: 'group', 'aria-label': 'レイアウト' }, LAYOUTS[n].map((l) => {
       const c = h('canvas', { width: 64, height: 64, 'aria-hidden': 'true' });
-      const ctx = ctx2d(c); ctx.fillStyle = isDark() ? '#2a2c31' : '#eceef2'; ctx.fillRect(0, 0, 64, 64); ctx.fillStyle = isDark() ? '#8b8e95' : '#9a9db0';
+      const ctx = ctx2d(c); ctx.fillStyle = isDark() ? '#232326' : '#efeff1'; ctx.fillRect(0, 0, 64, 64); ctx.fillStyle = isDark() ? '#8b8b92' : '#9a9aa1';
       for (const r of cellRects(l, 64, 64, { gap: 6, margin: 6 })) ctx.fillRect(r.x, r.y, r.w, r.h);
       return h('button', { type: 'button', class: 'grid-layout', 'aria-pressed': String(G.layout === l.id), onclick: () => { G.layout = l.id; G.lines = {}; gridPanel(); drawGridView(); } }, c, h('span', {}, l.name));
     }));
