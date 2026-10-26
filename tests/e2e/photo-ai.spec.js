@@ -33,13 +33,14 @@ test('美肌: AI で人物の肌だけを見分け、背景・髪・服は変え
   for (let c = 0; c < 3; c++) { expect(Math.abs(bg1[c] - bg0[c])).toBeLessThan(3); expect(Math.abs(hair1[c] - hair0[c])).toBeLessThan(3); } // 背景・髪は変わらない
 });
 
-test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つけた唇だけに色がのる（なぞった線は目印）。色合い・濃さ・明るさを選べる', async ({ page }) => {
+test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つけた唇だけに色がのる（なぞった線は目印）。変えられるのは色と濃さだけ（ブラシの大きさは決まった値）', async ({ page }) => {
   await open(page);
   const skin0 = await srcPixel(page, 0.513, 0.62); // 唇の下の肌（ブラシの中）
   await openTool(page, 'リップ');
   await page.getByRole('button', { name: /レッド/ }).click();
-  for (const label of ['色合い', '色の濃さ', '色の明るさ']) await expect(page.getByLabel(label, { exact: true })).toBeVisible();
-  await page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el) => { el.value = 6; el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await expect(page.getByLabel('濃さ', { exact: true })).toBeVisible();
+  for (const label of ['ブラシの大きさ', '強さ', '色合い', '色の濃さ', '色の明るさ']) await expect(page.getByLabel(label, { exact: true })).toHaveCount(0);
+  await page.getByLabel('濃さ', { exact: true }).evaluate((el) => { el.value = 70; el.dispatchEvent(new Event('change', { bubbles: true })); });
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
   const at = (x, y) => [view.x + view.width * (L.ix + L.iw * x), view.y + view.height * (L.iy + L.ih * y)];
@@ -50,6 +51,7 @@ test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つ
   await page.waitForTimeout(300);
   const op = (await page.evaluate(() => window.__temoto.state.retouch))[0];
   expect(op.type).toBe('lip'); expect(op.lips.length).toBe(1); expect(op.whole).toBe(true); // 唇を見つけ、範囲は自動で
+  expect(op.amt).toBeCloseTo(0.7); expect(op.col).toEqual([202, 41, 46]); // 濃さ・選んだ見本の色のまま
   const lip1 = await srcPixel(page, 0.513, 0.592); const skin1 = await srcPixel(page, 0.513, 0.62);
   expect(lip1[0] - lip1[1]).toBeGreaterThan(lip0[0] - lip0[1] + 15); // 下唇は赤く
   for (let c = 0; c < 3; c++) expect(Math.abs(skin1[c] - skin0[c])).toBeLessThan(3); // 唇の下の肌は変わらない
@@ -59,7 +61,6 @@ test('リップ: 唇をタップする・丸で囲むと、AI で見つけた唇
   await open(page);
   await openTool(page, 'リップ');
   await page.getByRole('button', { name: /レッド/ }).click();
-  await page.getByLabel('ブラシの大きさ', { exact: true }).evaluate((el) => { el.value = 1; el.dispatchEvent(new Event('change', { bubbles: true })); });
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
   const at = (x, y) => [view.x + view.width * (L.ix + L.iw * x), view.y + view.height * (L.iy + L.ih * y)];

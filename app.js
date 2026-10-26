@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.31.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.32.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -504,6 +504,7 @@ async function openEditor(id) {
   const proj = await db.getProject(id); const blob = await db.getBlob(id);
   if (!proj || !blob) { toast('写真が見つかりませんでした'); showLibrary(); return; }
   const savedHq = db.getHq(id).catch(() => null);
+  const peopleP = loadPeople(); // 顔 AI の鍵（本人の写真）に使う。読み終わる前に鍵を作ると、保存した結果と合わずに計算し直してしまう
   const glCanvas = document.createElement('canvas');
   let engine;
   try { engine = new Engine(glCanvas); } catch {
@@ -522,7 +523,8 @@ async function openEditor(id) {
   // 前に計算した暗所補正・ブレ補正・顔 AI の結果があれば、計算し直さずにすぐ見せる（書き出しでは元の大きさで計算し直す）。
   // 読み込む間は「写真を開いています」のまま（補正前の暗い写真を一瞬見せない）
   if (E.rawLin) E.rawKey = JSON.stringify({ ...state.raw, ca: null }); // rebuildSource と同じ（hqKey に使う）
-  const e0 = E; const key = hqKey(state);
+  const e0 = E; await peopleP; if (E !== e0) return;
+  const key = hqKey(state);
   const hqc = key ? await loadHq(await savedHq) : null;
   if (E !== e0) return; // 読み込む間に別の写真・一覧に移った（closeEditor が片付け済み）
   if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; }
@@ -759,12 +761,12 @@ const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
 async function saveHq(e0, key, canvas) {
   await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
-  if (E !== e0 || E.hq?.key !== key || E.hq.canvas !== canvas) return;
+  if (e0.hq?.key !== key || e0.hq.canvas !== canvas) return; // 写真一覧に戻っても保存は続ける（計算してすぐ戻ると、次に開いたときまた計算し直すことになる）
   try {
     const px = ctx2d(canvas, { willReadFrequently: true }).getImageData(0, 0, e0.W, e0.H, { colorSpace: COLOR_SPACE }).data;
     let data = new Blob([px]);
     if (canZip) data = await new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob();
-    if (E !== e0 || E.hq?.key !== key) return;
+    if (e0.hq?.key !== key) return;
     await db.putHq(e0.id, { key, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
     await db.pruneHq(HQ_KEEP);
   } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
@@ -1983,8 +1985,10 @@ const fxMode = (tool) => prefs.get(`fx2:${tool}:mode`, FX[tool].modes?.[0][0] ??
 function fxPrefs(tool) {
   const d = FX[tool]; const mode = fxMode(tool); const def = mode ? d.def[mode] : d.def;
   const v = prefs.get(`fx2:${tool}:${mode ?? ''}`, {});
-  return { size: v.size ?? def.size, amt: v.amt ?? def.amt, mode, def };
+  // リップは唇を AI で見つけて範囲をアプリが決めるので、ブラシの大きさは決まった値（なぞった所は目印。前に変えた値は使わない）
+  return { size: FIXED_SIZE.includes(mode) ? def.size : v.size ?? def.size, amt: v.amt ?? def.amt, mode, def };
 }
+const FIXED_SIZE = ['lip'];
 const setFxPrefs = (tool, patch) => { const f = fxPrefs(tool); prefs.set(`fx2:${tool}:${f.mode ?? ''}`, { size: patch.size ?? f.size, amt: patch.amt ?? f.amt }); };
 /** ブラシの半径（画面の Canvas の画素） */
 function fxRadiusCanvas(tool) { return fxPrefs(tool).size / 100 * Math.min(E.L.iw, E.L.ih); }
@@ -2003,21 +2007,23 @@ function fxPanel(tool) {
   const n = E.state.retouch.filter((o) => types.includes(o.type)).length;
   E.stageHint = typeof d.hint === 'string' ? d.hint : d.hint[f.mode];
   return [
-    f.mode === 'lip' ? lipColorPicker() : null,
-    // 鼻筋・目線はタップした所の顔を AI で見つけて当てるので、ブラシの大きさは使わない（出すと迷う）
-    ['nose', 'gaze'].includes(f.mode) ? null : slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
-    slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => { setFxPrefs(tool, { amt: v }); restrengthFocus(types[0], v / 100); } }).el,
+    f.mode === 'lip' ? lipColorPicker(tool, f) : null,
+    // 鼻筋・目線・リップはタップした所の顔を AI で見つけて当てるので、ブラシの大きさは出さない（出すと迷う）
+    // リップで変えられるのは色と濃さだけ（濃さは lipColorPicker の中。中身はこの道具の強さ）
+    ['nose', 'gaze', 'lip'].includes(f.mode) ? null : slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
+    f.mode === 'lip' ? null : slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => { setFxPrefs(tool, { amt: v }); refocusOps(types[0], { amt: v / 100 }); } }).el,
     f.mode === 'gaze' ? gazeTuner() : null,
     // 回数の行はいつも出す（当てたときにパネルの高さが変わって写真が動かないように）
     h('div', { class: 'btn-row fx-count' }, h('span', { class: 'muted small' }, `当てた回数: ${n}`), Object.assign(btn(`${itemLabel(curItem())}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'), { disabled: !n })),
   ];
 }
-/** 強さを変えたら、この項目を開いてから当てた分（唇・鼻など）にも、その場で当て直す */
-function restrengthFocus(type, amt) {
+/** 強さ・色を変えたら、この項目を開いてから当てた分（唇・鼻など）にも、その場で当て直す */
+function refocusOps(type, patch) {
+  if (type === 'warp') return; // 形（輪郭）はなぞった時に動かした形なので、当て直さない
   const from = E.focusSnap?.retouch?.length ?? E.state.retouch.length;
-  const ops = E.state.retouch.slice(from).filter((o) => o.type === type && o.amt !== amt);
-  if (!ops.length || type === 'warp') return; // 形（輪郭）はなぞった時に動かした形なので、当て直さない
-  for (const o of ops) o.amt = amt;
+  const ops = E.state.retouch.slice(from).filter((o) => o.type === type);
+  if (!ops.length) return;
+  for (const o of ops) Object.assign(o, S.clone(patch));
   rebuildSource(); commit(); requestRender();
 }
 /** 目線の微調整: 最後に直した人の黒目を、矢印で少しずつ（黒目の半径の 1 割ずつ）動かす */
@@ -2037,26 +2043,27 @@ function gazeTuner() {
       arrow('←', -0.1, 0, '黒目を左へ'), btn('戻す', () => { if (op.tune) { delete op.tune; rebuildSource(); commit(); buildPanel(); requestRender(); } }, 'ghost small'), arrow('→', 0.1, 0, '黒目を右へ'),
       h('span'), arrow('↓', 0, 0.1, '黒目を下へ'), h('span')));
 }
-/** リップの色（選んだもの） */
-// 色は「色合い（色相）・濃さ（彩度）・明るさ」で持つ。見本の色を選ぶと 3 つがその色になり、スライダーで好みに調整できる
+/** リップの色（選んだ見本）。見本の色そのものを目標にする */
+// 色合い・色の明るさ・色の濃さ（彩度）を変えられた前の版の色は、色合いのいちばん近い見本に
 const rgbToHsl = ([r, g, b]) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b); const mn = Math.min(r, g, b); const l = (mx + mn) / 2; const d = mx - mn; if (!d) return [0, 0, Math.round(l * 100)]; const s = d / (1 - Math.abs(2 * l - 1)); let hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh = (hh * 60 + 360) % 360; return [Math.round(hh), Math.round(s * 100), Math.round(l * 100)]; };
-const hslToRgb = ([hh, s, l]) => { s /= 100; l /= 100; const c = (1 - Math.abs(2 * l - 1)) * s; const x = c * (1 - Math.abs(((hh / 60) % 2) - 1)); const m = l - c / 2; const [r, g, b] = hh < 60 ? [c, x, 0] : hh < 120 ? [x, c, 0] : hh < 180 ? [0, c, x] : hh < 240 ? [0, x, c] : hh < 300 ? [x, 0, c] : [c, 0, x]; return [r, g, b].map((v) => Math.round((v + m) * 255)); };
-const lipHsl = () => { const v = prefs.get('lipHsl', null); return Array.isArray(v) && v.length === 3 ? v : rgbToHsl(LIP_COLORS[0][2]); };
-const lipColor = () => hslToRgb(lipHsl());
-/** リップの色: 見本の色と、色合い・濃さ・明るさのスライダー（いまの色の見本つき） */
-function lipColorPicker() {
-  const cur = lipHsl(); const set = (v) => { prefs.set('lipHsl', v); };
-  const sw = h('span', { class: 'lip-dot big', 'aria-hidden': 'true', style: { background: `rgb(${lipColor().join(' ')})` } });
-  const upd = (i) => (v) => { const x = lipHsl(); x[i] = v; set(x); sw.style.background = `rgb(${lipColor().join(' ')})`; };
+function lipKey() {
+  const k = prefs.get('lipCol', null); if (LIP_COLORS.some(([kk]) => kk === k)) return k;
+  const old = prefs.get('lipHsl', null); if (!Array.isArray(old) || old.length !== 3) return LIP_COLORS[0][0];
+  const dh = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+  const dist = ([hh, s, l]) => dh(hh, old[0]) + Math.abs(l - old[2]) * 0.5 + Math.abs(s - old[1]) * 0.2;
+  return LIP_COLORS.reduce((best, c) => (dist(rgbToHsl(c[2])) < dist(rgbToHsl(best[2])) ? c : best))[0];
+}
+const lipColor = () => LIP_COLORS.find(([k]) => k === lipKey())[2];
+/**
+ * リップで変えられるのは、色（見本）と濃さの 2 つだけ。
+ * 濃さ: 元の唇の色から選んだ色へ、どこまで寄せるか（薄付き〜しっかり）。色の彩度を下げると唇が灰色っぽく、上げると蛍光色のように浮くので、彩度ではなく寄せる量にする
+ */
+function lipColorPicker(tool, f) {
+  const cur = lipKey();
   return h('div', { class: 'lip-picker' },
-    h('div', { class: 'chips lip-colors', role: 'group', 'aria-label': 'リップの色の見本' }, LIP_COLORS.map(([k, label, rgb]) => {
-      const hsl = rgbToHsl(rgb); const on = hsl.every((v, i) => Math.abs(v - cur[i]) <= 1);
-      return h('button', { type: 'button', 'aria-pressed': String(on), onclick: () => { set(hsl); buildPanel(); } }, h('span', { class: 'lip-dot', 'aria-hidden': 'true', style: { background: `rgb(${rgb.join(' ')})` } }), label);
-    })),
-    h('div', { class: 'lip-now' }, sw, h('span', { class: 'muted small' }, 'いまの色（スライダーで調整）')),
-    slider({ label: '色合い', min: 0, max: 360, value: cur[0], def: cur[0], unit: '°', track: 'hue', onInput: upd(0), onChange: upd(0) }).el,
-    slider({ label: '色の濃さ', min: 10, max: 100, value: cur[1], def: cur[1], unit: '%', onInput: upd(1), onChange: upd(1) }).el,
-    slider({ label: '色の明るさ', min: 15, max: 75, value: cur[2], def: cur[2], unit: '%', onInput: upd(2), onChange: upd(2) }).el);
+    h('div', { class: 'chips lip-colors', role: 'group', 'aria-label': 'リップの色' }, LIP_COLORS.map(([k, label, rgb]) =>
+      h('button', { type: 'button', 'aria-pressed': String(k === cur), onclick: () => { prefs.set('lipCol', k); refocusOps('lip', { col: lipColor() }); buildPanel(); } }, h('span', { class: 'lip-dot', 'aria-hidden': 'true', style: { background: `rgb(${rgb.join(' ')})` } }), label))),
+    slider({ label: '濃さ', min: 10, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => { setFxPrefs(tool, { amt: v }); refocusOps('lip', { amt: v / 100 }); } }).el);
 }
 /** AI で見つけた口の輪郭を、保存する形に（座標は 5 桁まで） */
 const round5 = (pts) => pts.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]);

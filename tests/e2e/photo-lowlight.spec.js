@@ -301,3 +301,17 @@ test('暗い写真を開くと、何も押さなくてもおまかせで明る�
   await page.waitForTimeout(300);
   await expect(box).toHaveCount(0);
 });
+
+test('顔 AI の鍵は、開き直しても同じ（本人の写真を登録し直した回数で変わらない。保存した結果をそのまま使える）', async ({ page }) => {
+  await page.goto('/');
+  const key = (save) => page.evaluate(async (save) => {
+    const m = await import('/face-photo.js'); const { defaultState } = await import('/state.js');
+    if (save) { await m.savePeople([{ id: 'p1', name: '人1', refs: [] }]); await m.savePeople([{ id: 'p1', name: '人1', refs: [{ id: 'r1' }] }]); } else await m.loadPeople();
+    const s = defaultState(); s.faceai.faces = [{ x: 0.5, y: 0.4, on: true, person: 'p1' }];
+    return m.faceaiKey(s);
+  }, save);
+  const before = await key(true);
+  expect(before).toContain('r1');
+  await page.reload();
+  expect(await key(false)).toBe(before);
+});
