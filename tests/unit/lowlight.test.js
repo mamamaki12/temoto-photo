@@ -232,3 +232,19 @@ test('lowlight: 消したノイズが多い写真ほど（ノイズの量 × 明
   assert.equal(grainFor(1, prof(14), { gain: 13.5 }), 4); // 上限
   assert.equal(grainFor(0.5, prof(2.6), { gain: 13.5 }), b / 2); // ノイズ軽減を弱めると、粒も弱く
 });
+
+test('lowlight: WebAssembly でも JavaScript でも、結果は 1 ビットも変わらない（ノイズの多い暗い絵）', async () => {
+  const { useWasm } = await import('../../restoration-lowlight.js');
+  const w = 160; const h = 120; const rgba = new Uint8ClampedArray(w * h * 4);
+  let s = 12345; const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return s / 4294967296; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4; const base = 20 + 30 * (x > 80) + 10 * Math.sin(y / 7);
+    rgba[i] = base + 18 * rnd(); rgba[i + 1] = base * 0.8 + 18 * rnd(); rgba[i + 2] = base * 0.6 + 18 * rnd(); rgba[i + 3] = 255;
+  }
+  const profile = measureNoise(rgba, w, h);
+  const run = () => enhanceBand({ width: w, height: h, data: rgba.slice() }, { top: 0, bottom: h, y0: 0, fullW: w, fullH: h }, { nr: 1, profile, tone: null });
+  useWasm(true); const a = run();
+  useWasm(false); const b = run();
+  useWasm(true);
+  assert.deepEqual(a, b);
+});

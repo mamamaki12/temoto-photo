@@ -3,7 +3,7 @@
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, TILE } from './deblur.js';
-import { workerCount } from './cores.js';
+import { workerCount, lowMemory } from './cores.js';
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
 
@@ -56,6 +56,18 @@ function cpuPool(model) {
   };
 }
 
+/** 逆畳み込み（deconvResidual）を別の Worker で */
+function deconvInWorker(small) {
+  return new Promise((resolve, reject) => {
+    const wk = new Worker(new URL('./restoration-worker.js', import.meta.url), { type: 'module' });
+    const end = (f, v) => { wk.terminate(); f(v); };
+    wk.onmessage = ({ data: m }) => (m.type === 'result' ? end(resolve, m.res) : end(reject, new Error(m.message)));
+    wk.onerror = () => end(reject, new Error('ブレ補正を開始・実行できませんでした（端末のメモリが足りない可能性があります）'));
+    const copy = { width: small.width, height: small.height, data: small.data.slice() };
+    wk.postMessage({ type: 'deconv', small: copy }, [copy.data.buffer]);
+  });
+}
+
 let backend = null; // { run(input, n), size }
 async function init(onProgress) {
   if (backend) return backend;
@@ -94,9 +106,12 @@ self.onmessage = async ({ data }) => {
   try {
     const be = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
     const input = data.denoise ? denoiseSmall(data.small, (t) => self.postMessage({ type: 'progress', phase: 'denoise', t })) : data.small;
+    // 逆畳み込み（下）は AI の結果を使わないので、パソコン・Android では別の Worker で AI と同時に計算する（iPhone・iPad はメモリが少ないので後で）
+    const dc = lowMemory(self.navigator) ? null : deconvInWorker(input);
+    dc?.catch(() => {});
     const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: 0.95 * t }) });
     // AI が直せない、なだらかなにじみ（ぼけ・小さなブレ）は、ぼけの形を仮定して戻す。AI がもう直した所には足さない
-    addDeconv(res, deconvResidual(input), input);
+    addDeconv(res, dc ? await dc : deconvResidual(input), input);
     self.postMessage({ type: 'progress', phase: 'run', t: 1 });
     self.postMessage({ type: 'result', res }, [res.data.buffer]);
   } catch (error) {

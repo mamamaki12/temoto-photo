@@ -1,7 +1,18 @@
 import { restoreLinear } from './restoration.js';
 import { enhanceBand } from './restoration-lowlight.js';
+import { deconvResidual } from './deblur.js';
 
 self.onmessage = async ({ data }) => {
+  // ブレ補正の逆畳み込み（deblur-worker.js から。AI の計算と同時に、別の CPU で）
+  if (data.type === 'deconv') {
+    try {
+      const res = deconvResidual(data.small);
+      self.postMessage({ type: 'result', res }, [res.data.buffer]);
+    } catch (error) {
+      self.postMessage({ type: 'error', message: error.message });
+    }
+    return;
+  }
   // 暗所補正の帯（restoration-photo.js の enhancePhoto から。1 つの Worker が何本も続けて受け取る）
   if (data.type === 'lowlight') {
     try {

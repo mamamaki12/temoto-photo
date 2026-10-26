@@ -8,6 +8,9 @@
 // 全部の帯に渡すので、帯の境目で明るさやなめらかさが変わらない。
 // 色は 8bit の値（sRGB・Display P3 とも同じ伝達関数）を 0〜1 にして、輝度・色差に分けて扱う。
 
+import { NLM_WASM } from './nlm.wasm.js';
+import { lowMemory } from './cores.js';
+
 const SRGB_LUT = new Float32Array(4096);
 for (let i = 0; i < 4096; i++) { const v = i / 4095; SRGB_LUT[i] = v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }
 const toLinear = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : SRGB_LUT[(v * 4095 + 0.5) | 0]);
@@ -41,27 +44,34 @@ const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_B
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
 export function boxBlur(src, w, h, r, out = new Float32Array(w * h), tmp = new Float32Array(w * h)) {
-  for (let y = 0; y < h; y++) {
-    const o = y * w; let s = 0;
-    for (let x = 0; x <= Math.min(r, w - 1); x++) s += src[o + x];
-    for (let x = 0; x < w; x++) {
-      const x0 = x - r - 1; const x1 = x + r;
-      if (x > 0) { if (x1 < w) s += src[o + x1]; if (x0 >= 0) s -= src[o + x0]; }
-      tmp[o + x] = s / (Math.min(w - 1, x + r) - Math.max(0, x - r) + 1);
-    }
-  }
-  const col = new Float64Array(w);
+  const hr = Math.min(r, w - 1); const k = 2 * r + 1;
+  for (let y = 0; y < h; y++) hsum(src, tmp, y * w, w, r, hr, k, y * w);
+  const col = new Float64Array(w); const row = new Float32Array(w);
   for (let y = 0; y <= Math.min(r, h - 1); y++) for (let x = 0; x < w; x++) col[x] += tmp[y * w + x];
   for (let y = 0; y < h; y++) {
-    if (y > 0) {
-      const y1 = y + r; const y0 = y - r - 1;
-      if (y1 < h) for (let x = 0; x < w; x++) col[x] += tmp[y1 * w + x];
-      if (y0 >= 0) for (let x = 0; x < w; x++) col[x] -= tmp[y0 * w + x];
-    }
-    const n = Math.min(h - 1, y + r) - Math.max(0, y - r) + 1;
-    for (let x = 0; x < w; x++) out[y * w + x] = col[x] / n;
+    const y1 = y + r; const y0 = y - r - 1;
+    vsum(tmp, col, row, w, y > 0 && y1 < h ? y1 * w : -1, y > 0 && y0 >= 0 ? y0 * w : -1, Math.min(h - 1, y + r) - Math.max(0, y - r) + 1);
+    out.set(row, y * w);
   }
   return out;
+}
+// boxBlur の横の 1 行（src の so から w 個 → tmp の o から）。端は、範囲に入る画素だけで平均する。
+// 足す・引く順番と割り算は、どの画素でも同じ（分けて書いても結果は 1 ビットも変わらない）
+function hsum(src, tmp, o, w, r, hr, k, so = 0) {
+  let s = 0;
+  for (let x = 0; x <= hr; x++) s += src[so + x];
+  tmp[o] = s / (hr + 1);
+  const a = Math.min(r, w - 1); const b = Math.max(r + 1, w - r);
+  for (let x = 1; x <= a; x++) { const x1 = x + r; if (x1 < w) s += src[so + x1]; tmp[o + x] = s / (Math.min(w - 1, x1) + 1); }
+  for (let x = r + 1; x < w - r; x++) { s += src[so + x + r]; s -= src[so + x - r - 1]; tmp[o + x] = s / k; }
+  for (let x = b; x < w; x++) { const x1 = x + r; const x0 = x - r - 1; if (x1 < w) s += src[so + x1]; if (x0 >= 0) s -= src[so + x0]; tmp[o + x] = s / (Math.min(w - 1, x1) - (x - r) + 1); }
+}
+// boxBlur の縦の 1 行: 列の和に add 行を足し、sub 行を引いて（-1 ならしない）、cnt で割る
+function vsum(tmp, col, row, w, add, sub, cnt) {
+  if (add >= 0 && sub >= 0) for (let x = 0; x < w; x++) { const c = col[x] + tmp[add + x] - tmp[sub + x]; col[x] = c; row[x] = c / cnt; }
+  else if (add >= 0) for (let x = 0; x < w; x++) { const c = col[x] + tmp[add + x]; col[x] = c; row[x] = c / cnt; }
+  else if (sub >= 0) for (let x = 0; x < w; x++) { const c = col[x] - tmp[sub + x]; col[x] = c; row[x] = c / cnt; }
+  else for (let x = 0; x < w; x++) row[x] = col[x] / cnt;
 }
 
 /** ガイデッドフィルターの係数（guide の輪郭に沿ってなめらかにする。出力は ma*guide+mb） */
@@ -95,11 +105,15 @@ export function down2(c, w, h) {
 /** 2 倍の大きさに（双一次補間。画素の中心をそろえる） */
 function up2(c, w2, h2, w, h) {
   const o = new Float32Array(w * h);
+  // 列ごとの読む位置と割合は、どの行でも同じなので先に求める（計算は 1 画素ずつ求めるのとまったく同じ）
+  const X0 = new Int32Array(w); const X1 = new Int32Array(w); const TX = new Float64Array(w);
+  for (let x = 0; x < w; x++) { const fx = Math.min(w2 - 1, Math.max(0, (x + 0.5) / 2 - 0.5)); X0[x] = Math.floor(fx); X1[x] = Math.min(w2 - 1, X0[x] + 1); TX[x] = fx - X0[x]; }
   for (let y = 0; y < h; y++) {
     const fy = Math.min(h2 - 1, Math.max(0, (y + 0.5) / 2 - 0.5)); const y0 = Math.floor(fy); const y1 = Math.min(h2 - 1, y0 + 1); const ty = fy - y0;
+    const r0 = y0 * w2; const r1 = y1 * w2;
     for (let x = 0; x < w; x++) {
-      const fx = Math.min(w2 - 1, Math.max(0, (x + 0.5) / 2 - 0.5)); const x0 = Math.floor(fx); const x1 = Math.min(w2 - 1, x0 + 1); const tx = fx - x0;
-      o[y * w + x] = (c[y0 * w2 + x0] * (1 - tx) + c[y0 * w2 + x1] * tx) * (1 - ty) + (c[y1 * w2 + x0] * (1 - tx) + c[y1 * w2 + x1] * tx) * ty;
+      const x0 = X0[x]; const x1 = X1[x]; const tx = TX[x];
+      o[y * w + x] = (c[r0 + x0] * (1 - tx) + c[r0 + x1] * tx) * (1 - ty) + (c[r1 + x0] * (1 - tx) + c[r1 + x1] * tx) * ty;
     }
   }
   return o;
@@ -180,39 +194,105 @@ const noiseAt = (bins, y) => {
  * @param {Float32Array[]} ch [Y, Cb, Cr]
  * @param {Float32Array} sig 各画素のノイズの量
  */
-function nlm(ch, sig, w, h, { R, r = 2, hh = 1, onProgress = () => {} }) {
-  const n = w * h; const [Y] = ch;
-  const acc = ch.map((c) => Float32Array.from(c)); const wsum = new Float32Array(n).fill(1);
-  const d2 = new Float32Array(n); const box = new Float32Array(n); const tmp = new Float32Array(n);
-  const s2 = new Float32Array(n);
-  for (let i = 0; i < n; i++) s2[i] = Math.max(1e-8, sig[i] * sig[i]);
+// nlm の中心（重みの計算と足し込み）は WebAssembly（nlm.wasm.js。元の C は scripts/nlm/nlm.c）で。JavaScript より 2 割ほど速く、結果は 1 ビットも変わらない
+// （倍精度で計算して 32bit に丸める順番も同じ。exp は V8（Chrome・Edge）の Math.exp と同じ fdlibm の手順）。
+// iPhone・iPad は JavaScript で（呼ぶたびに大きなメモリを確保し直すので、メモリの少ない端末では使わない。Safari の Math.exp は fdlibm と最後の桁が違うことがある）
+const NLM_BASE = 65536 * 2;
+let nlmModule;
+function nlmWasm() {
+  if (nlmModule === undefined) {
+    try { nlmModule = !lowMemory() && typeof WebAssembly === 'object' && WebAssembly.validate(NLM_WASM) ? new WebAssembly.Module(NLM_WASM) : null; } catch { nlmModule = null; }
+  }
+  return nlmModule;
+}
+/** テスト用: WebAssembly を使わない */
+export function useWasm(on) { nlmModule = on ? undefined : null; }
+
+function nlm(ch, sig, w, h, opts) {
+  const mod = nlmWasm();
+  if (!mod) return nlmJS(ch, sig, w, h, opts);
+  const { R, r = 2, hh = 1, onProgress = () => {} } = opts;
+  const n = w * h; const [Y, U, V] = ch;
+  // 置き場所（バイト。16 の倍数に）。WebAssembly 自身が使う所（スタックなど。__heap_base まで）の後ろから
+  const al = (v) => (v + 15) & ~15;
+  const oY = NLM_BASE; const oSrc = al(oY + 4 * n); const oAcc = al(oSrc + 16 * n); const oTmp = al(oAcc + 16 * n);
+  const oD2 = al(oTmp + 4 * n); const oCol = al(oD2 + 4 * w); const oBox = al(oCol + 8 * w); const end = al(oBox + 4 * w);
+  const memory = new WebAssembly.Memory({ initial: Math.ceil(end / 65536) });
+  const { nlm_offset: run, __heap_base: heapBase } = new WebAssembly.Instance(mod, { env: { memory } }).exports;
+  if (!(heapBase.value <= NLM_BASE)) throw new Error('nlm.wasm: __heap_base');
+  const buf = memory.buffer;
+  new Float32Array(buf, oY, n).set(Y);
+  const src = new Float32Array(buf, oSrc, 4 * n); const acc = new Float32Array(buf, oAcc, 4 * n);
+  for (let i = 0; i < n; i++) { acc[4 * i] = src[4 * i] = Y[i]; acc[4 * i + 1] = src[4 * i + 1] = U[i]; acc[4 * i + 2] = src[4 * i + 2] = V[i]; acc[4 * i + 3] = 1; src[4 * i + 3] = Math.max(1e-8, sig[i] * sig[i]); }
   const total = (R + 1) * (2 * R + 1) - R - 1; let done = 0;
+  for (let dy = 0; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      if (dy === 0 && dx <= 0) continue;
+      run(w, h, r, hh * hh, dx, dy, oY, oSrc, oAcc, oTmp, oD2, oCol, oBox);
+      done++;
+    }
+    onProgress(done / total);
+  }
+  const out = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) { const ws = acc[4 * i + 3]; out[0][i] = acc[4 * i] / ws; out[1][i] = acc[4 * i + 1] / ws; out[2][i] = acc[4 * i + 2] / ws; }
+  return out;
+}
+
+function nlmJS(ch, sig, w, h, { R, r = 2, hh = 1, onProgress = () => {} }) {
+  const n = w * h; const [Y, U, V] = ch;
+  // 足し込む先（輝度・色差 2 つ・重みの和）と、読む元（輝度・色差 2 つ）を、画素ごとに並べて持つ（メモリを読む場所が近くなって速い。値は同じ）
+  const acc = new Float32Array(n * 4); const src = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) { acc[4 * i] = src[4 * i] = Y[i]; acc[4 * i + 1] = src[4 * i + 1] = U[i]; acc[4 * i + 2] = src[4 * i + 2] = V[i]; acc[4 * i + 3] = 1; src[4 * i + 3] = Math.max(1e-8, sig[i] * sig[i]); }
+  // 差の 2 乗の平均（boxBlur と同じ計算・同じ順番）。横は 1 行ずつ、縦は行ごとに求めて、すぐ重みに使う（大きな配列を何度も読み書きしない）
+  const d2 = new Float32Array(w); const tmp = new Float32Array(n); const col = new Float64Array(w); const box = new Float32Array(w);
+  const total = (R + 1) * (2 * R + 1) - R - 1; let done = 0;
+  const hr = Math.min(r, w - 1); const k = 2 * r + 1; const h2 = hh * hh;
   for (let dy = 0; dy <= R; dy++) {
     for (let dx = -R; dx <= R; dx++) {
       if (dy === 0 && dx <= 0) continue;
       for (let y = 0; y < h; y++) {
         const qy = Math.min(h - 1, y + dy); const o = y * w; const oq = qy * w;
-        for (let x = 0; x < w; x++) { const qx = x + dx < 0 ? 0 : x + dx >= w ? w - 1 : x + dx; const d = Y[o + x] - Y[oq + qx]; d2[o + x] = d * d; }
+        for (let x = 0; x < w; x++) { const qx = x + dx < 0 ? 0 : x + dx >= w ? w - 1 : x + dx; const d = Y[o + x] - Y[oq + qx]; d2[x] = d * d; }
+        hsum(d2, tmp, o, w, r, hr, k);
       }
-      boxBlur(d2, w, h, r, box, tmp);
+      col.fill(0);
+      for (let y = 0; y <= Math.min(r, h - 1); y++) for (let x = 0; x < w; x++) col[x] += tmp[y * w + x];
       const x0 = Math.max(0, -dx); const x1 = Math.min(w, w - dx);
       for (let y = 0; y < h - dy; y++) {
+        const y1 = y + r; const y0 = y - r - 1; const cnt = Math.min(h - 1, y + r) - Math.max(0, y - r) + 1;
+        vsum(tmp, col, box, w, y > 0 && y1 < h ? y1 * w : -1, y > 0 && y0 >= 0 ? y0 * w : -1, cnt);
         const o = y * w; const oq = (y + dy) * w + dx;
         for (let x = x0; x < x1; x++) {
-          const p = o + x; const q = oq + x;
+          const p = 4 * (o + x); const q = 4 * (oq + x);
           // 同じ模様なら、差の 2 乗の平均はノイズの量の 2 倍くらいになる。それを超えた分だけ似ていないとみなす
-          const D = (box[p] / (0.5 * (s2[p] + s2[q])) - 2) / (hh * hh);
+          const D = (box[x] / (0.5 * (src[p + 3] + src[q + 3])) - 2) / h2;
           if (D >= 6) continue;
           const wt = Math.exp(-(D > 0 ? D : 0));
-          wsum[p] += wt; wsum[q] += wt;
-          for (let c = 0; c < 3; c++) { const a = acc[c]; const s = ch[c]; a[p] += wt * s[q]; a[q] += wt * s[p]; }
+          acc[p + 3] += wt; acc[q + 3] += wt;
+          acc[p] += wt * src[q]; acc[q] += wt * src[p];
+          acc[p + 1] += wt * src[q + 1]; acc[q + 1] += wt * src[p + 1];
+          acc[p + 2] += wt * src[q + 2]; acc[q + 2] += wt * src[p + 2];
         }
       }
       done++;
     }
     onProgress(done / total);
   }
-  return acc.map((a) => { for (let i = 0; i < n; i++) a[i] /= wsum[i]; return a; });
+  const out = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) { const ws = acc[4 * i + 3]; out[0][i] = acc[4 * i] / ws; out[1][i] = acc[4 * i + 1] / ws; out[2][i] = acc[4 * i + 2] / ws; }
+  return out;
+}
+
+// 8 個を小さい順に（19 回の比べて入れ替え）
+const NET8 = [0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7, 0, 1, 2, 3, 4, 5, 6, 7, 2, 4, 3, 5, 1, 4, 3, 6, 1, 2, 3, 4, 5, 6];
+function sort8(s) {
+  for (let k = 0; k < NET8.length; k += 2) { const a = s[NET8[k]]; const b = s[NET8[k + 1]]; if (b < a) { s[NET8[k]] = b; s[NET8[k + 1]] = a; } }
+}
+// まわり 8 画素のどれよりも t 以上はずれているか
+function outside(img, i, iw, t) {
+  const a = img[i - iw - 1]; const b = img[i - iw]; const c = img[i - iw + 1]; const d = img[i - 1]; const e = img[i + 1]; const f = img[i + iw - 1]; const g = img[i + iw]; const k = img[i + iw + 1];
+  const mx = Math.max(a, b, c, d, e, f, g, k); const mn = Math.min(a, b, c, d, e, f, g, k); const v = img[i];
+  return v > mx + t || v < mn - t;
 }
 
 /**
@@ -226,18 +306,20 @@ function removeSpeckles(ch, w, h, profile) {
   const [Y, Cb, Cr] = ch; const nb = new Float32Array(8);
   // 輝度だけでなく色差も調べる（赤や青の 1 点は、明るさの差は小さくても、色ムラ除去でにじんで灰色の点になる）
   const find = (chs, iw, ih, bins) => {
-    const hits = [];
+    const hits = []; const [A, B, C] = chs; const s = new Float64Array(8);
     for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) {
-      const i = y * iw + x; let med = 0; let hit = false;
-      for (let c = 0; c < 3; c++) {
-        const img = chs[c]; let k = 0;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) nb[k++] = img[i + dy * iw + dx];
-        nb.sort();
-        if (c === 0) med = (nb[3] + nb[4]) / 2;
-        const t = (c === 0 ? 3 : 4) * noiseAt(bins, c === 0 ? nb[4] : chs[0][i]); const v = img[i];
-        // ノイズよりずっと明るい点は、光の点（ティアラ・目の光）なので残す
-        if (c === 0 && v - med > SPOT_MAX * t / 3) { hit = false; break; }
-        if (v > nb[7] + t || v < nb[0] - t) hit = true;
+      const i = y * iw + x;
+      // 輝度: まわり 8 画素を並べて（並べ替えの網。Float32Array の sort と同じ並びになる）、中央の 2 つと最小・最大
+      s[0] = A[i - iw - 1]; s[1] = A[i - iw]; s[2] = A[i - iw + 1]; s[3] = A[i - 1]; s[4] = A[i + 1]; s[5] = A[i + iw - 1]; s[6] = A[i + iw]; s[7] = A[i + iw + 1];
+      sort8(s);
+      const med = (s[3] + s[4]) / 2;
+      let t = 3 * noiseAt(bins, s[4]); const v = A[i];
+      // ノイズよりずっと明るい点は、光の点（ティアラ・目の光）なので残す
+      if (v - med > SPOT_MAX * t / 3) continue;
+      let hit = v > s[7] + t || v < s[0] - t;
+      if (!hit) {
+        t = 4 * noiseAt(bins, v);
+        hit = outside(B, i, iw, t) || outside(C, i, iw, t);
       }
       if (hit) hits.push(x, y, med);
     }
@@ -380,11 +462,28 @@ function smoothMask({ m, w, h }) {
 }
 /** 縦横 (2r+1) の範囲の、いちばん大きい（小さい）値 */
 function rank(src, w, h, r, pick) {
+  const f = pick === Math.max ? rowMax : pick === Math.min ? rowMin : null;
   const tmp = new Float32Array(w * h); const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = src[y * w + x]; for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) v = pick(v, src[y * w + k]); tmp[y * w + x] = v; }
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = tmp[y * w + x]; for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) v = pick(v, tmp[k * w + x]); out[y * w + x] = v; }
+  if (!f) {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = src[y * w + x]; for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) v = pick(v, src[y * w + k]); tmp[y * w + x] = v; }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = tmp[y * w + x]; for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) v = pick(v, tmp[k * w + x]); out[y * w + x] = v; }
+    return out;
+  }
+  // 横は 1 行ずつ、縦は行どうしで（最大・最小は、比べる順番によらず同じ値になる）
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) tmp[y * w + x] = f(src, y * w, Math.max(0, x - r), Math.min(w - 1, x + r), 1);
+  const ext = pick === Math.max;
+  for (let y = 0; y < h; y++) {
+    const o = y * w; out.set(tmp.subarray(o, o + w), o);
+    for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) {
+      const q = k * w;
+      if (ext) for (let x = 0; x < w; x++) out[o + x] = Math.max(out[o + x], tmp[q + x]);
+      else for (let x = 0; x < w; x++) out[o + x] = Math.min(out[o + x], tmp[q + x]);
+    }
+  }
   return out;
 }
+function rowMax(a, o, k0, k1) { let v = a[o + k0]; for (let k = k0 + 1; k <= k1; k++) v = Math.max(v, a[o + k]); return v; }
+function rowMin(a, o, k0, k1) { let v = a[o + k0]; for (let k = k0 + 1; k <= k1; k++) v = Math.min(v, a[o + k]); return v; }
 
 /**
  * 照明の色を直す倍率（R・G・B）。白飛びしていない明るい所（上位 5%。白い衣装など）を白とみなして照明の色を測る。

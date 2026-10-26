@@ -50,9 +50,10 @@ async function iccFor(space) {
  *   暗所補正があるときの粒の強さは、grain ではなく、暗所補正で測ったノイズの量で決まる（grainFor）
  * @param {{list:object[],editW:number,amount:number}|null} [a.faces] 顔 AI（編集中に求めた顔ごとの結果。暗所補正・ブレ補正の後に、元の大きさの写真に当て直す）
  * @param {HTMLCanvasElement|ImageBitmap} [a.lowlightFrom] 暗所補正の明るさの曲線を決める、補正する前の編集用の写真（work が補正済みのとき）
+ * @param {Promise<object|null>|null} [a.lowlightPre] precomputeLowlight の結果（同じ写真・同じ暗所補正の設定で先に計算したもの）。あれば暗所補正を計算し直さない
  * @param {(t:number)=>void} [a.onProgress] 0〜1
  */
-export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, deblur = null, faces = null, lowlightFrom = work, onProgress: report = () => {} }) {
+export async function exportFull({ full, work, state, mask, format, quality = 0.92, space = COLOR_SPACE, maxSide = 0, lowlight = null, deblur = null, faces = null, lowlightFrom = work, lowlightPre = null, onProgress: report = () => {} }) {
   const glc = canvas(1, 1); const eng = new Engine(glc);
   try {
     // 写真が GPU で扱える大きさを超えるときは、そこまで縮める
@@ -70,7 +71,10 @@ export async function exportFull({ full, work, state, mask, format, quality = 0.
     eng.allocSource(FW, FH);
     const scaled = src !== full ? src : null;
     if (lowlight) {
-      await lowlightFull(eng, src, lowlightFrom, FW, FH, lowlight, deblur, (t) => report(0.02 + 0.48 * t));
+      // 編集画面で先に計算しておいたもの（precomputeLowlight）があれば、それを使う（同じ計算なので結果も同じ）
+      const pre = lowlightPre && src === full ? await lowlightPre.catch(() => null) : null;
+      if (pre && pre.FW === FW && pre.FH === FH) await lowlightCached(eng, pre, FW, FH, deblur, (t) => report(0.02 + 0.48 * t));
+      else await lowlightFull(eng, src, lowlightFrom, FW, FH, lowlight, deblur, (t) => report(0.02 + 0.48 * t));
       src = { width: FW, height: FH, region: (x, y, w, h) => eng.readSource(x, y, w, h) }; // 美肌・修復は、補正したものに当てる
     } else if (deblur) {
       const read = bandReader(src, FW);
@@ -175,6 +179,32 @@ async function lowlightFull(eng, src, work, FW, FH, options, deblur, onProgress)
     onProgress, onGrain: (grain) => { if (deblur) after = { ...deblur, grain }; },
     onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, after ? finishBand(data, rows, { y0: y, fullW: FW, fullH: FH }, after) : data),
   });
+}
+
+/**
+ * 書き出しの暗所補正を、先に計算しておく（編集画面で補正が済んだあと、パソコンで。書き出しを待つ時間が短くなる）。
+ * lowlightFull と同じ計算（同じ元の写真・同じ明るさの曲線）なので、書き出しの結果は 1 ビットも変わらない
+ * @param {{full:CanvasImageSource, work:CanvasImageSource, options:object, deblur:boolean, signal?:AbortSignal}} a
+ *   full: 元の大きさの写真、work: 編集用の大きさの写真（明るさの曲線を決める。書き出しの lowlightFrom と同じもの）
+ * @returns {Promise<{FW:number, FH:number, data:Uint8ClampedArray, grain:number}>} data: 補正した RGBA（ブレ補正の差分・粒を足す前）
+ */
+export async function precomputeLowlight({ full, work, options, deblur, signal }) {
+  const FW = full.width; const FH = full.height; const data = new Uint8ClampedArray(FW * FH * 4); let grain = 0;
+  await enhancePhoto({ width: FW, height: FH, read: bandReader(full, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur, fine: !deblur }, {
+    signal, onGrain: (g) => { grain = g; }, onBand: (y, rows, d) => data.set(d, y * FW * 4),
+  });
+  return { FW, FH, data, grain };
+}
+
+/** 先に計算しておいた暗所補正を GPU に送る（ブレ補正があるときは、差分と粒をここで足す。lowlightFull と同じ） */
+async function lowlightCached(eng, pre, FW, FH, deblur, onProgress) {
+  const after = deblur ? { ...deblur, grain: pre.grain } : null;
+  const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
+  for (let y = 0; y < FH; y += band) {
+    const rows = Math.min(band, FH - y); const d = pre.data.slice(y * FW * 4, (y + rows) * FW * 4);
+    eng.putSourcePixels(0, y, FW, rows, after ? finishBand(d, rows, { y0: y, fullW: FW, fullH: FH }, after) : d);
+    onProgress((y + rows) / FH); await later();
+  }
 }
 
 /** 元の写真から、横幅いっぱいの rows 行分の RGBA を読む関数（新しい配列を返す） */
