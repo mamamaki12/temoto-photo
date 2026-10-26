@@ -338,7 +338,7 @@ function gaussKernel(s) {
 }
 /** 縦横に分けたガウスぼかし（端は折り返す）。out は src と同じでもよい */
 function gaussBlur(src, w, h, k, out, tmp) {
-  const r = k.length - 1;
+  const r = k.length - 1; const row = new Float32Array(w);
   const ref = (v, m) => { if (v < 0) v = -v - 1; if (v >= m) v = 2 * m - v - 1; return Math.max(0, Math.min(m - 1, v)); };
   for (let y = 0; y < h; y++) {
     const o = y * w;
@@ -352,8 +352,10 @@ function gaussBlur(src, w, h, k, out, tmp) {
   for (let y = 0; y < h; y++) {
     const o = y * w;
     if (y >= r && y < h - r) {
-      for (let x = 0; x < w; x++) out[o + x] = tmp[o + x] * k[0];
-      for (let j = 1; j <= r; j++) { const a = o - j * w; const b = o + j * w; const kj = k[j]; for (let x = 0; x < w; x++) out[o + x] += (tmp[a + x] + tmp[b + x]) * kj; }
+      // 1 行分の小さな配列に足し込んでから書く（足すたびに 32bit に丸めるのは out と同じなので、結果は変わらない）
+      for (let x = 0; x < w; x++) row[x] = tmp[o + x] * k[0];
+      for (let j = 1; j <= r; j++) { const a = o - j * w; const b = o + j * w; const kj = k[j]; for (let x = 0; x < w; x++) row[x] += (tmp[a + x] + tmp[b + x]) * kj; }
+      out.set(row, o);
     } else {
       for (let x = 0; x < w; x++) {
         let s = tmp[o + x] * k[0];
@@ -364,14 +366,26 @@ function gaussBlur(src, w, h, k, out, tmp) {
   }
   return out;
 }
-/** まわり（(2r+1)×(2r+1)）の最小・最大 */
+/** まわり（(2r+1)×(2r+1)）の最小・最大（最大・最小は、比べる順番によらず同じ値になる） */
 function minMax(src, w, h, r, pick) {
-  const t = new Float32Array(w * h); const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    let v = src[y * w + x]; for (let j = Math.max(0, x - r); j <= Math.min(w - 1, x + r); j++) v = pick(v, src[y * w + j]); t[y * w + x] = v;
+  const t = new Float32Array(w * h); const out = new Float32Array(w * h); const max = pick === Math.max;
+  if (!max && pick !== Math.min) throw new Error('minMax: Math.max か Math.min');
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    for (let x = 0; x < w; x++) {
+      const j1 = Math.min(w - 1, x + r); let v = src[o + x];
+      if (max) for (let j = Math.max(0, x - r); j <= j1; j++) v = Math.max(v, src[o + j]);
+      else for (let j = Math.max(0, x - r); j <= j1; j++) v = Math.min(v, src[o + j]);
+      t[o + x] = v;
+    }
   }
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    let v = t[y * w + x]; for (let j = Math.max(0, y - r); j <= Math.min(h - 1, y + r); j++) v = pick(v, t[j * w + x]); out[y * w + x] = v;
+  for (let y = 0; y < h; y++) {
+    const o = y * w; out.set(t.subarray(o, o + w), o);
+    for (let j = Math.max(0, y - r); j <= Math.min(h - 1, y + r); j++) {
+      const q = j * w;
+      if (max) for (let x = 0; x < w; x++) out[o + x] = Math.max(out[o + x], t[q + x]);
+      else for (let x = 0; x < w; x++) out[o + x] = Math.min(out[o + x], t[q + x]);
+    }
   }
   return out;
 }

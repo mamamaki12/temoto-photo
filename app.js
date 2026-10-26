@@ -17,7 +17,8 @@ import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
 import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 import { ctx2d, imageData, COLOR_SPACE } from './color.js';
-import { exportFull } from './fullres.js';
+import { exportFull, precomputeLowlight } from './fullres.js';
+import { lowMemory } from './cores.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
 import { applyFaceAI, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople } from './face-photo.js';
@@ -27,7 +28,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.27.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.27.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -442,7 +443,7 @@ function closeEditor() {
   if (!E) return;
   flushSave();
   cancelAnimationFrame(E.raf);
-  E.hq?.ctrl?.abort(); clearTimeout(hqTimer);
+  E.hq?.ctrl?.abort(); clearTimeout(hqTimer); E.pre?.ctrl.abort();
   E.engine?.dispose(); E.thumbEngine?.dispose();
   E.base?.close?.();
   document.removeEventListener('pointerdown', E.closeMenu); E.offPointer?.();
@@ -578,6 +579,7 @@ async function runLowlight() {
   E.hq?.ctrl?.abort();
   if (!key) { E.hq = null; E.hqLast = null; hqBar(null); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
   const e0 = E; const ctrl = new AbortController();
+  if (E.pre && E.pre.key !== preKey(E.state)) { E.pre.ctrl.abort(); E.pre = null; }
   E.hq = { key, canvas: null, ctrl };
   E.hqCache ||= {};
   hqBar(0);
@@ -588,11 +590,35 @@ async function runLowlight() {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas, res, faces, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender();
+    startPrecompute();
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null);
     if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
   }
+}
+/** 書き出しの暗所補正の先読みの鍵（暗所補正を使わないときは null）。書き出しの補正の結果を決める値だけ */
+const preKey = (st) => (lowlightActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, deblurActive(st.adj)]) : null);
+/**
+ * 書き出しの暗所補正（元の大きさの写真）を、編集画面で補正が済んだあとに先に計算しておく（fullres.js の precomputeLowlight）。
+ * 編集用に縮めている大きな写真（1,670万画素より大きい）は、書き出しで元の写真から補正し直すので、その分だけ書き出しを待つ時間が短くなる。
+ * 結果は書き出しで計算するのと同じ。メモリを使うので、パソコン・Android だけ（iPhone・iPad はしない）。RAW は書き出しで現像し直すのでしない
+ */
+function startPrecompute() {
+  const key = preKey(E.state);
+  if (!key || E.pre?.key === key || lowMemory() || E.rawLin || !(E.proj.w > E.W || E.proj.h > E.H)) return;
+  E.pre?.ctrl.abort();
+  const e0 = E; const ctrl = new AbortController(); const adj = { ...E.state.adj };
+  const promise = (async () => {
+    const full = await loadFull(e0.proj, await db.getBlob(e0.id), e0.state, null);
+    try {
+      if (ctrl.signal.aborted) throw new DOMException('中止', 'AbortError');
+      if (Math.max(full.width, full.height) > e0.engine.maxSize) return null; // 書き出しで縮めるときは使わない
+      return await precomputeLowlight({ full, work: e0.base, options: lowlightOptions(adj), deblur: deblurActive(adj), signal: ctrl.signal });
+    } finally { full.close?.(); }
+  })();
+  promise.catch((err) => { if (err.name !== 'AbortError') console.warn('書き出しの先読み', err); if (e0.pre?.promise === promise) e0.pre = null; });
+  E.pre = { key, ctrl, promise };
 }
 /** 写真の上の進捗バー（t: 0〜1、null で隠す） */
 function hqBar(t) {
@@ -2007,7 +2033,7 @@ async function renderToBlob(src, { format, quality, maxSide, space = COLOR_SPACE
     // 修復で自動で選んだコピー元は、編集用の大きさで決めておく（プレビューと同じ場所になる）
     if (st.retouch.some((o) => o.type === 'heal' && o.sx == null)) retouchCanvas(work, st.retouch, null);
     try {
-      return await exportFull({ full: src.full, work, lowlightFrom: src.base, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
+      return await exportFull({ full: src.full, work, lowlightFrom: src.base, lowlightPre: src.lowlightPre || null, state: st, mask: buildMask(st, src.full.width, src.full.height), format, quality, space, maxSide, lowlight: ll,
         deblur: db ? { res, amount: deblurAmount(st0.adj), grain: 0 } : null, // 暗所補正があるときの粒は、書き出しで測ったノイズの量で決まる
         faces: fa && faces?.length ? { list: faces, editW: src.W, amount: faceaiAmount(st0) } : null,
         onProgress: onProgress && ((t) => onProgress(pre + (1 - pre) * t)) });
@@ -2078,7 +2104,8 @@ function openExport({ batch }) {
     }
     const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
     let r;
-    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), origW: E.proj.w || E.W, origH: E.proj.h || E.H }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
+    const lowlightPre = E.pre && E.pre.key === preKey(st) ? E.pre.promise : null;
+    try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     exportProgress.value = 100;
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
