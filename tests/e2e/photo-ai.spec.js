@@ -36,8 +36,7 @@ test('美肌: AI で人物の肌だけを見分け、背景・髪・服は変え
 test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つけた唇だけに色がのる（なぞった線は目印）。変えられるのは色と濃さだけ（ブラシの大きさは決まった値）', async ({ page }) => {
   await open(page);
   const skin0 = await srcPixel(page, 0.513, 0.62); // 唇の下の肌（ブラシの中）
-  await openTool(page, '顔');
-  await page.getByRole('button', { name: 'リップ', exact: true }).click();
+  await openTool(page, 'リップ');
   await page.getByRole('button', { name: /レッド/ }).click();
   await expect(page.getByLabel('濃さ', { exact: true })).toBeVisible();
   for (const label of ['ブラシの大きさ', '強さ', '色合い', '色の濃さ', '色の明るさ']) await expect(page.getByLabel(label, { exact: true })).toHaveCount(0);
@@ -60,8 +59,7 @@ test('リップ: 口のまわりを大ざっぱになぞっても、AI で見つ
 
 test('リップ: 唇をタップする・丸で囲むと、AI で見つけた唇の全体（上唇も下唇も）に色がのる', async ({ page }) => {
   await open(page);
-  await openTool(page, '顔');
-  await page.getByRole('button', { name: 'リップ', exact: true }).click();
+  await openTool(page, 'リップ');
   await page.getByRole('button', { name: /レッド/ }).click();
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
@@ -96,8 +94,7 @@ test('リップ: 唇をタップする・丸で囲むと、AI で見つけた唇
 
 test('歯: 口をタップすると AI で口を見つけて範囲を自動で決める。口を閉じた写真では、唇・肌を白くしない', async ({ page }) => {
   await open(page);
-  await openTool(page, '顔');
-  await page.getByRole('button', { name: '歯', exact: true }).click();
+  await openTool(page, '歯');
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
   const at = (x, y) => [view.x + view.width * (L.ix + L.iw * x), view.y + view.height * (L.iy + L.ih * y)];
@@ -113,8 +110,7 @@ test('歯: 口をタップすると AI で口を見つけて範囲を自動で�
 
 test('リップ: 2本指での拡大・移動はリップの範囲にしない（2本目の指が写真の外・下のパネルの上でも）。1本指ではなぞれる', async ({ page }) => {
   await open(page);
-  await openTool(page, '顔');
-  await page.getByRole('button', { name: 'リップ', exact: true }).click();
+  await openTool(page, 'リップ');
   const v = await page.locator('canvas.view').boundingBox();
   const cx = v.x + v.width / 2; const cy = v.y + v.height / 2;
   const cdp = await page.context().newCDPSession(page);
@@ -152,8 +148,7 @@ test('リップ: 2本指での拡大・移動はリップの範囲にしない�
 
 test('目線: 顔をタップすると AI で両目を見つけて黒目をカメラの方へ動かす。矢印で微調整でき、まぶたの外は変わらない', async ({ page }) => {
   await open(page);
-  await openTool(page, '顔');
-  await page.getByRole('button', { name: '目線', exact: true }).click();
+  await openTool(page, '目線');
   await expect(page.getByLabel('カメラへ寄せる量', { exact: true })).toBeVisible();
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
@@ -206,8 +201,7 @@ test('鼻筋: 鼻をタップすると、AI で見つけた顔の点から、鼻
   // この写真の鼻: 鼻先 (0.51, 0.48)、頬 (0.42, 0.5)、髪 (0.3, 0.3)。鼻筋・横の面の位置は、見つけた顔の点から決める
   const cheek0 = await srcPixel(page, 0.42, 0.5); const hair0 = await srcPixel(page, 0.3, 0.3);
   const org = await page.evaluate(() => { const E = window.__temoto.editor; const cv = document.createElement('canvas'); cv.width = E.W; cv.height = E.H; cv.getContext('2d').drawImage(E.base, 0, 0); return [...cv.getContext('2d').getImageData(0, 0, E.W, E.H).data]; });
-  await openTool(page, '顔');
-  await page.getByRole('button', { name: '鼻筋', exact: true }).click();
+  await openTool(page, '鼻筋');
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
   await page.mouse.click(view.x + view.width * (L.ix + L.iw * 0.51), view.y + view.height * (L.iy + L.ih * 0.47));
@@ -223,5 +217,13 @@ test('鼻筋: 鼻をタップすると、AI で見つけた顔の点から、鼻
   expect(lum(await srcPixel(page, ...side))).toBeLessThan(lum(before(side)) - 3); // 横の面は暗く
   const cheek1 = await srcPixel(page, 0.42, 0.5); const hair1 = await srcPixel(page, 0.3, 0.3);
   for (let c = 0; c < 3; c++) { expect(Math.abs(cheek1[c] - cheek0[c])).toBeLessThan(3); expect(Math.abs(hair1[c] - hair0[c])).toBeLessThan(3); } // 頬・髪は変わらない
-  await expect(page.getByText(/なぞった回数: 1/)).toBeVisible();
+  await expect(page.getByText(/当てた回数: 1/)).toBeVisible();
+  // 強さを上げると、当てた鼻筋にもその場で効く
+  const b1 = lum(await srcPixel(page, ...bridge));
+  await page.getByLabel('強さ', { exact: true }).evaluate((el) => { el.value = 100; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForFunction(() => window.__temoto.state.retouch[0]?.amt === 1);
+  await expect.poll(async () => lum(await srcPixel(page, ...bridge))).toBeGreaterThan(b1 + 1);
+  // ✕ で、この項目を開いてから当てたものを取り消す
+  await page.getByRole('button', { name: 'キャンセル' }).click();
+  expect(await page.evaluate(() => window.__temoto.state.retouch.length)).toBe(0);
 });
