@@ -435,20 +435,33 @@ const logLum = (r, g, b) => Math.log(0.2126 * toLinear(r) + 0.7152 * toLinear(g)
  *   人物（肌・衣装・髪）と背景で、照明の色の直し方を変える。ないときは、その間
  */
 export function planTone(small, light, { person = null, sat = SAT_EXP, target = TARGET, wbPerson = WB_PERSON, wbBack = WB_BACK } = {}) {
+  const { w, h, a, b, mean, p999, hiY, wb, wbP, pm } = toneBase(small, person, wbPerson, wbBack);
+  // 自動の倍率: ベースの平均の明るさが TARGET くらい（明るい場所で撮った写真の肌に近い明るさ）になるように。12 倍まで
+  const auto = Math.min(12, Math.max(1, target / Math.exp(mean)));
+  const gain = Math.min(16, Math.exp(Math.log(auto) * light / 50) * (1 + light / 400));
+  // 白い所が飛ばないよう、明るい側を押さえる（いちばん明るい 0.1% の明るさが、白より少し手前に来るように。白い衣装のレースの模様を残す）
+  const white = Math.max(0.25, gain * p999 * 1.1);
+  return { w, h, a, b, gain, white, hiY, wb, wbP, sat, person: pm };
+}
+/**
+ * 明るさの曲線のうち、明るさ補正の値によらない部分（ベースの係数・明るい所・照明の色・人物の地図）。
+ * スライダーを動かすたびに作り直さないよう、同じ絵・同じ人物の地図なら前の結果を使う（中身はまったく同じ）
+ */
+let lastBase = null;
+function toneBase(small, person, wbPerson, wbBack) {
+  const c = lastBase;
+  if (c && c.data === small.data && c.person === person && c.wbPerson === wbPerson && c.wbBack === wbBack) return c.v;
   const { width: w, height: h, data } = small; const n = w * h;
   const logL = new Float32Array(n);
   for (let i = 0; i < n; i++) logL[i] = logLum(data[i * 4] / 255, data[i * 4 + 1] / 255, data[i * 4 + 2] / 255);
   const r = Math.max(2, Math.round(Math.min(w, h) / 40));
   const { a, b } = guidedCoef(logL, logL, w, h, r, 0.05 ** 2 * 4);
   let mean = 0; for (let i = 0; i < n; i++) mean += a[i] * logL[i] + b[i]; mean /= n;
-  // 自動の倍率: ベースの平均の明るさが TARGET くらい（明るい場所で撮った写真の肌に近い明るさ）になるように。12 倍まで
-  const auto = Math.min(12, Math.max(1, target / Math.exp(mean)));
-  const gain = Math.min(16, Math.exp(Math.log(auto) * light / 50) * (1 + light / 400));
-  // 白い所が飛ばないよう、明るい側を押さえる（いちばん明るい 0.1% の明るさが、白より少し手前に来るように。白い衣装のレースの模様を残す）
   const L = new Float32Array(n); for (let i = 0; i < n; i++) L[i] = Math.exp(logL[i]);
   L.sort(); const p999 = L[Math.floor(n * 0.999)];
-  const white = Math.max(0.25, gain * p999 * 1.1);
-  return { w, h, a, b, gain, white, hiY: toSrgb(0.55 * p999), wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), sat, person: person && smoothMask(person) };
+  const v = { w, h, a, b, mean, p999, hiY: toSrgb(0.55 * p999), wb: whiteBalance(data, n, wbBack), wbP: whiteBalance(data, n, wbPerson), pm: person && smoothMask(person) };
+  lastBase = { data: small.data, person, wbPerson, wbBack, v };
+  return v;
 }
 
 /**
@@ -496,7 +509,7 @@ const WB_PERSON = { tint: 0.3, temp: 0.3 };
 const WB_BACK = { tint: 1, temp: 0 };
 const SAT_EXP = 1; // 明るくした倍率 k に対して、色の濃さ（明るさとの差）を k^SAT_EXP 倍にする（1 で元の色のまま明るく）
 const TARGET = 0.12; // 自動の明るさの狙い（ベースの平均、リニア）。0.16 では顔が同じ舞台を明るく撮った写真（IMG_9228）より 3 割明るく、光の頬が飛んで平らに見えた
-const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる（2 - KNEE で白に届く）
+export const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる（2 - KNEE で白に届く）
 function whiteBalance(data, n, amount) {
   const lum = new Float32Array(n); const lin = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -586,17 +599,34 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
  *   頬に筋やゆがみを作る（IMG_9242・9345）。また、ブレ補正を効かせる所（まわりのばらつきが大きい所）が平らな肌にまで広がる
  * @returns {Uint8ClampedArray} top〜bottom の行の RGBA
  */
-export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: keepFine = true }, onProgress = () => {}) {
+export function enhanceBand(band, at, options, onProgress = () => {}) {
+  return finishBand(denoiseBand(band, at, options, onProgress), at, options, onProgress);
+}
+
+/**
+ * 帯のノイズ除去の重い部分（明るさの曲線によらない）。明るさ補正だけを変えたときは、この結果を取っておいて finishBand だけをやり直す
+ * @returns {{w:number,h:number,Y:Float32Array,Y0:Float32Array|null,Cb:Float32Array,Cr:Float32Array}} Y0: ノイズ除去の前（ノイズ除去しないときは null）
+ */
+export function denoiseBand(band, at, { nr, profile }, onProgress = () => {}) {
   const { width: w, height: h, data } = band;
   let [Y, Cb, Cr] = toYCC(data, w, h);
+  let Y0 = null;
   if (nr > 0 && profile) {
     removeSpeckles([Y, Cb, Cr], w, h, profile);
-    const Y0 = Float32Array.from(Y);
+    Y0 = Float32Array.from(Y);
     [Y, Cb, Cr] = denoise([Y, Cb, Cr], w, h, { profile, nr, onProgress: (t) => onProgress(t * 0.9) });
     removeSpots(Y, Y0, w, h, profile, nr);
     smoothSteps(Y, w, h, profile[0], nr);
     for (let k = 0; k < EDGE_PASSES; k++) smoothAlongEdges(Y, w, h, profile[0]);
     [Cb, Cr] = cleanChroma(Y, Cb, Cr, w, h, { nr, radius: chromaRadius(at.fullW, at.fullH) });
+  }
+  return { w, h, Y, Y0, Cb, Cr };
+}
+
+/** denoiseBand の続き（明るさの曲線で変わる部分）: 細かい粒を戻す・輪郭をくっきり・明るさの曲線・粒。d の Y は書き換える */
+export function finishBand(d, at, { nr, profile, tone, grain = true, fine: keepFine = true }, onProgress = () => {}) {
+  const { w, h, Y0, Cb, Cr } = d; const Y = d.Y;
+  if (Y0) {
     // 明るさのざらつきは少しだけ戻す（全部取ると肌・指・レースがろう細工のようになる。色のムラは戻さない）
     // 取った成分の強さが、ノイズの量よりはっきり大きい所を「模様」とみなす
     const res = new Float32Array(Y.length); for (let i = 0; i < Y.length; i++) { const d = Y0[i] - Y[i]; res[i] = d * d; }
@@ -625,6 +655,36 @@ export function enhanceBand(band, at, { nr, profile, tone, grain = true, fine: k
   const out = applyTone(Y.subarray(o, o + rows * w), Cb.subarray(o, o + rows * w), Cr.subarray(o, o + rows * w), w, rows, tone, { y0: at.y0 + at.top, fullW: at.fullW, fullH: at.fullH, grain: grain ? grainFor(nr, profile, tone) : 0 });
   onProgress(1);
   return out;
+}
+
+/** finishBand を何行先まで見るか（帯の余分な行をこれだけ残せば、取っておいた結果から仕上げても 1 ビットも変わらない。実際に要るのは 17 行） */
+export const FINISH_MARGIN = 24;
+/** denoiseBand の結果を、取っておく分（余分な行は FINISH_MARGIN 行まで）だけ写す。at は写した帯での位置になる */
+export function keepBand(d, at) {
+  const t0 = Math.max(0, at.top - FINISH_MARGIN); const t1 = Math.min(d.h, at.bottom + FINISH_MARGIN); const w = d.w;
+  const cut = (a) => a.slice(t0 * w, t1 * w);
+  return { w, h: t1 - t0, Y: cut(d.Y), Y0: cut(d.Y0), Cb: cut(d.Cb), Cr: cut(d.Cr), at: { ...at, top: at.top - t0, bottom: at.bottom - t0, y0: at.y0 + t0 } };
+}
+/**
+ * 明るさの曲線の前の輝度・色差を、f×f の平均で縮める（スライダーを動かしている間の見本に使う）。帯の余分な行は除く。
+ * 帯の始まりは f の倍数の行（最後の帯は端が欠けてよい）
+ */
+export function previewPlanes(d, at, f) {
+  const { w } = d; const rows = at.bottom - at.top; const pw = Math.ceil(w / f); const ph = Math.ceil(rows / f);
+  const outs = [d.Y, d.Cb, d.Cr].map((src) => {
+    const o = new Float32Array(pw * ph);
+    for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+      let s = 0; let n = 0;
+      for (let yy = y * f; yy < Math.min(rows, y * f + f); yy++) for (let xx = x * f; xx < Math.min(w, x * f + f); xx++) { s += src[(at.top + yy) * w + xx]; n++; }
+      o[y * pw + x] = s / n;
+    }
+    return o;
+  });
+  return { w: pw, h: ph, Y: outs[0], Cb: outs[1], Cr: outs[2] };
+}
+/** previewPlanes を集めた縮めた絵に、明るさの曲線を当てる（粒は足さない） */
+export function tonePreview(pv, tone) {
+  return applyTone(pv.Y, pv.Cb, pv.Cr, pv.w, pv.h, tone, { y0: 0, fullW: pv.w, fullH: pv.h, grain: 0 });
 }
 
 /**
