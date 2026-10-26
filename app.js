@@ -889,7 +889,7 @@ function buildEditor() {
       h('div', { class: 'ed-hist' }, E.undoBtn, E.redoBtn),
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
-        h('button', { type: 'button', class: 'primary export', onclick: () => openExport({}) }, '書き出し'))),
+        h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, h('span', { class: 'ico-export', 'aria-hidden': 'true' }), h('span', { class: 'export-label' }, '書き出し')))),
     E.tabs, E.side, E.stageEl);
   // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
   E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
@@ -907,7 +907,7 @@ function tabKeys(e) {
 /** 道具の列（見せている道具のグループだけ） */
 function buildRail() {
   render(E.tabs, shownGroups(!!E.rawLin).map(([g, icon, label]) => h('button', {
-    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1',
+    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1', 'aria-label': label, title: label, // スマホはアイコンだけ
     onclick: () => pickGroup(g), onkeydown: tabKeys,
   }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
 }
