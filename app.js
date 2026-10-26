@@ -35,24 +35,64 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.32.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.33.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
-// 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
+// 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
+// 項目は「道具」か「道具:種類」（顔の道具のリップなど）。項目を選ぶと、写真を大きく出して、下にその項目のスライダーだけを出す
 const GROUPS = [
   ['raw', '◈', 'RAW', ['raw']], // RAW を開いたときだけ
   ['quick', '✦', 'おまかせ', ['looks', 'auto', 'faceai']],
+  ['face', '☺', '顔', ['skin', 'eyes:eyes', 'eyes:lip', 'eyes:nose', 'eyes:teeth', 'eyes:gaze', 'shape', 'wrinkle']],
   ['adjust', '☀', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
-  ['local', '◎', '部分補正', ['local']],
-  ['retouch', '❀', 'レタッチ', ['skin', 'eyes', 'shape', 'dodge', 'wrinkle', 'heal', 'hide']], // 顔（目元・歯・リップ・鼻筋・目線）は美肌の次に（よく使うので）
+  ['part', '◎', '部分', ['local', 'dodge:dodge', 'dodge:burn', 'heal', 'hide']],
   ['frame', '▢', 'フレーム', ['frame']],
   ['info', 'ⓘ', '情報', ['info']],
 ];
 const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+const ITEM_LABEL = { 'eyes:eyes': '目元', 'eyes:lip': 'リップ', 'eyes:nose': '鼻筋', 'eyes:teeth': '歯', 'eyes:gaze': '目線', 'dodge:dodge': '明るく', 'dodge:burn': '暗く', shape: '輪郭' };
+const itemLabel = (it) => ITEM_LABEL[it] || TOOL_LABEL[it];
+const itemTool = (it) => it.split(':')[0];
+/** 項目のアイコン（線の絵。24×24） */
+const ITEM_ICON = {
+  raw: '<circle cx="12" cy="12" r="8"/><path d="M12 4l3 7M20 12l-7 3M12 20l-3-7M4 12l7-3"/>',
+  looks: '<circle cx="9" cy="9" r="5"/><circle cx="15" cy="9" r="5"/><circle cx="12" cy="15" r="5"/>',
+  auto: '<path d="M4 20 15 9M13 7l4 4"/><path d="M18 3l.7 1.6 1.6.7-1.6.7L18 7.6l-.7-1.6-1.6-.7 1.6-.7zM8 3l.5 1.1 1.1.5-1.1.5L8 6.2l-.5-1.1-1.1-.5 1.1-.5z"/>',
+  faceai: '<circle cx="11" cy="13" r="7"/><circle cx="8.5" cy="12" r=".6"/><circle cx="13.5" cy="12" r=".6"/><path d="M8.5 15.5c1.4 1.2 3.6 1.2 5 0"/><path d="M19 2l.7 1.6 1.6.7-1.6.7L19 6.6l-.7-1.6-1.6-.7 1.6-.7z"/>',
+  skin: '<circle cx="12" cy="12" r="8"/><path d="M8.5 14.5c1 1.2 2.2 1.8 3.5 1.8s2.5-.6 3.5-1.8"/><circle cx="9" cy="10" r=".6"/><circle cx="15" cy="10" r=".6"/>',
+  'eyes:eyes': '<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  'eyes:lip': '<path d="M3 12c3-4 5-5 7-3.6 1-.8 1.4-.9 2-.9s1 .1 2 .9C16 7 18 8 21 12c-3 4-6 6-9 6s-6-2-9-6z"/><path d="M3 12h18"/>',
+  'eyes:nose': '<path d="M12 3c0 6-1 9-4 12.5 0 2 2 3 4 3s4-1 4-3C13 12 12 9 12 3"/><path d="M9 18c-.8 0-1.5-.6-1.5-1.5M15 18c.8 0 1.5-.6 1.5-1.5"/>',
+  'eyes:teeth': '<path d="M7 4c-2 0-3 2-3 4 0 3 1.5 4 2 7 .4 3 1 5 2 5s1.4-2 2-4c.4-1.3 1.6-1.3 2 0 .6 2 1 4 2 4s1.6-2 2-5c.5-3 2-4 2-7 0-2-1-4-3-4-2 0-3 1-5 1S9 4 7 4z"/>',
+  'eyes:gaze': '<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12z"/><circle cx="14" cy="12" r="2.6"/><path d="M5.5 12h3"/>',
+  shape: '<path d="M6 5c0 7 2 13 6 15 4-2 6-8 6-15"/><path d="M2.5 11l2.5 1M21.5 11l-2.5 1"/>',
+  wrinkle: '<path d="M4 8c3-2 5 2 8 0s5 2 8 0M4 13c3-2 5 2 8 0s5 2 8 0"/><path d="M5 19h14"/>',
+  light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  color: '<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>',
+  hsl: '<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="7" cy="17" r="1.8"/>',
+  curves: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M5 19C10 18 9 6 19 5"/>',
+  grade: '<circle cx="12" cy="12" r="8"/><path d="M12 4v16M4 12h16"/>',
+  detail: '<path d="M12 3 3 20h18z"/><path d="M12 9v6"/>',
+  effects: '<rect x="3" y="4" width="18" height="16" rx="2"/><ellipse cx="12" cy="12" rx="6" ry="4.5"/>',
+  local: '<circle cx="12" cy="12" r="8" stroke-dasharray="3 2.5"/><circle cx="12" cy="12" r="3"/>',
+  'dodge:dodge': '<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>',
+  'dodge:burn': '<path d="M19 14.5A8 8 0 0 1 9.5 5a8 8 0 1 0 9.5 9.5z"/>',
+  heal: '<rect x="3" y="9" width="18" height="6" rx="3" transform="rotate(-45 12 12)"/><path d="M11 11h.01M13 13h.01M11 13h.01M13 11h.01"/>',
+  hide: '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16"/>',
+  frame: '<rect x="3" y="3" width="18" height="18" rx="1.5"/><rect x="7" y="7" width="10" height="10"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/>',
+};
+const iconCache = new Map();
+/** 項目のアイコンの SVG（アプリの中の決まった絵だけ） */
+function itemIcon(it) {
+  if (!iconCache.has(it)) iconCache.set(it, new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${ITEM_ICON[it] || ''}</svg>`, 'image/svg+xml').documentElement);
+  return document.importNode(iconCache.get(it), true);
+}
 /** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
 const MAX_REFS = 40;
 const TOOLS = Object.keys(TOOL_LABEL);
-const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
+const groupOf = (tool) => GROUPS.find((g) => g[3].some((it) => itemTool(it) === tool));
+const groupTools = (items) => [...new Set(items.map(itemTool))];
 /** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
 const DEFAULT_HIDDEN = ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects', 'local'];
 const hiddenTools = () => { const v = prefs.get('hiddenTools', DEFAULT_HIDDEN); return Array.isArray(v) ? v : DEFAULT_HIDDEN; };
@@ -63,7 +103,8 @@ function shownTools(raw) {
   const hid = specialist() ? [] : hiddenTools(); const list = TOOLS.filter((t) => !hid.includes(t) && (t !== 'raw' || raw));
   return list.length ? list : ['looks'];
 }
-const shownGroups = (raw) => { const sh = shownTools(raw); return GROUPS.map(([g, icon, label, tools]) => [g, icon, label, tools.filter((t) => sh.includes(t))]).filter((x) => x[3].length); };
+/** 今見せる種類と、その中の項目 */
+const shownGroups = (raw) => { const sh = shownTools(raw); return GROUPS.map(([g, icon, label, items]) => [g, icon, label, items.filter((it) => sh.includes(itemTool(it)))]).filter((x) => x[3].length); };
 const prefs = {
   get(k, d) { try { const v = localStorage.getItem(`temoto:${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(`temoto:${k}`, JSON.stringify(v)); } catch { /* 保存できない環境 */ } },
@@ -1021,9 +1062,15 @@ function buildEditor() {
   E.closeMenu = (e) => { if (menu.open && !menu.contains(e.target)) menu.open = false; };
   document.addEventListener('pointerdown', E.closeMenu);
   E.panel = h('div', { class: 'panel', role: 'tabpanel', id: 'panel' });
-  E.sideHead = h('div', { class: 'side-head' });
-  E.side = h('aside', { class: 'side', id: 'side', 'aria-label': '道具の設定' }, E.sideHead, E.panel);
-  E.tabs = h('nav', { class: 'tabs rail', role: 'tablist', 'aria-label': 'ツール', 'aria-orientation': 'vertical' });
+  // 下のバー: ✕（この項目で変えたことを取り消す）・項目の名前・✓（決めて、項目の一覧へ戻る）
+  E.sideTitle = h('h2', { class: 'side-name' });
+  E.side = h('aside', { class: 'side', id: 'side', 'aria-label': '道具の設定' }, E.panel,
+    h('div', { class: 'side-bar' },
+      h('button', { type: 'button', class: 'side-cancel', 'aria-label': 'キャンセル', title: 'この項目で変えたことを取り消す', onclick: cancelItem }, '✕'),
+      E.sideTitle,
+      h('button', { type: 'button', class: 'side-done', 'aria-label': '完了', title: '決めて、項目の一覧へ戻る', onclick: () => setSide(false) }, '✓')));
+  E.tabs = h('nav', { class: 'tabs rail', role: 'tablist', 'aria-label': '種類', 'aria-orientation': 'vertical' });
+  E.items = h('nav', { class: 'items', role: 'tablist', 'aria-label': '項目' });
   buildRail();
   // 表示の拡大・縮小（Canva の右下のように）
   E.zoomLabel = h('button', { type: 'button', class: 'zoom-val', title: '画面に合わせる（0 キー）', 'aria-label': '表示の大きさ（押すと画面に合わせる）', onclick: () => setZoom(1) }, '100%');
@@ -1039,12 +1086,12 @@ function buildEditor() {
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
         h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, h('span', { class: 'ico-export', 'aria-hidden': 'true' }), h('span', { class: 'export-label' }, '書き出し')))),
-    E.tabs, E.side, E.stageEl);
+    E.tabs, E.items, E.side, E.stageEl);
   // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
   E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
   E.root.addEventListener('input', () => { if (E?.showOriginal) setOrig(false); }, true);
   render(app, E.root);
-  syncHistoryButtons(); setTool(E.tool, { keepSide: true });
+  syncHistoryButtons(); E.cat = groupOf(E.tool)[0]; setTool(E.tool, { keepSide: true });
 }
 function tabKeys(e) {
   const tabs = [...e.currentTarget.parentElement.children]; const i = tabs.indexOf(e.currentTarget);
@@ -1053,23 +1100,71 @@ function tabKeys(e) {
   if (j == null) return;
   e.preventDefault(); const t = tabs[(j + tabs.length) % tabs.length]; t.focus(); t.click();
 }
-/** 道具の列（見せている道具のグループだけ） */
+/** スマホ・タブレット（項目を選ぶと、下に項目のスライダーだけを出す画面）か */
+const bottomLayout = () => !globalThis.matchMedia || matchMedia('(max-width: 899px)').matches;
+/** 種類の列（見せている道具の種類だけ） */
 function buildRail() {
-  render(E.tabs, shownGroups(!!E.rawLin).map(([g, icon, label]) => h('button', {
-    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1', 'aria-label': label, title: label, // スマホはアイコンだけ
+  const groups = shownGroups(!!E.rawLin);
+  if (!groups.some((x) => x[0] === E.cat)) E.cat = groupOf(E.tool)?.[0] || groups[0][0];
+  render(E.tabs, groups.map(([g, icon, label]) => h('button', {
+    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'items', 'aria-selected': String(g === E.cat), tabindex: g === E.cat ? '0' : '-1', title: label,
     onclick: () => pickGroup(g), onkeydown: tabKeys,
   }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
+  buildItems();
 }
-/** 左の列でグループを選ぶ。選んでいるグループをもう一度押すと、パネルを閉じて写真を広く見せる */
+/** 今の項目（顔の道具なら「eyes:lip」のように種類まで） */
+const curItem = () => (FX[E.tool]?.modes ? `${E.tool}:${fxMode(E.tool)}` : E.tool);
+/** 選んでいる種類の中の項目の列 */
+function buildItems() {
+  const items = shownGroups(!!E.rawLin).find((x) => x[0] === E.cat)?.[3] || [];
+  const cur = curItem();
+  render(E.items, items.map((it) => h('button', {
+    type: 'button', role: 'tab', id: `item-${it.replace(':', '-')}`, 'aria-controls': 'side', 'aria-selected': String(it === cur), tabindex: it === cur ? '0' : '-1',
+    onclick: () => pickItem(it), onkeydown: tabKeys,
+  }, h('span', { class: 'item-icon', 'aria-hidden': 'true' }, itemIcon(it)), h('span', { class: 'item-label' }, itemLabel(it)))));
+  E.items.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
+  scrollHint(E.items);
+}
+/** 種類を選ぶ。スマホは項目の列を切り替えるだけ（項目が 1 つなら、すぐ開く）。パソコンは、その種類で前に使った項目を開く */
 function pickGroup(g) {
-  if (groupOf(E.tool)[0] === g && E.sideOpen) { setSide(false); return; }
-  const tools = shownGroups(!!E.rawLin).find((x) => x[0] === g)[3];
-  setTool(E.lastTool?.[g] && tools.includes(E.lastTool[g]) ? E.lastTool[g] : tools[0]);
+  const items = shownGroups(!!E.rawLin).find((x) => x[0] === g)[3];
+  E.cat = g;
+  for (const b of E.tabs.children) { const on = b.id === `tab-${g}`; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
+  buildItems();
+  if (items.length === 1) pickItem(items[0]);
+  else if (!bottomLayout()) pickItem(E.lastTool?.[g] && items.includes(E.lastTool[g]) ? E.lastTool[g] : items[0]);
+}
+/** 項目を選ぶ: その項目のスライダーだけを出す（選んだ時の編集を覚えておき、✕ で戻せるように） */
+function pickItem(it) {
+  const [tool, mode] = it.split(':');
+  if (mode) prefs.set(`fx2:${tool}:mode`, mode);
+  E.focusSnap = S.clone(E.state);
+  setTool(tool);
+}
+/** ✕: この項目を開いてから変えたことを取り消して、項目の一覧へ戻る（取り消しも「元に戻す」で戻せる） */
+function cancelItem() {
+  if (E.focusSnap && !S.sameState(E.state, E.focusSnap)) {
+    E.state = S.clone(E.focusSnap);
+    if (sourceKey(E.state) !== E.retouchKey) rebuildSource();
+    if (maskKey() !== E.maskKey) { E.maskCache.clear(); rebuildMask(); }
+    if (E.sel && !E.state.locals.some((l) => l.id === E.sel)) E.sel = null;
+    commit(); buildPanel();
+  }
+  setSide(false);
 }
 function setSide(open) {
+  if (open && !E.sideOpen) E.focusSnap = S.clone(E.state);
   E.sideOpen = open; E.root.classList.toggle('side-closed', !open);
-  for (const b of E.tabs.children) b.setAttribute('aria-expanded', String(open && b.getAttribute('aria-selected') === 'true'));
+  for (const b of E.items.children) b.setAttribute('aria-expanded', String(open && b.getAttribute('aria-selected') === 'true'));
+  if (!open) { E.wbPick = false; E.colorPick = false; E.stageHint = ''; syncStageHint(); }
   requestRender();
+}
+/** 写真の上の小さな説明（「唇をタップ」など）。項目を開いている間だけ */
+function syncStageHint() {
+  if (!E) return;
+  if (!E.hintEl) { E.hintEl = h('div', { class: 'stage-hint', 'aria-live': 'polite' }); E.stageEl.append(E.hintEl); }
+  const t = E.sideOpen ? E.stageHint || '' : '';
+  E.hintEl.textContent = t; E.hintEl.hidden = !t;
 }
 function setZoom(z) {
   E.zoom = Math.min(8, Math.max(1, z)); if (E.zoom === 1) E.pan = [0, 0];
@@ -1089,7 +1184,7 @@ function openToolPicker() {
     h('p', { class: 'hint' }, 'チェックを外した道具を隠します。'),
     h('div', { class: 'tp-groups' }, GROUPS.map(([g, icon, label, tools]) => h('fieldset', { class: 'tp-group' },
       h('legend', {}, h('span', { 'aria-hidden': 'true' }, `${icon} `), label, g === 'raw' ? h('span', { class: 'muted small' }, '（RAW を開いたとき）') : null),
-      h('div', { class: 'tp-tools' }, tools.map((t) => { const tg = toggle(TOOL_LABEL[t], !hid.has(t), (v) => { if (v) hid.delete(t); else hid.add(t); }); boxes.push(tg); return tg.el; }))))),
+      h('div', { class: 'tp-tools' }, groupTools(tools).map((t) => { const tg = toggle(TOOL_LABEL[t], !hid.has(t), (v) => { if (v) hid.delete(t); else hid.add(t); }); boxes.push(tg); return tg.el; }))))),
     h('div', { class: 'dlg-actions' },
       h('button', { type: 'button', class: 'ghost', onclick: () => { hid.clear(); for (const b of boxes) b.input.checked = true; } }, 'すべて表示'),
       h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'やめる'),
@@ -1101,24 +1196,19 @@ function syncHistoryButtons() { if (!E) return; E.undoBtn.disabled = !E.undo.len
 function setTool(k, { keepSide = false } = {}) {
   if (E.tool === 'skin' && k !== 'skin' && E.showSkin) { E.showSkin = false; rebuildSource(); }
   E.tool = k; prefs.set('tool', k);
-  const [g, , glabel] = groupOf(k); const tools = shownGroups(!!E.rawLin).find((x) => x[0] === g)?.[3] || [k];
-  (E.lastTool ||= {})[g] = k;
-  for (const b of E.tabs.children) { const on = b.id === `tab-${g}`; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
-  // パネルの見出し（グループ名・中の道具のタブ・閉じるボタン）
-  render(E.sideHead,
-    h('div', { class: 'side-title' }, h('h2', {}, glabel),
-      h('button', { type: 'button', class: 'side-close', 'aria-label': 'パネルを閉じる', title: 'パネルを閉じる（写真を広く表示）', onclick: () => setSide(false) }, '✕')),
-    tools.length > 1 ? h('div', { class: 'subtabs', role: 'tablist', 'aria-label': `${glabel}の道具` }, tools.map((t) => h('button', {
-      type: 'button', role: 'tab', id: `tab-${t}`, 'aria-controls': 'panel', 'aria-selected': String(t === k), tabindex: t === k ? '0' : '-1',
-      onclick: () => setTool(t), onkeydown: tabKeys,
-    }, TOOL_LABEL[t]))) : null);
-  E.panel.setAttribute('aria-label', TOOL_LABEL[k]);
-  if (!keepSide || E.sideOpen === undefined) setSide(true);
+  const it = curItem(); const g = groupOf(k)[0];
+  (E.lastTool ||= {})[g] = it;
+  if (E.cat !== g) { E.cat = g; for (const b of E.tabs.children) { const on = b.id === `tab-${g}`; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; } }
+  buildItems();
+  E.sideTitle.textContent = itemLabel(it);
+  E.panel.setAttribute('aria-label', itemLabel(it));
+  // はじめはスマホでは項目の一覧（写真を大きく）、パソコンではパネルを開いておく
+  if (!keepSide) setSide(true);
+  else if (E.sideOpen === undefined) setSide(!bottomLayout());
   E.wbPick = false; E.colorPick = false;
   buildPanel(); requestRender();
   E.tabs.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
-  E.sideHead.querySelector('.subtabs [aria-selected="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
-  scrollHint(E.sideHead.querySelector('.subtabs')); scrollHint(E.tabs);
+  scrollHint(E.tabs);
 }
 /** 横にはみ出した列（スマホのタブ・道具の列）は、続きがあることがわかるように右端を薄くする */
 function scrollHint(el) {
@@ -1424,11 +1514,12 @@ const PANELS = {
 
 function buildPanel() {
   if (!E) return;
-  E.onHq = null; E.onFaceTap = null; E.faceDets = null;
+  E.onHq = null; E.onFaceTap = null; E.faceDets = null; E.stageHint = '';
   const top = E.panel.scrollTop;
   render(E.panel, h('div', { class: `panel-inner panel-${E.tool}` }, PANELS[E.tool]()));
   E.panel.scrollTop = top;
   E.stageEl.dataset.tool = E.tool;
+  syncStageHint();
 }
 
 /** 本人の写真に顔が複数写っているとき、どれが本人かを選んでもらう。選んだものを返す */
@@ -1894,8 +1985,10 @@ const fxMode = (tool) => prefs.get(`fx2:${tool}:mode`, FX[tool].modes?.[0][0] ??
 function fxPrefs(tool) {
   const d = FX[tool]; const mode = fxMode(tool); const def = mode ? d.def[mode] : d.def;
   const v = prefs.get(`fx2:${tool}:${mode ?? ''}`, {});
-  return { size: v.size ?? def.size, amt: v.amt ?? def.amt, mode, def };
+  // リップは唇を AI で見つけて範囲をアプリが決めるので、ブラシの大きさは決まった値（なぞった所は目印。前に変えた値は使わない）
+  return { size: FIXED_SIZE.includes(mode) ? def.size : v.size ?? def.size, amt: v.amt ?? def.amt, mode, def };
 }
+const FIXED_SIZE = ['lip'];
 const setFxPrefs = (tool, patch) => { const f = fxPrefs(tool); prefs.set(`fx2:${tool}:${f.mode ?? ''}`, { size: patch.size ?? f.size, amt: patch.amt ?? f.amt }); };
 /** ブラシの半径（画面の Canvas の画素） */
 function fxRadiusCanvas(tool) { return fxPrefs(tool).size / 100 * Math.min(E.L.iw, E.L.ih); }
@@ -1909,20 +2002,29 @@ function showBrushPreview() {
 function fxPanel(tool) {
   const d = FX[tool]; const f = fxPrefs(tool);
   if (tool === 'shape') warmPersonSeg(); // 背景を動かさないための AI を先に読み込んでおく
-  const types = d.modes ? d.modes.map(([m]) => d.type(m)) : [d.type()];
+  // 種類（リップ・鼻筋など）は下の項目の列で選ぶので、パネルには出さない。消すのも、その種類の分だけ
+  const types = [d.type(f.mode)];
   const n = E.state.retouch.filter((o) => types.includes(o.type)).length;
+  E.stageHint = typeof d.hint === 'string' ? d.hint : d.hint[f.mode];
   return [
-    // 種類を先に（説明の長さが種類で違うので、説明の下に置くと、切り替えるたびにボタンの位置がずれる）
-    d.modes ? chips(d.modes, f.mode, (v) => { prefs.set(`fx2:${tool}:mode`, v); buildPanel(); }, { label: '種類' }).el : null,
-    hint(typeof d.hint === 'string' ? d.hint : d.hint[f.mode]),
-    f.mode === 'lip' ? lipColorPicker() : null,
-    // 鼻筋・目線はタップした所の顔を AI で見つけて当てるので、ブラシの大きさは使わない（出すと迷う）
-    ['nose', 'gaze'].includes(f.mode) ? null : slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
-    slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => setFxPrefs(tool, { amt: v }) }).el,
+    f.mode === 'lip' ? lipColorPicker(tool, f) : null,
+    // 鼻筋・目線・リップはタップした所の顔を AI で見つけて当てるので、ブラシの大きさは出さない（出すと迷う）
+    // リップで変えられるのは色と濃さだけ（濃さは lipColorPicker の中。中身はこの道具の強さ）
+    ['nose', 'gaze', 'lip'].includes(f.mode) ? null : slider({ label: 'ブラシの大きさ', min: 0.5, max: 30, step: 0.5, value: f.size, def: f.def.size, onInput: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); }, onChange: (v) => { setFxPrefs(tool, { size: v }); showBrushPreview(); } }).el,
+    f.mode === 'lip' ? null : slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => { setFxPrefs(tool, { amt: v }); refocusOps(types[0], { amt: v / 100 }); } }).el,
     f.mode === 'gaze' ? gazeTuner() : null,
-    h('p', { class: 'muted small' }, `なぞった回数: ${n}`),
-    n ? row(btn(`${TOOL_LABEL[tool]}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small')) : null,
+    // 回数の行はいつも出す（当てたときにパネルの高さが変わって写真が動かないように）
+    h('div', { class: 'btn-row fx-count' }, h('span', { class: 'muted small' }, `当てた回数: ${n}`), Object.assign(btn(`${itemLabel(curItem())}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'), { disabled: !n })),
   ];
+}
+/** 強さ・色を変えたら、この項目を開いてから当てた分（唇・鼻など）にも、その場で当て直す */
+function refocusOps(type, patch) {
+  if (type === 'warp') return; // 形（輪郭）はなぞった時に動かした形なので、当て直さない
+  const from = E.focusSnap?.retouch?.length ?? E.state.retouch.length;
+  const ops = E.state.retouch.slice(from).filter((o) => o.type === type);
+  if (!ops.length) return;
+  for (const o of ops) Object.assign(o, S.clone(patch));
+  rebuildSource(); commit(); requestRender();
 }
 /** 目線の微調整: 最後に直した人の黒目を、矢印で少しずつ（黒目の半径の 1 割ずつ）動かす */
 function gazeTuner() {
@@ -1941,26 +2043,27 @@ function gazeTuner() {
       arrow('←', -0.1, 0, '黒目を左へ'), btn('戻す', () => { if (op.tune) { delete op.tune; rebuildSource(); commit(); buildPanel(); requestRender(); } }, 'ghost small'), arrow('→', 0.1, 0, '黒目を右へ'),
       h('span'), arrow('↓', 0, 0.1, '黒目を下へ'), h('span')));
 }
-/** リップの色（選んだもの） */
-// 色は「色合い（色相）・濃さ（彩度）・明るさ」で持つ。見本の色を選ぶと 3 つがその色になり、スライダーで好みに調整できる
+/** リップの色（選んだ見本）。見本の色そのものを目標にする */
+// 色合い・色の明るさ・色の濃さ（彩度）を変えられた前の版の色は、色合いのいちばん近い見本に
 const rgbToHsl = ([r, g, b]) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b); const mn = Math.min(r, g, b); const l = (mx + mn) / 2; const d = mx - mn; if (!d) return [0, 0, Math.round(l * 100)]; const s = d / (1 - Math.abs(2 * l - 1)); let hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh = (hh * 60 + 360) % 360; return [Math.round(hh), Math.round(s * 100), Math.round(l * 100)]; };
-const hslToRgb = ([hh, s, l]) => { s /= 100; l /= 100; const c = (1 - Math.abs(2 * l - 1)) * s; const x = c * (1 - Math.abs(((hh / 60) % 2) - 1)); const m = l - c / 2; const [r, g, b] = hh < 60 ? [c, x, 0] : hh < 120 ? [x, c, 0] : hh < 180 ? [0, c, x] : hh < 240 ? [0, x, c] : hh < 300 ? [x, 0, c] : [c, 0, x]; return [r, g, b].map((v) => Math.round((v + m) * 255)); };
-const lipHsl = () => { const v = prefs.get('lipHsl', null); return Array.isArray(v) && v.length === 3 ? v : rgbToHsl(LIP_COLORS[0][2]); };
-const lipColor = () => hslToRgb(lipHsl());
-/** リップの色: 見本の色と、色合い・濃さ・明るさのスライダー（いまの色の見本つき） */
-function lipColorPicker() {
-  const cur = lipHsl(); const set = (v) => { prefs.set('lipHsl', v); };
-  const sw = h('span', { class: 'lip-dot big', 'aria-hidden': 'true', style: { background: `rgb(${lipColor().join(' ')})` } });
-  const upd = (i) => (v) => { const x = lipHsl(); x[i] = v; set(x); sw.style.background = `rgb(${lipColor().join(' ')})`; };
+function lipKey() {
+  const k = prefs.get('lipCol', null); if (LIP_COLORS.some(([kk]) => kk === k)) return k;
+  const old = prefs.get('lipHsl', null); if (!Array.isArray(old) || old.length !== 3) return LIP_COLORS[0][0];
+  const dh = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+  const dist = ([hh, s, l]) => dh(hh, old[0]) + Math.abs(l - old[2]) * 0.5 + Math.abs(s - old[1]) * 0.2;
+  return LIP_COLORS.reduce((best, c) => (dist(rgbToHsl(c[2])) < dist(rgbToHsl(best[2])) ? c : best))[0];
+}
+const lipColor = () => LIP_COLORS.find(([k]) => k === lipKey())[2];
+/**
+ * リップで変えられるのは、色（見本）と濃さの 2 つだけ。
+ * 濃さ: 元の唇の色から選んだ色へ、どこまで寄せるか（薄付き〜しっかり）。色の彩度を下げると唇が灰色っぽく、上げると蛍光色のように浮くので、彩度ではなく寄せる量にする
+ */
+function lipColorPicker(tool, f) {
+  const cur = lipKey();
   return h('div', { class: 'lip-picker' },
-    h('div', { class: 'chips lip-colors', role: 'group', 'aria-label': 'リップの色の見本' }, LIP_COLORS.map(([k, label, rgb]) => {
-      const hsl = rgbToHsl(rgb); const on = hsl.every((v, i) => Math.abs(v - cur[i]) <= 1);
-      return h('button', { type: 'button', 'aria-pressed': String(on), onclick: () => { set(hsl); buildPanel(); } }, h('span', { class: 'lip-dot', 'aria-hidden': 'true', style: { background: `rgb(${rgb.join(' ')})` } }), label);
-    })),
-    h('div', { class: 'lip-now' }, sw, h('span', { class: 'muted small' }, 'いまの色（スライダーで調整）')),
-    slider({ label: '色合い', min: 0, max: 360, value: cur[0], def: cur[0], unit: '°', track: 'hue', onInput: upd(0), onChange: upd(0) }).el,
-    slider({ label: '色の濃さ', min: 10, max: 100, value: cur[1], def: cur[1], unit: '%', onInput: upd(1), onChange: upd(1) }).el,
-    slider({ label: '色の明るさ', min: 15, max: 75, value: cur[2], def: cur[2], unit: '%', onInput: upd(2), onChange: upd(2) }).el);
+    h('div', { class: 'chips lip-colors', role: 'group', 'aria-label': 'リップの色' }, LIP_COLORS.map(([k, label, rgb]) =>
+      h('button', { type: 'button', 'aria-pressed': String(k === cur), onclick: () => { prefs.set('lipCol', k); refocusOps('lip', { col: lipColor() }); buildPanel(); } }, h('span', { class: 'lip-dot', 'aria-hidden': 'true', style: { background: `rgb(${rgb.join(' ')})` } }), label))),
+    slider({ label: '濃さ', min: 10, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => { setFxPrefs(tool, { amt: v }); refocusOps('lip', { amt: v / 100 }); } }).el);
 }
 /** AI で見つけた口の輪郭を、保存する形に（座標は 5 桁まで） */
 const round5 = (pts) => pts.map(([x, y]) => [+x.toFixed(5), +y.toFixed(5)]);
