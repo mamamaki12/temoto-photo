@@ -126,6 +126,19 @@ export async function segParts(img) {
   try { const r = await call({ kind: 'parts', w: img.width, h: img.height, data: new Uint8ClampedArray(img.data) }); return { w: r.w, h: r.h, parts: r.parts }; }
   catch (e) { console.warn('部位を見分ける AI を使えませんでした', e); return null; }
 }
+/**
+ * 顔の肌の地図（segParts の「顔の肌」）。暗い写真の自動の明るさで、顔の明るさを測るのに使う。
+ * img: 小さく縮めた写真の画素（長い辺 512 くらい）。使えない端末では null
+ * @returns {Promise<{m:Float32Array,w:number,h:number}|null>}
+ */
+const faceSkinStore = new Map();
+export async function faceSeg(img) {
+  const key = fingerprint(img); if (faceSkinStore.has(key)) return faceSkinStore.get(key);
+  const r = await segParts(img);
+  const v = r && { m: r.parts.slice(3 * r.w * r.h, 4 * r.w * r.h), w: r.w, h: r.h };
+  if (v) { faceSkinStore.set(key, v); if (faceSkinStore.size > 8) faceSkinStore.delete(faceSkinStore.keys().next().value); }
+  return v;
+}
 /** 人物を見分ける AI を先に読み込んでおく（形を整えるブラシを開いたとき。なぞり始めで待たないように） */
 let warmed = null;
 export function warmPersonSeg() {

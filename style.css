@@ -255,6 +255,9 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .hint { margin: 0; font-size: .84rem; color: var(--muted); }
 .more-hint summary { cursor: pointer; list-style: none; }
+.auto-on { margin: 0; font-size: .86rem; color: var(--accent, #3ddc84); }
+.fine-tune { display: grid; gap: 8px; }
+.fine-tune > summary { cursor: pointer; font-size: .86rem; color: var(--muted); }
 .more-hint summary::-webkit-details-marker { display: none; }
 .hint-more { margin-left: 6px; color: var(--accent-text); font-weight: 600; white-space: nowrap; }
 .hint-more::after { content: ' ▾'; }
