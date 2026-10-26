@@ -3,7 +3,9 @@
 // 返す: { type: 'progress', phase: 'load' | 'run', t } … { type: 'result', res: Int8Array（W×H×3。写真に足す差分、1 = 1/255）, img（受け取った写真を返す） } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { SCALE, TILE_IN, putResidual, regionOf, smallFrom, tileInput, tileRect, tiles } from './wholeai.js';
-import { workerCount } from './cores.js';
+import { limitOrtMemory, outOfMemory, workerCount } from './cores.js';
+
+limitOrtMemory(128); // GPU で動かすときだけ使う（CPU では whole-infer-worker.js）
 
 const MODEL = new URL('./vendor/wholeai/realesr-general-x4v3.onnx', import.meta.url);
 /** スマホ（iPhone・iPad・Android）。メモリを抱えないよう、GPU は試さず CPU だけで動かす（顔 AI と同じ） */
@@ -126,6 +128,6 @@ self.onmessage = async ({ data }) => {
     }
     self.postMessage({ type: 'result', res, img }, [res.buffer, img.buffer]);
   } catch (error) {
-    self.postMessage({ type: 'error', message: error?.message || String(error) });
+    self.postMessage({ type: 'error', message: outOfMemory(error) ? 'MEMORY' : error?.message || String(error) });
   } finally { be?.close?.(); }
 };

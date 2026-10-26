@@ -3,6 +3,7 @@
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 →（全体 AI）→ 顔 AI」。全体 AI（wholeai.js）は髪・服・背景の細かい所を整え、顔だけ浮かないようにする。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
 // AI は編集用の大きさの写真で 1 回だけ動かし、書き出しでは、その結果を元の大きさの写真に当て直す（mergeFace は大きさによらない）
 import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace, widenMatrix } from './faceai.js';
+import { findPerson, recInput } from './facerec.js';
 import { addDetail, applyDetail } from './wholeai.js';
 import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg, segParts } from './skinseg.js';
 import { releaseDeblur } from './deblur-photo.js';
@@ -97,19 +98,22 @@ export function faceThumb(src, W, H, face, size = 96) {
 }
 
 /**
- * 本人の写真（ファイル）から、写っている顔を切り出す。顔が複数あれば全部（どれが本人かは画面で選んでもらう）
- * @returns {Promise<{crop:Blob,pts:number[],url:string}[]>} crop: 512 の PNG、pts: 顔の点（x, y の順）、url: 見せる用
+ * 本人の写真（ファイル）から、写っている顔を切り出す。顔が複数あれば全部（どれが本人かは autoPick で選ぶか、画面で選んでもらう）
+ * @returns {Promise<{crop:Blob,pts:number[],url:string,emb:Float32Array|null}[]>} crop: 512 の PNG、pts: 顔の点（x, y の順）、url: 見せる用、
+ *   emb: 顔の特徴（顔の見分けの AI を使えなければ null）
  */
 export async function facesFromPhoto(file) {
   const img = await decode(file);
   const found = await findAllFaces(img, { minFace: 120 });
-  const out = [];
+  const out = []; const recs = [];
   for (const pts of found.slice(0, 8)) {
     const p = await prepare(img, pts);
+    recs.push(recInput(p.crop, p.pts));
     const c = document.createElement('canvas'); c.width = SIZE; c.height = SIZE; ctx2d(c).putImageData(toImageData(p.crop), 0, 0);
     const crop = await new Promise((r) => c.toBlob(r, 'image/png'));
-    out.push({ crop, pts: p.pts.flat(), url: URL.createObjectURL(crop) });
+    out.push({ crop, pts: p.pts.flat(), url: URL.createObjectURL(crop), emb: null });
   }
+  try { const embs = await embed(recs); out.forEach((o, k) => { o.emb = embs[k]; }); } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); }
   return out;
 }
 const refCache = new WeakMap(); // 本人の写真の Blob → { img, pts }
@@ -122,13 +126,92 @@ async function loadRef(r) {
   return refCache.get(r.crop);
 }
 
+// ───── 顔の見分け（何人も写った本人の写真から、本人の顔を自動で選ぶ） ─────
+let recWorker = null; let recQueue = Promise.resolve();
+/** 顔（recInput）→ 顔の特徴。AI は小さい（10MB）ので、順に 1 つの Worker で */
+function embed(inputs) {
+  if (!inputs.length) return Promise.resolve([]);
+  const run = () => new Promise((resolve, reject) => {
+    if (!recWorker) recWorker = new Worker(new URL('./facerec-worker.js', import.meta.url), { type: 'module' });
+    const wk = recWorker;
+    const done = (err, res) => { wk.onmessage = null; wk.onerror = null; if (err) { wk.terminate(); if (recWorker === wk) recWorker = null; reject(err); } else resolve(res); };
+    wk.onmessage = ({ data: m }) => { if (m.type === 'result') done(null, m.embs); else if (m.type === 'error') done(new Error(m.message)); };
+    wk.onerror = (e) => done(new Error(e.message || '顔の見分けの AI を読み込めませんでした'));
+    wk.postMessage({ type: 'embed', inputs }, inputs.map((x) => x.buffer));
+  });
+  const p = recQueue.then(run, run); recQueue = p.catch(() => {});
+  return p;
+}
+/** 顔の見分けの AI を片付ける（顔 AI の前など） */
+export function releaseFaceRec() { recWorker?.terminate(); recWorker = null; }
+
+/** 本人の写真の顔の特徴（前のバージョンで入れた写真は、ここで求めて保存する。顔 AI の計算し直しにはならない） */
+async function refEmbs(list) {
+  const miss = list.flatMap((p) => p.refs.filter((r) => !r.emb));
+  if (miss.length) {
+    const ins = []; for (const r of miss) { const d = await loadRef(r); ins.push(recInput(d.img, d.pts)); }
+    const embs = await embed(ins); miss.forEach((r, k) => { r.emb = embs[k]; });
+    await putPeople(list).catch((e) => console.warn('顔の特徴を保存できませんでした', e));
+  }
+  return new Map(list.map((p) => [p.id, p.refs.map((r) => r.emb)]));
+}
+const targetEmbStore = new Map(); // 写真の指紋と顔の位置 → 顔の特徴
+/** 編集中の写真（ImageData）の顔（detectFaces の 1 つ）の特徴 */
+async function targetEmb(img, g) {
+  const key = `${fingerprint(img)}:${g.x.toFixed(4)},${g.y.toFixed(4)}`;
+  if (!targetEmbStore.has(key)) {
+    const p = await prepare(img, g.pts);
+    targetEmbStore.set(key, (await embed([recInput(p.crop, p.pts)]))[0]);
+    if (targetEmbStore.size > 24) targetEmbStore.delete(targetEmbStore.keys().next().value);
+  }
+  return targetEmbStore.get(key);
+}
+/**
+ * 本人の写真に入れた写真（facesFromPhoto の結果の並び）ごとに、本人 person の顔を選ぶ。
+ * 手がかりは、その人の本人の写真と、編集中の写真 img でその人を選んだ顔（faces: 編集内容の faceai.faces、dets: detectFaces の結果）。
+ * ほかの人の方が似ている顔は選ばない
+ * @returns {Promise<{pick:number,guess:number}[]|null>} 写真ごと（facerec.js の findPerson）。手がかりがない・AI を使えなければ null
+ */
+export async function autoPick(photos, personId, { img = null, faces = [], dets = [] } = {}) {
+  if (photos.some((c) => c.some((f) => !f.emb))) return null;
+  try {
+    const list = await loadPeople(); const byPerson = await refEmbs(list);
+    if (img) {
+      for (const f of faces) {
+        if (!f.person || !byPerson.has(f.person)) continue;
+        const g = matchFace(dets, f); if (g) byPerson.get(f.person).push(await targetEmb(img, g));
+      }
+    }
+    const seeds = byPerson.get(personId) || [];
+    if (!seeds.length) return null;
+    // ほかの人と、この人によく似た別人（自動で選んだのに外された顔・選ばれなかったいちばん似た顔）
+    const notMe = list.find((q) => q.id === personId)?.notMe || [];
+    const others = [...byPerson].filter(([id, e]) => id !== personId && e.length).map(([, e]) => e).concat(notMe.map((e) => [e]));
+    return findPerson(photos.map((c) => c.map((f) => f.emb)), seeds, others);
+  } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); return null; }
+}
+
+/**
+ * メモリ不足で失敗したら、少し待ってから 1 回だけやり直す（直前に片付けた AI のメモリは、すぐには空かないことがある。iPhone）
+ * @template T @param {() => Promise<T>} run @returns {Promise<T>}
+ */
+async function retryOnMemory(run, signal) {
+  try { return await run(); } catch (e) {
+    if (e?.code !== 'MEMORY' || signal?.aborted) throw e;
+    console.warn('メモリが足りないので、少し待ってやり直します', e);
+    await new Promise((r) => setTimeout(r, 2000));
+    if (signal?.aborted) throw abortError();
+    return run();
+  }
+}
+
 /** Worker からの失敗を、使う人に分かる言葉にする（err.friendly: そのまま見せてよい文） */
 function friendly(code) {
   const text = {
     DOWNLOAD: '顔 AI のダウンロード（はじめてだけ約 90MB）が途中で切れました。電波のよい所か Wi-Fi で、もう一度試してください。ダウンロードできた所は、次は続きから読み込みます',
     MEMORY: '端末のメモリが足りず、顔 AI を動かせませんでした。ほかのアプリやタブを閉じてから、もう一度試してください',
   }[code];
-  return Object.assign(new Error(text || code), { friendly: !!text });
+  return Object.assign(new Error(text || code), { friendly: !!text, code });
 }
 
 let worker = null; // AI を読み込んだ Worker（使い終わったら片付ける。2 回目からは端末に保存したものを読むので、数秒で読み込める）
@@ -182,9 +265,9 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
   if (!jobs.length) { onProgress(1); return { canvas: c, faces: [] }; }
   onProgress(0.12);
   // 顔専用 AI は大きい（読み込むと数百 MB）。スマホでページごと落とされないよう、ほかの AI を片付けてから動かし、終わったら AI も片付ける
-  releaseDeblur(); releaseSkinSeg();
+  releaseDeblur(); releaseSkinSeg(); releaseFaceRec();
   let outs;
-  try { outs = await runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }); } finally { worker?.terminate(); worker = null; }
+  try { outs = await retryOnMemory(() => runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }), signal); } finally { worker?.terminate(); worker = null; }
   // 広く切り出した髪を先に当て、顔と顔のまわりの髪（切り出しの結果）をその上に当てる
   const faces = []; let k = 0;
   for (const p of prepared) {
@@ -204,11 +287,14 @@ let wholeWorker = null;
  */
 export async function wholeResidual(image, W, H, { signal, onProgress = () => {} } = {}) {
   if (signal?.aborted) throw abortError();
+  // 大きな AI を同時に抱えないよう、ブレ補正の AI は片付けておく（全体 AI は 5MB と小さく、終わったら片付ける）
+  releaseDeblur();
+  return retryOnMemory(() => wholeOnce(image, W, H, { signal, onProgress }), signal);
+}
+async function wholeOnce(image, W, H, { signal, onProgress }) {
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
   const img = x.getImageData(0, 0, W, H, { colorSpace: COLOR_SPACE }); c.width = 0; c.height = 0;
-  // 大きな AI を同時に抱えないよう、ブレ補正の AI は片付けておく（全体 AI は 5MB と小さく、終わったら片付ける）
-  releaseDeblur();
   wholeWorker = new Worker(new URL('./whole-worker.js', import.meta.url), { type: 'module' });
   const wk = wholeWorker;
   try {
@@ -217,7 +303,7 @@ export async function wholeResidual(image, W, H, { signal, onProgress = () => {}
       signal?.addEventListener('abort', onAbort, { once: true });
       wk.onmessage = ({ data: m }) => {
         if (m.type === 'progress') onProgress(m.phase === 'load' ? 0.05 * m.t : 0.05 + 0.95 * m.t);
-        else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m); } else if (m.type === 'error') reject(new Error(m.message));
+        else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m); } else if (m.type === 'error') reject(friendly(m.message));
       };
       wk.onerror = () => reject(friendly('MEMORY'));
       wk.postMessage({ type: 'run', img: img.data, W, H }, [img.data.buffer]);

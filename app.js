@@ -24,14 +24,14 @@ import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from 
 import { planTone } from './restoration-lowlight.js';
 import { TonePreviewGL } from './tone-gl.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
-import { applyFaceAI, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople, wholeCanvas, wholeResidual } from './face-photo.js';
+import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople, wholeCanvas, wholeResidual } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.28.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.30.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -657,18 +657,18 @@ async function runLowlight() {
   if (E.pre && E.pre.key !== preKey(E.state)) { E.pre.ctrl.abort(); E.pre = null; }
   E.hq = { key, canvas: null, ctrl };
   E.hqCache ||= {};
-  hqBar(0);
+  hqBar(0); E.onHq?.();
   try {
     const { canvas, res, faces, whole } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas, res, faces, whole, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
-    rebuildSource(); requestRender();
+    rebuildSource(); requestRender(); E.onHq?.();
     startPrecompute();
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
-    E.hq = { key, canvas: null, ctrl: null }; hqBar(null);
+    E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.();
     if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています'); }
   }
 }
@@ -956,7 +956,7 @@ function buildEditor() {
       h('div', { class: 'ed-hist' }, E.undoBtn, E.redoBtn),
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
-        h('button', { type: 'button', class: 'primary export', onclick: () => openExport({}) }, '書き出し'))),
+        h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, h('span', { class: 'ico-export', 'aria-hidden': 'true' }), h('span', { class: 'export-label' }, '書き出し')))),
     E.tabs, E.side, E.stageEl);
   // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
   E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
@@ -974,7 +974,7 @@ function tabKeys(e) {
 /** 道具の列（見せている道具のグループだけ） */
 function buildRail() {
   render(E.tabs, shownGroups(!!E.rawLin).map(([g, icon, label]) => h('button', {
-    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1',
+    type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'side', 'aria-selected': 'false', tabindex: '-1', 'aria-label': label, title: label, // スマホはアイコンだけ
     onclick: () => pickGroup(g), onkeydown: tabKeys,
   }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
 }
@@ -1094,7 +1094,7 @@ const PANELS = {
   },
   faceai() {
     const fa = E.state.faceai;
-    const facesBox = h('div', { class: 'faceai-faces', 'aria-live': 'polite' }, h('p', { class: 'muted small' }, '写真の中の顔を探しています…'));
+    const facesBox = h('div', { class: 'faceai-faces', 'aria-live': 'polite' }, h('p', { class: 'muted small' }, '顔を探しています…'));
     const peopleBox = h('div', { class: 'faceai-people' });
     // 見つけた顔のうち、編集内容に入っているもの（なければ作る）
     const entry = (g, make) => {
@@ -1102,75 +1102,118 @@ const PANELS = {
       if (!f && make) { f = { x: g.x, y: g.y, on: false, person: '' }; fa.faces.push(f); }
       return f;
     };
+    /** 顔ごとの今の状態（オン・オフ、本人の写真、計算中・適用済み） */
+    const status = (f, people) => {
+      if (!f?.on) return 'オフ';
+      const p = people.find((q) => q.id === f.person);
+      const who = p ? `${p.name}の写真を参考に` : '本人の写真なし';
+      return `${who}・${E.hq?.ctrl ? '計算中…' : hqReady() ? '適用済み' : '準備中'}`;
+    };
+    const stats = [];
     const drawFaces = async () => {
       let dets;
       try { dets = await detectFaces(baseImageData()); } catch (e) { console.warn(e); render(facesBox, hint('顔を見つける AI を使えませんでした。')); return; }
       if (!E || E.tool !== 'faceai') return;
       const people = await loadPeople();
+      E.faceDets = dets.slice(0, S.MAX_FACEAI); drawHandles();
       if (!dets.length) { render(facesBox, hint('顔が見つかりませんでした。')); return; }
-      const src = srcBase();
-      render(facesBox, dets.slice(0, S.MAX_FACEAI).map((g, i) => {
+      const src = srcBase(); stats.length = 0;
+      render(facesBox, E.faceDets.map((g, i) => {
         const f = entry(g, false);
-        const on = h('input', { type: 'checkbox', id: `fa-on-${i}`, checked: !!f?.on, onchange: () => { entry(g, true).on = on.checked; commit(); requestRender(); } });
-        const sel = h('select', { id: `fa-p-${i}`, 'aria-label': '本人の写真', onchange: async () => {
+        const st = h('span', { class: 'faceai-status' }, status(f, people)); stats.push([g, st]);
+        const sel = h('select', { id: `fa-p-${i}`, 'aria-label': `${i + 1}番の顔の本人の写真`, onchange: async () => {
           if (sel.value === '+') {
             const list = await loadPeople(); const p = { id: uid(), name: `人${list.length + 1}`, refs: [] };
-            await savePeople([...list, p]); Object.assign(entry(g, true), { person: p.id }); commit(); buildPanel(); return;
+            await savePeople([...list, p]); Object.assign(entry(g, true), { person: p.id, on: true }); commit(); buildPanel(); toast(`${p.name}を登録しました。下の「本人の写真」で写真を足してください`); return;
           }
-          entry(g, true).person = sel.value; commit(); requestRender();
-        } }, h('option', { value: '' }, '本人の写真なし'), people.map((p) => h('option', { value: p.id }, `${p.name}（${p.refs.length}枚）`)), h('option', { value: '+' }, '＋ 新しい人'));
+          entry(g, true).person = sel.value; commit(); requestRender(); refresh();
+        } }, h('option', { value: '' }, '本人の写真なし（AI だけで整える）'), people.map((p) => h('option', { value: p.id }, `${p.name}（${p.refs.length}枚）`)), h('option', { value: '+' }, '＋ 新しい人を登録…'));
         sel.value = f?.person && people.some((p) => p.id === f.person) ? f.person : '';
-        return h('div', { class: 'faceai-face' }, faceThumb(src, E.W, E.H, g),
-          h('div', { class: 'faceai-face-ctl' }, h('label', { for: `fa-on-${i}` }, on, ' 顔 AI を使う'), sel));
+        const tog = h('button', { type: 'button', class: 'faceai-tog', 'aria-pressed': String(!!f?.on), 'aria-label': `${i + 1}番の顔に顔 AI を使う`, onclick: () => { const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh(); } },
+          h('span', { class: 'faceai-thumb' }, faceThumb(src, E.W, E.H, g), h('b', {}, String(i + 1))),
+          h('span', { class: 'faceai-face-txt' }, h('strong', {}, `${i + 1}番の顔`), st),
+          h('span', { class: 'faceai-sw', 'aria-hidden': 'true' }));
+        return h('div', { class: 'faceai-face', dataset: { on: String(!!f?.on) } }, tog, h('label', { class: 'faceai-who', for: `fa-p-${i}` }, '参考にする写真', sel));
       }));
     };
+    /** オン・オフ・状態の表示だけ描き直す（パネル全体は作り直さない） */
+    const refresh = async () => {
+      const people = await loadPeople(); if (!E || E.tool !== 'faceai') return;
+      for (const [g, st] of stats) { const f = entry(g, false); st.textContent = status(f, people); const card = st.closest('.faceai-face'); card.dataset.on = String(!!f?.on); card.querySelector('.faceai-tog').setAttribute('aria-pressed', String(!!f?.on)); }
+      drawHandles();
+    };
+    E.onHq = refresh; E.onFaceTap = (g) => { const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh(); };
+    /** 本人の写真（ファイル）を人 p に足す。何人も写っていれば本人を自動で選ぶ */
+    const addRefs = async (p, files) => {
+      E.stageEl.classList.add('busy');
+      const add = []; const notMe = []; let auto = 0;
+      try {
+        const got = [];
+        for (const fl of files) {
+          let cands; try { cands = await facesFromPhoto(fl); } catch (e) { console.warn(e); toast(`${fl.name} を読み込めませんでした`); continue; }
+          if (!cands.length) { toast(`${fl.name} に顔が見つかりませんでした`); continue; }
+          got.push({ fl, cands });
+        }
+        // 本人の顔を自動で選ぶ（この人の本人の写真と、この写真でこの人を選んだ顔に似ている顔。何人写っていても）。見分けられない写真だけ選んでもらう
+        const img = E ? baseImageData() : null;
+        const dets = img ? await detectFaces(img).catch(() => []) : [];
+        const res = got.length ? await autoPick(got.map((g) => g.cands), p.id, { img, faces: E?.state.faceai.faces || [], dets }) : null;
+        for (let i = 0; i < got.length; i++) {
+          const { fl, cands } = got[i]; const r = res?.[i];
+          let pick; let byAI = false;
+          if (r && r.pick >= 0) { pick = [cands[r.pick]]; byAI = true; if (cands.length > 1) auto++; } else if (cands.length === 1 && !res) pick = cands;
+          else {
+            const guess = r ? r.guess : -1;
+            pick = await pickFaces(cands, fl.name, { guess: cands.length === 1 ? -1 : guess, unsure: !!r });
+            // いちばん似ていた顔ではなく別の顔を選ばれたら、その顔はよく似た別人として覚える（次からその人を選ばない）
+            if (guess >= 0 && pick.length && !pick.includes(cands[guess]) && cands[guess].emb) notMe.push(cands[guess].emb);
+          }
+          for (const c of pick) add.push({ id: uid(), crop: c.crop, pts: c.pts, emb: c.emb, auto: byAI });
+          for (const c of cands) URL.revokeObjectURL(c.url);
+        }
+      } finally { E?.stageEl.classList.remove('busy'); }
+      // 読み込み中に別の写真を足したときも消えないよう、保存の直前の一覧に足す
+      if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS), notMe: [...(q.notMe || []), ...notMe].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました${auto ? `（うち${auto}枚は、何人も写った写真から本人を自動で選びました）` : ''}`); }
+    };
+    const save = async (next) => { await savePeople(next); commit(); requestRender(); drawPeople(); drawFaces(); };
     const drawPeople = async () => {
       const list = await loadPeople();
       if (!E || E.tool !== 'faceai') return;
-      const save = async (next) => { await savePeople(next); commit(); requestRender(); drawPeople(); drawFaces(); };
-      render(peopleBox, list.length ? list.map((p) => {
+      const used = (p) => fa.faces.filter((f) => f.on && f.person === p.id).length;
+      render(peopleBox, [...list.map((p) => {
         const file = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'vh', id: `fa-file-${p.id}` });
-        file.addEventListener('change', async () => {
-          const files = [...file.files]; file.value = ''; if (!files.length) return;
-          E.stageEl.classList.add('busy');
-          const add = [];
-          try {
-            for (const fl of files) {
-              let cands; try { cands = await facesFromPhoto(fl); } catch (e) { console.warn(e); toast(`${fl.name} を読み込めませんでした`); continue; }
-              if (!cands.length) { toast(`${fl.name} に顔が見つかりませんでした`); continue; }
-              const pick = cands.length === 1 ? cands : await pickFaces(cands, fl.name);
-              for (const c of pick) add.push({ id: uid(), crop: c.crop, pts: c.pts });
-              for (const c of cands) URL.revokeObjectURL(c.url);
-            }
-          } finally { E?.stageEl.classList.remove('busy'); }
-          // 読み込み中に別の写真を足したときも消えないよう、保存の直前の一覧に足す
-          if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました`); }
-        });
+        file.addEventListener('change', () => { const files = [...file.files]; file.value = ''; if (files.length) addRefs(p, files); });
         const name = h('input', { value: p.name, maxlength: 20, 'aria-label': '人の名前', onchange: () => save(list.map((q) => (q.id === p.id ? { ...q, name: name.value.trim().slice(0, 20) || q.name } : q))) });
-        return h('div', { class: 'faceai-person' },
-          h('div', { class: 'faceai-person-head' }, name, btn('この人を消す', (ev) => {
-            const b = ev.currentTarget; if (b.dataset.armed) { save(list.filter((q) => q.id !== p.id)); return; }
-            b.dataset.armed = '1'; b.textContent = 'もう一度押すと消えます'; setTimeout(() => { delete b.dataset.armed; b.textContent = 'この人を消す'; }, 3000);
-          }, 'small ghost')),
-          h('div', { class: 'faceai-refs' }, p.refs.map((r) => {
+        const n = used(p);
+        return h('div', { class: 'faceai-person', dataset: { used: String(n > 0) } },
+          h('div', { class: 'faceai-person-head' }, name, h('span', { class: 'muted small' }, `${p.refs.length}枚`), n ? h('span', { class: 'faceai-used' }, 'この写真で使用中') : null,
+            btn('消す', (ev) => {
+              const b = ev.currentTarget; if (b.dataset.armed) { save(list.filter((q) => q.id !== p.id)); return; }
+              b.dataset.armed = '1'; b.textContent = 'もう一度押すと消えます'; setTimeout(() => { delete b.dataset.armed; b.textContent = '消す'; }, 3000);
+            }, 'small ghost')),
+          p.refs.length ? h('div', { class: 'faceai-refs' }, p.refs.map((r) => {
             const url = URL.createObjectURL(r.crop);
             return h('span', { class: 'faceai-ref' }, h('img', { src: url, alt: '本人の写真', width: 64, height: 64, onload: () => URL.revokeObjectURL(url) }),
-              h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id) } : q))) }, '×'));
-          }),
-          h('label', { for: `fa-file-${p.id}`, class: 'btn small' }, '＋ 写真を追加'), file));
-      }) : hint('「＋ 新しい人」で追加できます。'));
+              h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id),
+                // 自動で選んだ顔を外したら、よく似た別人として覚える（次から何人も写った写真で、その人を選ばない）
+                notMe: r.auto && r.emb ? [...(q.notMe || []), r.emb].slice(-MAX_REFS) : q.notMe } : q))) }, '×'));
+          })) : hint('まだ写真がありません。明るい所ではっきり写った写真を 10 枚以上足すと、本人らしい顔になります。'),
+          h('label', { for: `fa-file-${p.id}`, class: 'btn small primary' }, '＋ 写真を追加'), file);
+      }), btn('＋ 新しい人を登録', async () => { const l = await loadPeople(); const p = { id: uid(), name: `人${l.length + 1}`, refs: [] }; await save([...l, p]); }, 'small')]);
     };
     drawFaces(); drawPeople();
     return [
-      h('h3', {}, '暗い写真・ブレの大きい写真の顔を、明るい所で撮ったように'),
-      hint('初回は AI（約 90MB）を読み込みます（Wi-Fi がおすすめ。切れても続きから）。'),
+      h('h3', {}, '顔 AI'),
+      hint('暗い写真・ブレた写真の顔を、明るい所で撮ったようにくっきり。初回は AI（約 90MB）を読み込みます。'),
+      h('h4', { class: 'faceai-step' }, h('span', {}, '1'), '直したい顔をタップ'),
+      hint('写真の上の番号か、下の顔をタップするとオンになります。'),
       facesBox,
-      h('label', { class: 'faceai-whole', for: 'fa-whole' }, h('input', { type: 'checkbox', id: 'fa-whole', checked: fa.whole !== false, onchange: (ev) => { fa.whole = ev.currentTarget.checked; commit(); requestRender(); } }), '髪・服・背景も AI で整える'),
-      hint('顔だけくっきりして浮かないように（AI 約 5MB）。'),
-      slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
-      h('h3', {}, '本人の写真'),
-      hint(`本人がはっきり写った写真を 10 枚以上（${MAX_REFS} 枚まで）。`),
+      h('h4', { class: 'faceai-step' }, h('span', {}, '2'), '本人の写真（任意）'),
+      hint(`登録すると、その人らしい顔に仕上がります（${MAX_REFS} 枚まで）。何人も写った写真でも、本人の顔を自動で選びます。`),
       peopleBox,
+      h('h4', { class: 'faceai-step' }, h('span', {}, '3'), '仕上がり'),
+      slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
+      h('label', { class: 'faceai-whole tg', for: 'fa-whole' }, h('input', { type: 'checkbox', id: 'fa-whole', checked: fa.whole !== false, onchange: (ev) => { fa.whole = ev.currentTarget.checked; commit(); requestRender(); } }), h('span', {}, '髪・服・背景も AI で整える（顔だけ浮かないように）')),
     ];
   },
   looks() {
@@ -1282,6 +1325,7 @@ const PANELS = {
 
 function buildPanel() {
   if (!E) return;
+  E.onHq = null; E.onFaceTap = null; E.faceDets = null;
   const top = E.panel.scrollTop;
   render(E.panel, h('div', { class: `panel-inner panel-${E.tool}` }, PANELS[E.tool]()));
   E.panel.scrollTop = top;
@@ -1289,14 +1333,19 @@ function buildPanel() {
 }
 
 /** 本人の写真に顔が複数写っているとき、どれが本人かを選んでもらう。選んだものを返す */
-function pickFaces(cands, name) {
+/** 本人の顔を選んでもらう。guess: 先に選んでおく顔（いちばん似ている顔）、unsure: 自動で見分けようとして、決められなかった */
+function pickFaces(cands, name, { guess = -1, unsure = false } = {}) {
   return new Promise((resolve) => {
-    const chosen = new Set();
+    const chosen = new Set(guess >= 0 ? [guess] : []);
+    const msg = !unsure ? `${name} に ${cands.length} 人。本人の顔を選んでください。`
+      : cands.length === 1 ? `${name} の顔が、本人と違う人に見えます。本人なら選んでください。`
+        : guess >= 0 ? `${name} に ${cands.length} 人。本人をはっきり見分けられませんでした。いちばん似ている顔を選んであります。本人の顔を選んでください。`
+          : `${name} に ${cands.length} 人。本人が見つかりませんでした（よく似た別の人かもしれません）。写っていれば、本人の顔を選んでください。`;
     const dlg = h('dialog', { class: 'dlg', 'aria-labelledby': 'pick-h' },
       h('h2', { id: 'pick-h' }, '本人の顔を選んでください'),
-      h('p', { class: 'muted small' }, `${name} に ${cands.length} 人。本人の顔を選んでください。`),
+      h('p', { class: 'muted small' }, msg),
       h('div', { class: 'faceai-pick' }, cands.map((c, i) => {
-        const b = h('button', { type: 'button', class: 'faceai-pick-face', 'aria-pressed': 'false', 'aria-label': `${i + 1}人目`, onclick: () => { if (chosen.has(i)) chosen.delete(i); else chosen.add(i); b.setAttribute('aria-pressed', String(chosen.has(i))); } },
+        const b = h('button', { type: 'button', class: 'faceai-pick-face', 'aria-pressed': String(chosen.has(i)), 'aria-label': `${i + 1}人目`, onclick: () => { if (chosen.has(i)) chosen.delete(i); else chosen.add(i); b.setAttribute('aria-pressed', String(chosen.has(i))); } },
           h('img', { src: c.url, alt: '', width: 96, height: 96 }));
         return b;
       })),
@@ -1460,6 +1509,23 @@ function skinPanel() {
   ].filter(Boolean);
 }
 /** 美肌タブ: タップで肌の場所を追加（拡大中のドラッグは移動） */
+/** 顔 AI: 写真の上の顔をタップするとオン・オフ（動かしたときは拡大中の移動） */
+function faceaiAction(e, o, p) {
+  const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; let moved = false;
+  return {
+    move: (ev) => {
+      if (Math.hypot(ev.clientX - start[0], ev.clientY - start[1]) > 8) moved = true;
+      if (moved && E.zoom > 1) { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); }
+    },
+    end: () => {
+      if (moved || !E.faceDets || !E.onFaceTap) return;
+      const [s, t] = outToSrc(...o, p);
+      let best = null; let bd = Infinity;
+      for (const g of E.faceDets) { const d = Math.hypot((g.x - s) * E.W, (g.y - g.w * E.W / E.H * 0.3 - t) * E.H); if (d < g.w * E.W * 0.9 && d < bd) { bd = d; best = g; } }
+      if (best) E.onFaceTap(best);
+    },
+  };
+}
 function skinAction(e, o, p) {
   const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; let moved = false;
   return {
@@ -1647,6 +1713,7 @@ function startAction(e) {
   if (tool === 'heal') return healAction(c, o, p);
   if (FX[tool]) return fxAction(tool, c, p);
   if (tool === 'skin') return skinAction(e, o, p);
+  if (tool === 'faceai') return faceaiAction(e, o, p);
   if (tool === 'hide') return hideAction(c, o, p);
   if (E.zoom > 1) { const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; return { move: (ev) => { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); } }; }
   return null;
@@ -1976,6 +2043,18 @@ function drawHandles() {
       el('ellipse', { cx: c[0], cy: c[1], rx: Math.hypot(rx[0] - c[0], rx[1] - c[1]), ry: Math.hypot(ry[0] - c[0], ry[1] - c[1]), transform: `rotate(${a} ${c[0]} ${c[1]})`, class: 'guide', 'stroke-width': 2 * k });
       dot(...c); dot(...rx, 7); dot(...ry, 7);
     }
+  }
+  if (E.tool === 'faceai' && E.faceDets) {
+    // 見つけた顔（番号つき。オンは緑）
+    const p = gp(); const fa = E.state.faceai;
+    E.faceDets.forEach((g, i) => {
+      const [x, y] = outToCanvas(srcToOut(g.x, g.y, p)); const r = g.w * L.iw * 0.85; const cy = y - r * 0.3; // 鼻先より少し上を中心に
+      const on = fa.faces.some((q) => q.on && Math.hypot(q.x - g.x, q.y - g.y) < Math.max(g.w * 0.4, 0.01));
+      el('circle', { cx: x, cy, r, class: `face-ring${on ? ' on' : ''}`, 'stroke-width': (on ? 3 : 2) * k });
+      const bx = x - r * 0.7; const by = cy - r * 0.7; const br = 12 * k;
+      el('circle', { cx: bx, cy: by, r: br, class: `face-num${on ? ' on' : ''}` });
+      const t = el('text', { x: bx, y: by, class: 'face-num-t', 'font-size': 15 * k, 'text-anchor': 'middle', 'dominant-baseline': 'central' }); t.textContent = String(i + 1);
+    });
   }
   if (E.tool === 'skin') {
     // 肌として選んだ場所
