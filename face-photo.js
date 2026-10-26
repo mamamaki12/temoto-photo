@@ -191,13 +191,27 @@ export async function autoPick(photos, personId, { img = null, faces = [], dets 
   } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); return null; }
 }
 
+/**
+ * メモリ不足で失敗したら、少し待ってから 1 回だけやり直す（直前に片付けた AI のメモリは、すぐには空かないことがある。iPhone）
+ * @template T @param {() => Promise<T>} run @returns {Promise<T>}
+ */
+async function retryOnMemory(run, signal) {
+  try { return await run(); } catch (e) {
+    if (e?.code !== 'MEMORY' || signal?.aborted) throw e;
+    console.warn('メモリが足りないので、少し待ってやり直します', e);
+    await new Promise((r) => setTimeout(r, 2000));
+    if (signal?.aborted) throw abortError();
+    return run();
+  }
+}
+
 /** Worker からの失敗を、使う人に分かる言葉にする（err.friendly: そのまま見せてよい文） */
 function friendly(code) {
   const text = {
     DOWNLOAD: '顔 AI のダウンロード（はじめてだけ約 90MB）が途中で切れました。電波のよい所か Wi-Fi で、もう一度試してください。ダウンロードできた所は、次は続きから読み込みます',
     MEMORY: '端末のメモリが足りず、顔 AI を動かせませんでした。ほかのアプリやタブを閉じてから、もう一度試してください',
   }[code];
-  return Object.assign(new Error(text || code), { friendly: !!text });
+  return Object.assign(new Error(text || code), { friendly: !!text, code });
 }
 
 let worker = null; // AI を読み込んだ Worker（使い終わったら片付ける。2 回目からは端末に保存したものを読むので、数秒で読み込める）
@@ -253,7 +267,7 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
   // 顔専用 AI は大きい（読み込むと数百 MB）。スマホでページごと落とされないよう、ほかの AI を片付けてから動かし、終わったら AI も片付ける
   releaseDeblur(); releaseSkinSeg(); releaseFaceRec();
   let outs;
-  try { outs = await runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }); } finally { worker?.terminate(); worker = null; }
+  try { outs = await retryOnMemory(() => runWorker(jobs, { signal, onProgress: (t) => onProgress(0.12 + 0.83 * t) }), signal); } finally { worker?.terminate(); worker = null; }
   // 広く切り出した髪を先に当て、顔と顔のまわりの髪（切り出しの結果）をその上に当てる
   const faces = []; let k = 0;
   for (const p of prepared) {
@@ -273,11 +287,14 @@ let wholeWorker = null;
  */
 export async function wholeResidual(image, W, H, { signal, onProgress = () => {} } = {}) {
   if (signal?.aborted) throw abortError();
+  // 大きな AI を同時に抱えないよう、ブレ補正の AI は片付けておく（全体 AI は 5MB と小さく、終わったら片付ける）
+  releaseDeblur();
+  return retryOnMemory(() => wholeOnce(image, W, H, { signal, onProgress }), signal);
+}
+async function wholeOnce(image, W, H, { signal, onProgress }) {
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
   const img = x.getImageData(0, 0, W, H, { colorSpace: COLOR_SPACE }); c.width = 0; c.height = 0;
-  // 大きな AI を同時に抱えないよう、ブレ補正の AI は片付けておく（全体 AI は 5MB と小さく、終わったら片付ける）
-  releaseDeblur();
   wholeWorker = new Worker(new URL('./whole-worker.js', import.meta.url), { type: 'module' });
   const wk = wholeWorker;
   try {
@@ -286,7 +303,7 @@ export async function wholeResidual(image, W, H, { signal, onProgress = () => {}
       signal?.addEventListener('abort', onAbort, { once: true });
       wk.onmessage = ({ data: m }) => {
         if (m.type === 'progress') onProgress(m.phase === 'load' ? 0.05 * m.t : 0.05 + 0.95 * m.t);
-        else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m); } else if (m.type === 'error') reject(new Error(m.message));
+        else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m); } else if (m.type === 'error') reject(friendly(m.message));
       };
       wk.onerror = () => reject(friendly('MEMORY'));
       wk.postMessage({ type: 'run', img: img.data, W, H }, [img.data.buffer]);
