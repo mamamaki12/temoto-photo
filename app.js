@@ -3,7 +3,7 @@ import { h, add, render, $, toast, uid, download } from './lib.js';
 import * as S from './state.js';
 import { Engine } from './engine.js';
 import { effective, LOOKS } from './presets.js';
-import { geoParams, outToSrc, srcToOut, outputSize, orientedSize, aspectValue, fitCrop, dragCrop } from './geometry.js';
+import { geoParams, outToSrc, srcToOut, outputSize } from './geometry.js';
 import { autoAdjust, histogram } from './auto.js';
 import { readExif, readTiffExif } from './exif.js';
 import { isRawName } from './raw.js';
@@ -28,7 +28,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.27.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.27.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、Canva のように左（スマホでは下）の列でグループを選び、グループの中が複数ならパネルの上のタブで切り替える
@@ -36,19 +36,18 @@ const GROUPS = [
   ['raw', '◈', 'RAW', ['raw']], // RAW を開いたときだけ
   ['quick', '✦', 'おまかせ', ['looks', 'auto', 'faceai']],
   ['adjust', '☀', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
-  ['crop', '⌗', '切り抜き', ['crop']],
   ['local', '◎', '部分補正', ['local']],
   ['retouch', '❀', 'レタッチ', ['skin', 'eyes', 'shape', 'dodge', 'wrinkle', 'heal', 'hide']], // 顔（目元・歯・リップ・鼻筋・目線）は美肌の次に（よく使うので）
   ['frame', '▢', 'フレーム', ['frame']],
   ['info', 'ⓘ', '情報', ['info']],
 ];
-const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', crop: '切り抜き', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
 /** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
 const MAX_REFS = 40;
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].includes(tool));
 /** 最初から隠しておく道具（「⋯」メニューの「表示する道具を選ぶ」で出せる。隠しても、写真に当てた編集はそのまま） */
-const DEFAULT_HIDDEN = ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects', 'local']; // 切り抜きは、プリントの比率（L判など）に使うので最初から出す
+const DEFAULT_HIDDEN = ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects', 'local'];
 const hiddenTools = () => { const v = prefs.get('hiddenTools', DEFAULT_HIDDEN); return Array.isArray(v) ? v : DEFAULT_HIDDEN; };
 /** スペシャリストモード: 隠した道具も全部出す */
 const specialist = () => prefs.get('specialist', false) === true;
@@ -382,7 +381,7 @@ async function showLibrary() {
           '美肌・歯・リップ・鼻筋・目線',
           'RAW 現像',
           'フィルター・自動補正',
-          '修復・モザイク・切り抜き',
+          '修復・モザイク',
           'フレーム・グリッド',
         ].map((t) => h('li', {}, t))),
         h('h3', {}, 'スペシャリストモード（「⋯」メニュー）'),
@@ -753,11 +752,6 @@ async function saveThumb() {
 }
 
 // ── 描画 ──
-function previewState() {
-  const st = E.state;
-  if (E.tool === 'crop') return { ...st, geo: { ...st.geo, crop: { x: 0, y: 0, w: 1, h: 1 } }, frame: S.defaultState().frame };
-  return st;
-}
 /** 拡大・移動の見た目だけを変える（写真の描き直しはしない） */
 function applyZoom() { E.wrap.style.transform = `translate(${E.pan[0]}px, ${E.pan[1]}px) scale(${E.zoom})`; if (E.zoomLabel) E.zoomLabel.textContent = `${Math.round(E.zoom * 100)}%`; }
 function requestRender() { if (!E || E.raf) return; E.raf = requestAnimationFrame(() => { E.raf = 0; renderNow(); }); }
@@ -772,7 +766,7 @@ function interacting() {
 function renderNow() {
   if (!E) return;
   const orig = E.showOriginal;
-  const st = orig ? { ...S.defaultState(), geo: S.defaultState().geo } : previewState();
+  const st = orig ? { ...S.defaultState(), geo: S.defaultState().geo } : E.state;
   const out = outputSize(st.geo, E.W, E.H);
   const stage = E.stageEl.getBoundingClientRect();
   const dpr = Math.min(3, devicePixelRatio || 1);
@@ -942,7 +936,6 @@ function openToolPicker() {
 }
 function syncHistoryButtons() { if (!E) return; E.undoBtn.disabled = !E.undo.length && S.sameState(E.state, E.committed); E.redoBtn.disabled = !E.redo.length; }
 function setTool(k, { keepSide = false } = {}) {
-  if (E.tool === 'crop' && k !== 'crop') commit();
   if (E.tool === 'skin' && k !== 'skin' && E.showSkin) { E.showSkin = false; rebuildSource(); }
   E.tool = k; prefs.set('tool', k);
   const [g, , glabel] = groupOf(k); const tools = shownGroups(!!E.rawLin).find((x) => x[0] === g)?.[3] || [k];
@@ -1169,7 +1162,6 @@ const PANELS = {
   },
   detail() { return adjSliders('detail'); },
   effects() { return adjSliders('effect'); },
-  crop() { return cropPanel(); },
   local() { return localPanel(); },
   skin() { return skinPanel(); },
   shape() { return fxPanel('shape'); },
@@ -1406,23 +1398,6 @@ function skinAction(e, o, p) {
   };
 }
 
-// ── 切り抜き ──
-function cropPanel() {
-  const g = E.state.geo;
-  const o = orientedSize(g, E.W, E.H);
-  const setAspect = (a) => { g.aspect = a; g.crop = fitCrop({ x: 0, y: 0, w: 1, h: 1 }, aspectValue(a, o.w, o.h), o.w, o.h); commit(); requestRender(); };
-  const rotate = (d) => { g.rot = (g.rot + d + 4) % 4; const n = orientedSize(g, E.W, E.H); g.crop = fitCrop({ x: 0, y: 0, w: 1, h: 1 }, aspectValue(g.aspect, n.w, n.h), n.w, n.h); commit(); buildPanel(); requestRender(); };
-  return [
-    hint('角・辺をドラッグ'),
-    chips(Object.entries(S.ASPECTS), g.aspect, setAspect, { label: '比率' }).el,
-    row(btn('⟲ 左に回転', () => rotate(3), 'small'), btn('⟳ 右に回転', () => rotate(1), 'small'), btn('⇋ 左右反転', () => { g.flipH = !g.flipH; commit(); requestRender(); }, 'small'), btn('⇵ 上下反転', () => { g.flipV = !g.flipV; commit(); requestRender(); }, 'small')),
-    slider({ label: '傾き補正', min: -45, max: 45, step: 0.1, value: g.angle, def: 0, unit: '°', onInput: live((v) => { g.angle = v; }), onChange: commit }).el,
-    slider({ label: '縦の遠近補正', value: g.persV, def: 0, onInput: live((v) => { g.persV = v; }), onChange: commit }).el,
-    slider({ label: '横の遠近補正', value: g.persH, def: 0, onInput: live((v) => { g.persH = v; }), onChange: commit }).el,
-    row(btn('切り抜き・回転をリセット', () => { E.state.geo = S.defaultState().geo; commit(); buildPanel(); requestRender(); }, 'ghost small')),
-  ];
-}
-
 // ── 部分補正 ──
 function localPanel() {
   const locals = E.state.locals;
@@ -1562,7 +1537,7 @@ function setupPointer(stage) {
     E.pan = z === 1 ? [0, 0] : [cx - (cx - E.pan[0]) * (z / E.zoom), cy - (cy - E.pan[1]) * (z / E.zoom)];
     E.zoom = z; interacting(); requestRender();
   }, { passive: false });
-  stage.addEventListener('dblclick', () => { if (!E || ['crop', 'local', 'heal', 'hide'].includes(E.tool) || FX[E.tool]) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
+  stage.addEventListener('dblclick', () => { if (!E || ['local', 'heal', 'hide'].includes(E.tool) || FX[E.tool]) return; E.zoom = E.zoom > 1 ? 1 : 2.5; E.pan = [0, 0]; requestRender(); });
 }
 
 function hoverCursor(e) {
@@ -1585,7 +1560,6 @@ function startAction(e) {
     E.wbPick = false; commit(); buildPanel(); requestRender(); toast('ホワイトバランスを合わせました');
     return null;
   }
-  if (tool === 'crop') return cropAction(c);
   if (tool === 'local') return localAction(e, c, o, p);
   if (tool === 'heal') return healAction(c, o, p);
   if (FX[tool]) return fxAction(tool, c, p);
@@ -1593,23 +1567,6 @@ function startAction(e) {
   if (tool === 'hide') return hideAction(c, o, p);
   if (E.zoom > 1) { const start = [e.clientX, e.clientY]; const pan0 = [...E.pan]; return { move: (ev) => { E.pan = [pan0[0] + ev.clientX - start[0], pan0[1] + ev.clientY - start[1]]; applyZoom(); } }; }
   return null;
-}
-
-function cropAction(c) {
-  const g = E.state.geo; const L = E.L;
-  const box = [L.ix + g.crop.x * L.iw, L.iy + g.crop.y * L.ih, g.crop.w * L.iw, g.crop.h * L.ih];
-  const tol = 28 * (E.view.width / E.view.getBoundingClientRect().width);
-  const inX = c[0] > box[0] - tol && c[0] < box[0] + box[2] + tol; const inY = c[1] > box[1] - tol && c[1] < box[1] + box[3] + tol;
-  if (!inX || !inY) return null;
-  let handle = '';
-  if (Math.abs(c[1] - box[1]) < tol) handle += 't'; else if (Math.abs(c[1] - box[1] - box[3]) < tol) handle += 'b';
-  if (Math.abs(c[0] - box[0]) < tol) handle += 'l'; else if (Math.abs(c[0] - box[0] - box[2]) < tol) handle += 'r';
-  const start = c; const crop0 = { ...g.crop }; const o = orientedSize(g, E.W, E.H);
-  const ratio = aspectValue(g.aspect, o.w, o.h);
-  return {
-    move: (e) => { const p = canvasPoint(e); g.crop = dragCrop(crop0, handle || 'move', (p[0] - start[0]) / L.iw, (p[1] - start[1]) / L.ih, ratio, o.w, o.h); requestRender(); },
-    end: commit,
-  };
 }
 
 function localAction(e, c, o, p) {
@@ -1911,7 +1868,7 @@ function hideAction(c, o, p) {
   };
 }
 
-/** 切り抜き枠・操作点・選択枠などを SVG で重ねて描く */
+/** 操作点・選択枠などを SVG で重ねて描く */
 function drawHandles() {
   if (!E?.L) return;
   const svg = E.svg; const NS = 'http://www.w3.org/2000/svg';
@@ -1922,14 +1879,6 @@ function drawHandles() {
   const dot = (x, y, r = 9) => { el('circle', { cx: x, cy: y, r: r * k, class: 'hd' }); };
   const L = E.L;
   if (E.showOriginal) return;
-  if (E.tool === 'crop') {
-    const g = E.state.geo.crop; const x = L.ix + g.x * L.iw; const y = L.iy + g.y * L.ih; const w = g.w * L.iw; const hh = g.h * L.ih;
-    el('path', { d: `M0 0H${E.view.width}V${E.view.height}H0Z M${x} ${y}v${hh}h${w}v${-hh}Z`, class: 'shade', 'fill-rule': 'evenodd' });
-    el('rect', { x, y, width: w, height: hh, class: 'crop-box', 'stroke-width': 2 * k });
-    for (let i = 1; i < 3; i++) { el('line', { x1: x + (w * i) / 3, y1: y, x2: x + (w * i) / 3, y2: y + hh, class: 'thirds', 'stroke-width': k }); el('line', { x1: x, y1: y + (hh * i) / 3, x2: x + w, y2: y + (hh * i) / 3, class: 'thirds', 'stroke-width': k }); }
-    for (const [cx, cy] of [[x, y], [x + w, y], [x, y + hh], [x + w, y + hh]]) el('rect', { x: cx - 7 * k, y: cy - 7 * k, width: 14 * k, height: 14 * k, class: 'hd-sq' });
-    return;
-  }
   if (E.tool === 'local') {
     const cur = E.state.locals.find((l) => l.id === E.sel);
     if (cur?.type === 'linear') {

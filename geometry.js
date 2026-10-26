@@ -5,7 +5,6 @@
 //   元写真の座標 (s, t)      : 0..1（読み込んだ写真。EXIFの向きは読み込み時に反映済み）
 //   向きを変えた後の座標 (u, v): 0..1（90°回転・反転の後。傾き補正と遠近補正はこの枠の中で行う）
 //   出力の座標 (x, y)        : 0..1（切り抜いた結果の画像）
-import { PRINT_ASPECTS } from './state.js';
 
 export const DEG = Math.PI / 180;
 
@@ -68,56 +67,4 @@ export function srcToOut(s, t, p) {
 export function outputSize(geo, W, H) {
   const o = orientedSize(geo, W, H);
   return { w: Math.max(1, Math.round(o.w * geo.crop.w)), h: Math.max(1, Math.round(o.h * geo.crop.h)) };
-}
-
-/** 比率の文字列（'4:5' など）→ 横/縦。'original' は元の比率 */
-export function aspectValue(aspect, W, H) {
-  if (aspect === 'free') return null;
-  if (aspect === 'original') return W / H;
-  if (Object.hasOwn(PRINT_ASPECTS, aspect)) { const [a, b] = PRINT_ASPECTS[aspect]; return W >= H ? b / a : a / b; }
-  const [a, b] = aspect.split(':').map(Number);
-  return a > 0 && b > 0 ? a / b : null;
-}
-
-/** 中心を保ったまま、比率に合う一番大きい切り抜きにする（向きを変えた後の枠の中） */
-export function fitCrop(crop, ratio, ow, oh) {
-  if (!ratio) return { ...crop };
-  const cx = crop.x + crop.w / 2; const cy = crop.y + crop.h / 2;
-  // 正規化座標での比率（w/h）は ratio * oh / ow
-  const r = ratio * oh / ow;
-  let w = crop.w; let h = w / r;
-  if (h > crop.h) { h = crop.h; w = h * r; }
-  // 元の切り抜きより大きくできるなら、枠いっぱいまで広げる
-  const maxW = Math.min(1, r); const maxH = maxW / r;
-  if (w < maxW * 0.999 && crop.w >= 0.999 && crop.h >= 0.999) { w = maxW; h = maxH; }
-  const x = Math.min(1 - w, Math.max(0, cx - w / 2)); const y = Math.min(1 - h, Math.max(0, cy - h / 2));
-  return { x, y, w, h };
-}
-
-/** 切り抜き枠をドラッグで動かす・角で大きさを変える（比率の固定と、枠からはみ出さない処理つき） */
-export function dragCrop(crop, handle, dx, dy, ratio, ow, oh, min = 0.05) {
-  let { x, y, w, h } = crop;
-  if (handle === 'move') {
-    x = Math.min(1 - w, Math.max(0, x + dx)); y = Math.min(1 - h, Math.max(0, y + dy));
-    return { x, y, w, h };
-  }
-  let x2 = x + w; let y2 = y + h;
-  if (handle.includes('l')) x = Math.min(x2 - min, Math.max(0, x + dx));
-  if (handle.includes('r')) x2 = Math.max(x + min, Math.min(1, x2 + dx));
-  if (handle.includes('t')) y = Math.min(y2 - min, Math.max(0, y + dy));
-  if (handle.includes('b')) y2 = Math.max(y + min, Math.min(1, y2 + dy));
-  w = x2 - x; h = y2 - y;
-  if (ratio) {
-    const r = ratio * oh / ow;
-    // 幅を基準に高さを合わせ、はみ出すなら高さを基準にする
-    let nw = w; let nh = nw / r;
-    const maxH = handle.includes('t') ? y2 : 1 - y;
-    if (nh > maxH) { nh = maxH; nw = nh * r; }
-    const maxW = handle.includes('l') ? x2 : 1 - x;
-    if (nw > maxW) { nw = maxW; nh = nw / r; }
-    if (handle.includes('l')) x = x2 - nw;
-    if (handle.includes('t')) y = y2 - nh;
-    w = nw; h = nh;
-  }
-  return { x, y, w, h };
 }

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultState, validateState, newLocal, presetPart, applyPreset, isEdited, ADJ, MAX_LOCALS } from '../../state.js';
-import { geoParams, outToSrc, srcToOut, outputSize, fitCrop, dragCrop, straightenZoom, aspectValue } from '../../geometry.js';
+import { geoParams, outToSrc, srcToOut, outputSize, straightenZoom } from '../../geometry.js';
 import { monotoneSpline, curvesLut } from '../../curves.js';
 import { autoAdjust, histogram, neutralCast } from '../../auto.js';
 import { LOOKS, effective } from '../../presets.js';
@@ -86,21 +86,6 @@ test('photo: 元写真 → 出力の逆変換（ブラシや円の位置の表�
     const [s, t] = outToSrc(x, y, p); const [x2, y2] = srcToOut(s, t, p);
     near(x2, x, 1e-6); near(y2, y, 1e-6);
   }
-});
-
-test('photo: 切り抜きの比率合わせとドラッグ', () => {
-  const full = { x: 0, y: 0, w: 1, h: 1 };
-  const sq = fitCrop(full, 1, 4000, 3000);
-  near(sq.w * 4000, sq.h * 3000, 1e-6); near(sq.h, 1); near(sq.x, (1 - sq.w) / 2);
-  assert.equal(aspectValue('4:5', 1, 1), 0.8); assert.equal(aspectValue('free', 1, 1), null); assert.equal(aspectValue('original', 4, 3), 4 / 3);
-  // 枠の外には出ない
-  const moved = dragCrop({ x: 0.5, y: 0.5, w: 0.4, h: 0.4 }, 'move', 0.5, -0.9, null, 1, 1);
-  near(moved.x, 0.6); near(moved.y, 0);
-  // 比率を保ったまま角をドラッグ
-  const r = dragCrop({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 }, 'br', 0.2, 0.05, 1, 1000, 1000);
-  near(r.w, r.h); assert.ok(r.x + r.w <= 1 && r.y + r.h <= 1);
-  const tiny = dragCrop({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 }, 'tl', 0.9, 0.9, null, 1, 1);
-  assert.ok(tiny.w >= 0.05 - 1e-9 && tiny.h >= 0.05 - 1e-9);
 });
 
 test('photo: トーンカーブは点を通り、行き過ぎない', () => {
@@ -311,7 +296,7 @@ test('photo: 美肌 — なめらかにしても、同じ色のまま暗い陰�
   assert.ok(spot < shade - 0.1, `シミ ${spot.toFixed(2)} / 陰影 ${shade.toFixed(2)}`);
 });
 
-test('photo: 美肌の値の検証・プリントの比率', () => {
+test('photo: 美肌の値の検証・前に選んだプリントの比率は残る', () => {
   const v = validateState({ portrait: { smooth: 500, even: 'x', bright: -3 } });
   assert.deepEqual(v.portrait, { smooth: 100, even: 0, bright: 0, tol: 50, seeds: [] });
   assert.deepEqual(defaultState().portrait, { smooth: 0, even: 0, bright: 0, tol: 50, seeds: [] });
@@ -327,9 +312,7 @@ test('photo: 美肌の値の検証・プリントの比率', () => {
   const s = defaultState(); s.portrait.smooth = 40;
   assert.equal(applyPreset(s, { adj: { exposure: 10 } }).portrait.smooth, 40);
   assert.equal(applyPreset(s, presetPart(defaultState())).portrait.smooth, 0);
-  // L判は 89×127mm。縦の写真なら縦長、横の写真なら横長
-  near(aspectValue('print-L', 3000, 4000), 89 / 127); near(aspectValue('print-L', 4000, 3000), 127 / 89);
-  near(aspectValue('print-A4', 2000, 3000), 210 / 297);
+  // 前に切り抜いた写真の比率（L判など）は、開き直しても残る
   assert.equal(validateState({ geo: { aspect: 'print-2L' } }).geo.aspect, 'print-2L');
   assert.ok(LOOKS.filter((l) => l.group === 'studio').length >= 5);
 });
