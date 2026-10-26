@@ -2,6 +2,9 @@
 // 受け取る: { type: 'init', model: Uint8Array } / { type: 'run', id, input: Float32Array, n }
 // 返す: { type: 'ready' } / { type: 'out', id, out: Float32Array } / { type: 'error', id?, message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
+import { limitOrtMemory } from './cores.js';
+
+limitOrtMemory(512); // 2 区画ずつ動かすと約 270MB
 
 let session = null;
 self.onmessage = async ({ data }) => {

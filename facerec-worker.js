@@ -3,6 +3,9 @@
 // 返す: { type: 'result', embs: [Float32Array（128、長さ 1）] } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { REC, normalize } from './facerec.js';
+import { limitOrtMemory } from './cores.js';
+
+limitOrtMemory(128); // 動かすと約 62MB
 
 let session = null;
 async function init() {

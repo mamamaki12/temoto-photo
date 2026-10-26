@@ -60,6 +60,19 @@
 - 失敗したときの表示は `face-photo.js` の `friendly`（DOWNLOAD：通信、MEMORY：メモリ）。
 - 実機（iPhone）では、まだ確かめていない。
 
+## iPhone の「no available backend found. ERR: [wasm] RangeError: Out of memory」（1.29.3 で直した）
+1.27.1 以降、iPhone で顔 AI を使うと、この表示で失敗した（2026-10-26、全体 AI・本人の顔の見分けが入った後）。
+- 原因: ONNX Runtime Web（1.30.0、スレッド版）の WebAssembly のメモリは共有メモリで、上限が 4GB（65536 ページ）。iPhone の Safari は共有メモリの上限の分を前もって予約するので、AI を起動するたびに 4GB ずつ予約する。全体 AI（Worker 2 つ）・顔の見分け・顔 AI・ブレ補正（Worker 2 つ）と何個も起動すると（片付けた Worker のメモリもすぐには空かない）、予約できなくなる。PC の Chromium では起きない。
+- 直し方: `vendor/ort/ort-wasm-simd-threaded.asyncify.mjs` の `new WebAssembly.Memory({initial:256,maximum:65536,shared:!0})` の上限を `globalThis.ORT_WASM_MAX_PAGES` から読むように 1 か所だけ変え（ORT を入れ替えたら入れ直す。`tests/unit/cores.test.js` が確かめる）、iPhone・iPad では AI ごとに使う量に抑える（`cores.js` の `limitOrtMemory`、Worker の最初で呼ぶ）。
+  | AI | 動かしたときの量（測った値） | 上限 |
+  | --- | --- | --- |
+  | 顔 AI（GFPGAN 8bit、512） | 585MB | 768MB |
+  | ブレ補正（NAFNet、2 区画ずつ） | 270MB | 512MB |
+  | 顔の見分け（SFace） | 62MB | 128MB |
+  | 全体 AI（Real-ESRGAN、144 の区画） | 35MB | 128MB |
+  上限より使うと、AI が `std::bad_alloc` で失敗する（顔 AI を 512MB にすると失敗した）。emscripten は 5% 以上ずつ増やすので、上限は使う量より 5% 以上大きくする。
+- メモリ不足の失敗は「端末のメモリが足りず…」の表示にし（`cores.js` の `outOfMemory`）、顔 AI・全体 AI は 2 秒待って 1 回だけやり直す（`retryOnMemory`）。
+
 ## 顔だけきれいになって、まわりと差が目立つ（1.28.0）
 2026-10-26 の依頼：「顔だけ AI で綺麗になってしまって、ほかの部分との差が目立つ。最低限髪も AI を適用して、できれば全体に適用したい」。
 暗い舞台の写真で、顔はくっきり・ノイズなしになる一方、すぐ横の髪・耳・服はぼけて粒が多いままで、顔だけ浮いて見えた。

@@ -5,6 +5,9 @@
 // 返す: { type: 'ready' } / { type: 'out', id, out: Int8Array（差分） } / { type: 'error', id?, message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { TILE_IN, tileResidual } from './wholeai.js';
+import { limitOrtMemory } from './cores.js';
+
+limitOrtMemory(128); // 動かすと約 35MB
 
 let session = null;
 self.onmessage = async ({ data }) => {
