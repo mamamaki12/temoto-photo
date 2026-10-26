@@ -25,6 +25,8 @@ const VENDOR = {
   'vendor/faceai': ['gfpgan-v1.4-int8.onnx', 'LICENSE.txt'],
   // 全体 AI のモデル（Real-ESRGAN realesr-general-x4v3、5MB。Worker の中で同じサイトのファイルだけを読む）
   'vendor/wholeai': ['realesr-general-x4v3.onnx', 'LICENSE.txt'],
+  // 顔の見分けの AI（SFace。本人の写真の、何人も写った写真から本人の顔を選ぶ。Worker の中で同じサイトのファイルだけを読む）
+  'vendor/facerec': ['sface-int8.onnx', 'LICENSE.txt'],
 };
 // vendor/ のスクリプトに書かれていてよい URL（警告の文に出てくる説明のページ。読み込みはしない）
 const DOC_URLS = [/https:\/\/web\.dev\/cross-origin-isolation-guide\/?/g];
