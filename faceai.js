@@ -47,6 +47,11 @@ export function invertMatrix([a, b, tx, ty]) {
   return [ia, ib, -(ia * tx - ib * ty), -(ib * tx + ia * ty)];
 }
 export const applyMatrix = ([a, b, tx, ty], x, y) => [a * x - b * y + tx, b * x + a * y + ty];
+/** 切り出しを、真ん中を中心に k 倍広くする変換（顔が 1/k の大きさに写り、まわりの髪まで入る） */
+export function widenMatrix([a, b, tx, ty], k, size = SIZE) {
+  const c = size / 2;
+  return [a / k, b / k, (tx - c) / k + c, (ty - c) / k + c];
+}
 /** 切り出しの 1 画素が、写真の何画素か */
 export const matrixScale = ([a, b]) => 1 / Math.hypot(a, b);
 
@@ -294,6 +299,37 @@ function maskBox(m, size) {
 /** 顔の輪郭の内側を 1、外を 0 にした地図（grow: 外へ広げる画素、soft: ぼかし）。512 の座標 */
 export function faceMask(pts, size = SIZE, grow = 12, soft = 8) {
   return polyMask(OVAL.map((i) => pts[i]), size, grow, soft);
+}
+
+/**
+ * 髪にも AI の結果を当てる（顔だけ AI で整うと、まわりの髪との差が目立つ）。AI は切り出した 512 の中の髪もくっきり描くので、
+ * 部位分け（skinseg.js の segParts。0 背景・1 髪・2 体の肌・3 顔の肌・4 服・5 そのほか）で髪と分かる所を、顔の輪郭（face）に足す。
+ * ティアラ・髪飾り（そのほか）は AI が崩すので、そのまわりは外す。切り出しの縁に向かって弱め、外側（全体の AI）となめらかにつなぐ
+ * @param {Float32Array} face faceMask の結果（size×size）
+ * @param {{w:number,h:number,parts:Float32Array}|null} seg 切り出した顔の部位分け（使えないときは null → 顔の輪郭のまま）
+ * @returns {Float32Array} size×size（0〜1）
+ */
+export function hairMask(face, seg, size = SIZE, { fade = 48, soft = 3, avoid = 10 } = {}) {
+  if (!seg) return face;
+  const { w, h, parts } = seg; const n = w * h; const out = new Float32Array(size * size);
+  const hair = new Float32Array(size * size); const other = new Float32Array(size * size);
+  for (let v = 0; v < size; v++) {
+    for (let u = 0; u < size; u++) {
+      const j = Math.min(h - 1, Math.floor(v * h / size)) * w + Math.min(w - 1, Math.floor(u * w / size));
+      hair[v * size + u] = parts[n + j]; other[v * size + u] = parts[5 * n + j];
+    }
+  }
+  // 飾りは、少し広げて（ぼかして強めて）外す
+  const near = gauss(other, size, size, 1, avoid);
+  for (let i = 0; i < hair.length; i++) hair[i] = Math.max(0, Math.min(1, (hair[i] - 0.5) * 2.5 + 0.5)) * Math.max(0, 1 - Math.max(other[i], near[i] * 3));
+  const sm = gauss(hair, size, size, 1, soft);
+  for (let v = 0; v < size; v++) {
+    for (let u = 0; u < size; u++) {
+      const d = Math.min(u, v, size - 1 - u, size - 1 - v); const t = Math.min(1, Math.max(0, (d - 4) / fade)); const e = t * t * (3 - 2 * t);
+      const i = v * size + u; out[i] = Math.max(face[i], sm[i] * e);
+    }
+  }
+  return out;
 }
 
 /**
