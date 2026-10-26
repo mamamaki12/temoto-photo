@@ -331,7 +331,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ed-head .export { padding: 4px 12px; min-height: 36px; white-space: nowrap; font-size: clamp(14px, .95rem, 18px); line-height: 1.2; } /* 見出しは文字を大きくしても 1 行に収める */
   .ed-head button.icon, .ed-head .menu summary { font-size: clamp(18px, 1.15rem, 22px); }
   /* 写真を大きく見せるため、下のパネルと道具の列を薄く（文字の大きさに引きずられないよう px で上限） */
-  .side { max-height: min(32dvh, 300px); grid-template-columns: minmax(0, 1fr); } /* 道具のタブが多くても、画面の幅を超えない */
+  .side { height: min(32dvh, 300px); max-height: none; grid-template-columns: minmax(0, 1fr); } /* 高さは固定（中身が増減しても写真が動かない）。道具のタブが多くても、画面の幅を超えない */
   .look { width: max(78px, 5rem); }
   .look canvas { width: 66px; height: 66px; }
   /* パネルの見出しは 1 行に: グループ名は道具の列と同じなので出さず、道具のタブと閉じるボタンを横に並べる */
