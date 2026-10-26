@@ -12,7 +12,7 @@ import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, co
 import { applyRetouch } from './retouch.js';
 import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, WARP_SHAPE, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg, personSeg, faceSeg } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg, personSeg, faceSeg, segFailedSince } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.33.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.33.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -739,6 +739,7 @@ async function runLowlight() {
   E.hq = { key, canvas: null, ctrl };
   E.hqCache ||= {};
   hqBar(0); E.onHq?.();
+  const t0 = performance.now();
   try {
     const { canvas, res, faces, whole, bokeh } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
@@ -746,7 +747,8 @@ async function runLowlight() {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas, res, faces, whole, bokeh, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender(); E.onHq?.();
-    startPrecompute(); saveHq(e0, key, canvas);
+    // 人物・顔の AI を使えなかったとき（通信が止まっていたなど）の結果は保存しない（次に開いたとき、AI を使って計算し直す）
+    startPrecompute(); if (!segFailedSince(t0)) saveHq(e0, key, canvas);
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.();
