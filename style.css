@@ -1,4 +1,4 @@
-/* てもとフォト: プロの現像ソフトのような、黒とグレーの落ち着いた画面。色は写真の邪魔をしないよう、ほぼ白・黒・グレーだけ */
+/* てもとフォト: プロの現像ソフトのような、黒とグレーの落ち着いた画面。差し色は控えめな緑（選んでいるもの・大事なボタンだけ） */
 :root {
   --bg: #ffffff;
   --page: #f3f3f4;
@@ -8,12 +8,12 @@
   --line: #d9d9dd;
   --text: #121214;
   --muted: #5c5c63;
-  --accent: #18181b;
+  --accent: #137a4b;
   --accent-ink: #ffffff;
-  --accent-hover: #3a3a3f;
-  --accent-soft: #e3e3e7;
-  --accent-text: #000000;
-  --select: #18181b;
+  --accent-hover: #0f6a40;
+  --accent-soft: #e2f2e9;
+  --accent-text: #0d5c37;
+  --select: #137a4b;
   --danger: #c4302b;
   --header: #18181b; /* 見出しはライトでも黒 */
   --header-line: #2a2a2e;
@@ -37,12 +37,12 @@
   --line: #2f2f33;
   --text: #ececee;
   --muted: #9d9da4;
-  --accent: #ededef;
-  --accent-ink: #111113;
-  --accent-hover: #ffffff;
-  --accent-soft: #34343a;
-  --accent-text: #ffffff;
-  --select: #b8b8be;
+  --accent: #3ecf8e;
+  --accent-ink: #07130d;
+  --accent-hover: #5ad9a0;
+  --accent-soft: #1b3127;
+  --accent-text: #6fe0ab;
+  --select: #3ecf8e;
   --danger: #ff8a7a;
   --header: #19191b;
   --header-line: #2f2f33;
@@ -143,8 +143,8 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .ed-head button:hover:not(:disabled), .ed-head .menu summary:hover { background: rgb(255 255 255 / 10%); }
 .ed-head button:disabled { opacity: .5; }
 .ed-head button[aria-pressed="true"] { background: rgb(255 255 255 / 18%); }
-.ed-head .export { background: #ededef; color: #111113; border-color: #ededef; padding-inline: 18px; } /* 見出しはいつも黒なので、白いボタンに黒い文字 */
-.ed-head .export:hover:not(:disabled) { background: #ffffff; border-color: #ffffff; }
+.ed-head .export { background: #3ecf8e; color: #07130d; border-color: #3ecf8e; padding-inline: 18px; } /* 見出しはいつも黒なので、ライトでも明るい緑に黒い文字 */
+.ed-head .export:hover:not(:disabled) { background: #5ad9a0; border-color: #5ad9a0; }
 .ed-hist { display: flex; gap: 2px; padding-left: 6px; margin-left: 2px; border-left: 1px solid rgb(255 255 255 / 16%); }
 .ed-head .back { padding: 0 12px; font-weight: 600; font-size: clamp(22px, 1.3rem, 26px); line-height: 1; }
 .ed-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: .9rem; text-align: center; color: rgb(255 255 255 / 72%); letter-spacing: .03em; }
@@ -397,8 +397,8 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .lib-pick { position: absolute; top: 0; right: 0; width: 44px; height: 44px; display: grid; place-items: center; cursor: pointer; }
 .lib-check { appearance: none; -webkit-appearance: none; margin: 0; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; background: rgb(0 0 0 / 22%); box-shadow: 0 1px 4px rgb(0 0 0 / 45%); cursor: pointer; display: grid; place-items: center; }
 .lib-check::after { content: ''; width: 6px; height: 11px; border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: translateY(-1px) rotate(45deg); opacity: 0; }
-.lib-check:checked { background: #111113; border-color: #fff; }
-.lib-check:checked::after { opacity: 1; }
+.lib-check:checked { background: var(--accent); border-color: #fff; }
+.lib-check:checked::after { opacity: 1; border-color: var(--accent-ink); }
 .lib-check:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .lib-item.selected .lib-open { outline: 3px solid var(--select); outline-offset: -3px; }
 .lib-item.selected .lib-open img { opacity: .8; }
