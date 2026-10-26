@@ -120,7 +120,7 @@ function validRetouch(r) {
   if (!r || typeof r !== 'object') return null;
   if (r.type === 'heal') {
     // sx/sy（コピー元）は省略可。省略時は周りから自動で選ぶ
-    const auto = !Number.isFinite(Number(r.sx)) || !Number.isFinite(Number(r.sy));
+    const auto = r.sx == null || r.sy == null || !Number.isFinite(Number(r.sx)) || !Number.isFinite(Number(r.sy)); // null は Number で 0 になるので先に見る（左上の角から写してしまう）
     return { type: 'heal', x: num(r.x, 0, 1), y: num(r.y, 0, 1), r: num(r.r, 0.002, 0.2, 0.02), sx: auto ? null : num(r.sx, 0, 1), sy: auto ? null : num(r.sy, 0, 1) };
   }
   if (BRUSH_TYPES.includes(r.type)) {
@@ -140,6 +140,14 @@ function validRetouch(r) {
       const poly = (q) => (Array.isArray(q) ? q.slice(0, 40).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
       op.lips = arr(r.lips, 6).map((l) => ({ outer: poly(l?.outer), inner: poly(l?.inner) })).filter((l) => l.outer.length >= 3);
       if (r.whole === true) op.whole = true; // 範囲を自動で決める（なければ、なぞった所だけ）
+    }
+    if (r.type === 'gaze') {
+      // AI で見つけた目（顔ごとに両目。lid: まぶたのふち、iris: 黒目の中心と上右下左、pose: 顔の向き）と、矢印での微調整。
+      // これを落とすと、開き直したときに目線の補正が消える
+      const poly = (q, max) => (Array.isArray(q) ? q.slice(0, max).filter((v) => Array.isArray(v)).map(([x, y]) => [num(x, -0.2, 1.2), num(y, -0.2, 1.2)]) : []);
+      op.eyes = arr(r.eyes, 6).map((f) => arr(f, 2).map((e) => ({ lid: poly(e?.lid, 32), iris: poly(e?.iris, 5), pose: [num(e?.pose?.[0], -2, 2), num(e?.pose?.[1], -2, 2)] }))
+        .filter((e) => e.lid.length >= 3 && e.iris.length === 5)).filter((f) => f.length);
+      if (Array.isArray(r.tune) && r.tune.length === 2) op.tune = r.tune.map((v) => num(v, -10, 10));
     }
     if (r.type === 'nose' && r.nose && typeof r.nose === 'object') {
       // AI で見つけた鼻の点（まん中・左右のふち・左右の頬の境目）。なければ何もしない操作になる
