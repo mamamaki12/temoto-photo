@@ -1,6 +1,7 @@
 import { restoreLinear } from './restoration.js';
 import { denoiseBand, finishBand, keepBand, previewPlanes, tonePreview } from './restoration-lowlight.js';
 import { deconvResidual } from './deblur.js';
+import { personAlpha, computeBokeh } from './bokeh.js';
 
 self.onmessage = async ({ data }) => {
   // ブレ補正の逆畳み込み（deblur-worker.js から。AI の計算と同時に、別の CPU で）
@@ -38,6 +39,17 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'tone') {
     const out = tonePreview(data.pv, data.tone);
     self.postMessage({ type: 'tone', id: data.id, data: out }, [out.buffer]);
+    return;
+  }
+  // 背景のぼかし（bokeh-photo.js から。4 分の 1 に縮めた写真と人物の地図）
+  if (data.type === 'bokeh') {
+    try {
+      const alpha = personAlpha(data.rgba, data.w, data.h, data.person); self.postMessage({ type: 'progress', t: 0.2 });
+      const bokeh = computeBokeh(data.rgba, data.w, data.h, alpha, data.r, (t) => self.postMessage({ type: 'progress', t: 0.2 + 0.8 * t }));
+      self.postMessage({ type: 'result', bokeh }, [bokeh.bg.buffer, bokeh.alpha.buffer]);
+    } catch (error) {
+      self.postMessage({ type: 'error', message: error.message });
+    }
     return;
   }
   const { image, options } = data;
