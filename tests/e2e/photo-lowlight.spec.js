@@ -152,6 +152,44 @@ test('暗い写真の補正: ノイズを取ってから明るくする処理を
   await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
 });
 
+test('暗い写真の補正: 明るさ補正だけを変えたときは、ノイズ除去をやり直さずに仕上げ直す（最初から処理したのと同じ）。動かしている間は見本を見せる', async ({ page }) => {
+  await page.goto('/');
+  const b64 = await page.evaluate(async () => {
+    const w = 480; const h = 360; const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+    const img = x.createImageData(w, h); let seed = 11;
+    const rnd = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647 - 0.5; };
+    for (let i = 0; i < w * h; i++) { const base = (i % w) < w / 2 ? [34, 22, 14] : [70, 46, 28]; const n = rnd() * 16; img.data.set([base[0] + n, base[1] + n, base[2] + n, 255], i * 4); }
+    x.putImageData(img, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  await page.locator('#open-file').setInputFiles({ name: 'dark.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  await openTool(page, '自動補正');
+  const done = (light) => page.waitForFunction((l) => { const E = window.__temoto.editor; return E.hq?.canvas && !E.hq.ctrl && JSON.parse(E.hq.key)[1] === l; }, light, { timeout: 30_000 });
+  const light = page.getByLabel('写真全体の明るさ補正', { exact: true });
+  for (const label of ['ノイズ軽減', '写真全体の明るさ補正']) { const c = page.getByLabel(label, { exact: true }); await c.fill('50'); await c.dispatchEvent('change'); }
+  await done(50);
+  expect(await page.evaluate(() => window.__temoto.editor.hqCache.den.bands.some(Boolean))).toBe(true);
+  // 動かしている間（指を離す前）は、ノイズを取った写真に新しい明るさを当てた見本を見せる（元の写真＋簡易版に戻らない）
+  const before = await viewMean(page);
+  await light.fill('80');
+  await page.waitForFunction(() => { const E = window.__temoto.editor; return E.toneShown && E.tone?.light === 80; });
+  await expect.poll(async () => (await viewMean(page))[0]).toBeGreaterThan(before[0] + 5);
+  await light.dispatchEvent('change');
+  await done(80);
+  // 最初から計算したもの（途中の結果を取っておかない）と 1 ビットも違わない
+  const same = await page.evaluate(async () => {
+    const E = window.__temoto.editor; const { enhanceCanvas, lowlightOptions } = await import('/restoration-photo.js');
+    const ref = await enhanceCanvas(E.base, E.W, E.H, lowlightOptions(E.state.adj));
+    const a = E.hq.canvas.getContext('2d').getImageData(0, 0, E.W, E.H).data; const b = ref.getContext('2d').getImageData(0, 0, E.W, E.H).data;
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  });
+  expect(same).toBe(true);
+  expect(await page.evaluate(() => window.__temoto.editor.toneShown)).toBeFalsy();
+});
+
 test('暗い写真の補正: 元の大きさの書き出しでも、帯ごとに同じ補正を当てる', async ({ page }) => {
   await page.goto('/');
   const r = await page.evaluate(async () => {
