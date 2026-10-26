@@ -83,7 +83,9 @@ test('lowlight: 明るくしても白は飛ばさず、色の順番（赤 > 緑 
   const out = whole(data, w, h, { nr: 0, profile: null, tone });
   const px = (x) => [...out.subarray((32 * w + x) * 4, (32 * w + x) * 4 + 3)];
   const dark = px(10); const white = px(60);
-  assert.ok(dark[0] > 40 + 30, `暗い所が明るくなる ${dark}`);
+  // 明るさ（輝度）で見る。赤だけで見ると、照明の色を白に戻す分（赤が下がる）と混ざる
+  const lum = (p) => 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+  assert.ok(lum(dark) > lum([40, 26, 16]) * 1.7, `暗い所が明るくなる ${dark}`);
   assert.ok(dark[0] > dark[1] && dark[1] > dark[2], `色の順番 ${dark}`);
   assert.ok(white.every((v) => v < 255) || white[2] < 255, `白に階調が残る ${white}`);
   assert.ok(tone.gain > 1 && tone.gain <= 16);
