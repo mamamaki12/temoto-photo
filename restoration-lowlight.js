@@ -40,6 +40,9 @@ export const fineScale = (tone) => (tone ? Math.min(1, FINE_GAIN / tone.gain) : 
 const FILM_GRAIN = 1.5;
 const GRAIN_REL = 0.45;
 const GRAIN_MAX = 4;
+// 顔の肌に足す粒の割合（ほかを 1 として）。顔を拡大したとき砂のようにザラザラ見えた（2026-10-27 ユーザーの声）。
+// 0 にすると肌がのっぺり塗ったように見える（2026-10-25「イラストっぽい」）ので、半分だけ
+const FACE_GRAIN = 0.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
@@ -453,7 +456,9 @@ export function planTone(small, light, { person = null, face = null, faceTarget 
     else { fa = faceAuto(small, face, auto, withGain, faceTarget); tb.fa = { face, faceTarget, auto, v: fa }; }
   }
   if (fa) auto = Math.min(12, Math.max(1, auto ** (1 - FACE_WEIGHT) * fa ** FACE_WEIGHT));
-  return { ...withGain(gainAt(auto)), auto, byFace: !!fa };
+  // 顔の肌の地図（粒を弱める。grainScale）
+  if (face && tb.fm?.face !== face) tb.fm = { face, m: smoothMask(face) };
+  return { ...withGain(gainAt(auto)), auto, byFace: !!fa, face: face ? tb.fm.m : null };
 }
 /**
  * 明るさの曲線のうち、明るさ補正の値によらない部分（ベースの係数・明るい所・照明の色・人物の地図）。
@@ -655,7 +660,7 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
       if (at.grain) {
         // 細かい粒（位置で決まる）
         const lv = Math.min(1, Math.max(0, toSrgb(0.2126 * r + 0.7152 * g + 0.0722 * bl)));
-        d += grainAt(p, at.fullW) * at.grain / 255 * 4 * lv * (1 - lv);
+        d += grainAt(p, at.fullW) * at.grain * grainScale(tone && tone.face, x + ox, at.y0 + y, at.fullW, at.fullH) / 255 * 4 * lv * (1 - lv);
       }
       out[i * 4] = 255 * (toSrgb(r) + d) + 0.5;
       out[i * 4 + 1] = 255 * (toSrgb(g) + d) + 0.5;
@@ -893,17 +898,29 @@ const NR_FULL_GAIN = 6;
 export const autoNr = (tone) => NR_MIN + (1 - NR_MIN) * Math.min(1, Math.log(Math.max(1, tone ? tone.gain : 1)) / Math.log(NR_FULL_GAIN));
 
 /**
- * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）
- * @param {{y0:number,fullW:number}} at data の 1 行目が写真全体の何行目か
+ * 粒の強さの割合（顔の肌は FACE_GRAIN、ほかは 1）
+ * @param {{m:Float32Array,w:number,h:number}|null} face planTone の face（顔の肌の地図）
  */
-export function addGrain(data, w, rows, at, grain) {
+export function grainScale(face, x, y, W, H) {
+  if (!face) return 1;
+  const f = sampleGrid(face.m, face.w, face.h, (x + 0.5) * face.w / W - 0.5, (y + 0.5) * face.h / H - 0.5);
+  return 1 - (1 - FACE_GRAIN) * Math.min(1, Math.max(0, f));
+}
+
+/**
+ * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）
+ * @param {{y0:number,fullW:number,fullH?:number}} at data の 1 行目が写真全体の何行目か
+ * @param {{m:Float32Array,w:number,h:number}|null} [face] 顔の肌の地図（planTone の face。粒を弱める）
+ */
+export function addGrain(data, w, rows, at, grain, face = null) {
   if (!(grain > 0)) return data;
+  const H = at.fullH || rows;
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4; const p = (at.y0 + y) * at.fullW + x;
       const r = data[i] / 255; const g = data[i + 1] / 255; const b = data[i + 2] / 255;
       const lv = toSrgb(0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b));
-      const d = grainAt(p, at.fullW) * grain * 4 * lv * (1 - lv);
+      const d = grainAt(p, at.fullW) * grain * (face ? grainScale(face, x, at.y0 + y, at.fullW, H) : 1) * 4 * lv * (1 - lv);
       data[i] += d; data[i + 1] += d; data[i + 2] += d; // Uint8ClampedArray は代入で四捨五入される
     }
   }

@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/lowlight-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureNoise, planTone, enhanceBand, denoiseBand, finishBand, keepBand, previewPlanes, tonePreview, boxBlur, addGrain, fineScale, grainFor, autoNr, applyTone, BAND_MARGIN } from '../../restoration-lowlight.js';
+import { measureNoise, planTone, enhanceBand, denoiseBand, finishBand, keepBand, previewPlanes, tonePreview, boxBlur, addGrain, grainScale, fineScale, grainFor, autoNr, applyTone, BAND_MARGIN } from '../../restoration-lowlight.js';
 
 function randomNormal(seed = 521) {
   const uniform = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
@@ -336,4 +336,18 @@ test('lowlight: ノイズ軽減の自動の強さは、大きく明るくする�
   assert.ok(autoNr({ gain: 3 }) > 0.8 && autoNr({ gain: 3 }) < autoNr({ gain: 5 }));
   assert.equal(autoNr({ gain: 6 }), 1);
   assert.equal(autoNr({ gain: 13.5 }), 1);
+});
+
+test('lowlight: 顔の肌の粒は半分（顔を拡大したときザラザラしない）。顔の地図がなければ今までどおり', () => {
+  const w = 64; const h = 64; const fw = 16; const fh = 16; const m = new Float32Array(fw * fh);
+  for (let y = 0; y < fh; y++) for (let x = 0; x < 8; x++) m[y * fw + x] = 1; // 左半分が顔の肌
+  const face = { m, w: fw, h: fh };
+  assert.ok(Math.abs(grainScale(face, 5, 30, w, h) - 0.5) < 1e-6);
+  assert.equal(grainScale(face, 60, 30, w, h), 1);
+  assert.equal(grainScale(null, 5, 30, w, h), 1);
+  const gray = () => new Uint8ClampedArray(w * h * 4).fill(128);
+  const sd = (d, x0, x1) => { let s = 0; let n = 0; for (let y = 0; y < h; y++) for (let x = x0; x < x1; x++) { s += (d[(y * w + x) * 4] - 128) ** 2; n++; } return Math.sqrt(s / n); };
+  const a = addGrain(gray(), w, h, { y0: 0, fullW: w, fullH: h }, 3, face); const b = addGrain(gray(), w, h, { y0: 0, fullW: w, fullH: h }, 3);
+  assert.ok(sd(a, 0, 24) < sd(b, 0, 24) * 0.65, `${sd(a, 0, 24)} / ${sd(b, 0, 24)}`);
+  assert.ok(Math.abs(sd(a, 40, 64) - sd(b, 40, 64)) < 1e-9);
 });
