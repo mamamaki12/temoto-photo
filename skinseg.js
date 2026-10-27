@@ -334,7 +334,8 @@ export async function faceMeshes(img) {
 /**
  * 写真の中の顔を全部見つける（顔専用 AI・本人の写真に使う）。顔の 478 点を、写真の画素の座標で返す（大きい順）。
  * AI は渡した絵に対して大きく写った顔しか見つけないので、写真全体と、半分・4 分の 1 の大きさの区画（半分ずつ重ねる）を順に渡し、
- * 同じ顔は 1 つにまとめる。顔の幅が minFace 画素より小さいものは除く
+ * 同じ顔は 1 つにまとめる（同じ顔を少しずれた位置でもう 1 つ見つけることがあるので、点を囲む四角が大きく重なるものも）。
+ * 顔でないもの（肩・手・服）は部位の AI で確かめて除く。顔の幅が minFace 画素より小さいものは除く
  * @param {ImageData|{width,height,data}} img
  */
 export async function findAllFaces(img, { minFace = 96, onProgress = () => {} } = {}) {
@@ -366,8 +367,49 @@ export async function findAllFaces(img, { minFace = 96, onProgress = () => {} } 
         if (same) { if (same.cut && !cut) Object.assign(same, { pts: f, w: fw, cut }); continue; }
         found.push({ pts: f, w: fw, cut });
       }
-      onProgress((k + 1) / wins.length);
+      onProgress((k + 1) / wins.length * 0.8);
     }
+    // 見つけたものを 1 つずつ、まわりを広めに切り出して、部位の AI で確かめる。区画によっては、肩・袖・手・スカートのフリルを顔と間違えることがある。
+    // 頬・額・鼻の点のところが「顔の肌」でなければ顔ではない（肩・手は「体の肌」、フリルは「服」になる）。部位の AI を使えなければ、確かめずに残す
+    const sure = [];
+    for (let k = 0; k < found.length; k++) {
+      const g = found[k]; const b = box(g.pts);
+      const side = Math.min(Math.max(W, H), Math.max(b[2] - b[0], b[3] - b[1]) * VERIFY_ZOOM);
+      const cx = (b[0] + b[2]) / 2; const cy = (b[1] + b[3]) / 2;
+      const x0 = Math.max(0, Math.round(cx - side / 2)); const y0 = Math.max(0, Math.round(cy - side / 2));
+      const cw = Math.min(W, Math.round(cx + side / 2)) - x0; const ch = Math.min(H, Math.round(cy + side / 2)) - y0;
+      const sc = Math.min(1, 512 / Math.max(cw, ch));
+      const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
+      c2.width = w; c2.height = h; const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
+      const seg = await segParts(x2.getImageData(0, 0, w, h));
+      let score = 1;
+      if (seg) {
+        const at = 3 * seg.w * seg.h; let sum = 0; // 「顔の肌」の地図
+        for (const i of SKIN_PTS) {
+          const u = Math.min(seg.w - 1, Math.max(0, Math.round((g.pts[i][0] - x0) / cw * seg.w))); const v = Math.min(seg.h - 1, Math.max(0, Math.round((g.pts[i][1] - y0) / ch * seg.h)));
+          sum += seg.parts[at + v * seg.w + u];
+        }
+        score = sum / SKIN_PTS.length;
+      }
+      if (score >= FACE_SKIN_MIN) sure.push(g);
+      onProgress(0.8 + (k + 1) / found.length * 0.2);
+    }
+    // 確かめたあと、重なる顔は 1 つに（大きく重なるものは同じ顔。大きい方を残す）
+    sure.sort((a, b) => b.w - a.w);
+    const out = [];
+    for (const f of sure) if (!out.some((g) => overlap(box(g.pts), box(f.pts)) > 0.4)) out.push(f);
+    return out.map((f) => f.pts);
   } finally { c2.width = 0; c2.height = 0; src.width = 0; src.height = 0; }
-  return found.sort((a, b) => b.w - a.w).map((f) => f.pts);
+}
+const VERIFY_ZOOM = 4; // 確かめるときの切り出し（顔の点を囲む四角の何倍か。狭いと、肩の肌も顔の肌と見てしまう。人物が広く写る大きさに）
+const FACE_SKIN_MIN = 0.3; // 顔の点のところの「顔の肌」の平均がこれより低ければ、顔ではない
+// 頬・額・鼻（目・口・眉・髪で隠れやすい所は除く）
+const SKIN_PTS = [10, 151, 9, 108, 337, 4, 5, 195, 197, 1, 50, 280, 101, 330, 117, 346, 123, 352, 205, 425, 187, 411, 36, 266, 207, 427];
+/** 顔の点を囲む四角 [x0, y0, x1, y1] */
+const box = (pts) => { let a = Infinity; let b = Infinity; let c = -Infinity; let d = -Infinity; for (const [x, y] of pts) { if (x < a) a = x; if (y < b) b = y; if (x > c) c = x; if (y > d) d = y; } return [a, b, c, d]; };
+/** 2 つの四角の重なり（重なった面積 ÷ 小さい方の面積） */
+export function overlap(a, b) {
+  const iw = Math.min(a[2], b[2]) - Math.max(a[0], b[0]); const ih = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  if (iw <= 0 || ih <= 0) return 0;
+  return (iw * ih) / Math.min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]));
 }

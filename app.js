@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.8'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.10'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -997,6 +997,26 @@ function baseImageData() {
   return E.baseData;
 }
 /**
+ * 顔 AI の画面で顔を見つける写真の画素。顔 AI・全体 AI・背景のぼかしを当てる前のもの（当てた後の写真で探し直すと、AI で描き直した顔を
+ * 少しずれた位置でもう 1 つ見つけることがある）。暗所補正をしているときは、補正した写真（暗いままだと顔を見落とす）
+ */
+async function faceImageData() {
+  const ll = lowlightActive(E.state.adj); const db = deblurActive(E.state.adj); const c = E.hqCache || {};
+  const K = stageKeys(E.state.adj, E.state);
+  let from = null; let load = null;
+  if (!ll && !db) from = E.base;
+  else if (ll && c.ll?.key === K.llKey && c.ll.canvas) from = c.ll.canvas;
+  else if (c.pf?.key === K.pfKey) { from = c.pf; load = c.pf.load; } // 開き直したとき: 保存しておいた、顔 AI の前の写真
+  if (!from) return baseImageData();
+  if (E.faceData?.from !== from) {
+    const cv = load ? await load() : from; if (!cv) return baseImageData();
+    const t = toCanvas(cv, E.W, E.H);
+    E.faceData = { from, data: ctx2d(t, { willReadFrequently: true }).getImageData(0, 0, E.W, E.H) };
+    dropCanvas(t); if (load) dropCanvas(cv);
+  }
+  return E.faceData.data;
+}
+/**
  * 美肌を使うとき、AI で人物の肌（顔・首・腕）を見分ける（はじめての 1 回は、AI の読み込みに少し時間がかかる）。
  * できたら美肌を計算し直す。使えない端末では、今までどおり色だけで判定する
  */
@@ -1477,7 +1497,7 @@ const PANELS = {
     const stats = [];
     const drawFaces = async () => {
       let dets;
-      try { dets = await detectFaces(baseImageData()); } catch (e) { console.warn(e); render(facesBox, hint('顔を見つける AI を使えませんでした。')); return; }
+      try { dets = await detectFaces(await faceImageData()); } catch (e) { console.warn(e); render(facesBox, hint('顔を見つける AI を使えませんでした。')); return; }
       if (!E || E.tool !== 'faceai') return;
       const people = await loadPeople();
       E.faceDets = dets.slice(0, S.MAX_FACEAI); drawHandles();
@@ -1514,7 +1534,7 @@ const PANELS = {
     const toggleFace = async (g) => {
       const first = !entry(g, false); const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh();
       if (!first || !e.on || e.person) return;
-      const id = await guessPerson(baseImageData(), g);
+      const id = await guessPerson(await faceImageData(), g);
       const cur = id && E?.tool === 'faceai' ? entry(g, false) : null; if (!cur?.on || cur.person) return; // 見分けている間に、オフにした・人を選んだ
       const p = (await loadPeople()).find((q) => q.id === id); if (!p) return;
       cur.person = id; commit(); requestRender(); drawFaces(); drawPeople();
@@ -1551,7 +1571,7 @@ const PANELS = {
       const add = []; const notMe = []; let auto = 0;
       try {
         // 本人の顔を自動で選ぶ（この人の本人の写真と、この写真でこの人を選んだ顔に似ている顔。何人写っていても）。見分けられない写真だけ選んでもらう
-        const img = E ? baseImageData() : null;
+        const img = E ? await faceImageData() : null;
         const dets = img ? await detectFaces(img).catch(() => []) : [];
         const res = got.length ? await autoPick(got.map((g) => g.cands), p.id, { img, faces: E?.state.faceai.faces || [], dets }) : null;
         for (let i = 0; i < got.length; i++) {
@@ -1736,7 +1756,7 @@ const PANELS = {
 
 function buildPanel() {
   if (!E) return;
-  E.onHq = null; E.onFaceTap = null; E.faceDets = null; E.stageHint = '';
+  E.onHq = null; E.onFaceTap = null; E.faceDets = null; E.faceData = null; E.stageHint = '';
   const top = E.panel.scrollTop;
   render(E.panel, h('div', { class: `panel-inner panel-${E.tool}` }, PANELS[E.tool]()));
   E.panel.scrollTop = top;
