@@ -2379,6 +2379,12 @@ function useFull(src, format, maxSide) {
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 const safeName = (s) => s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80) || 'photo';
 
+/** 書き出しを写真アプリへ渡すか（スマホ・タブレットで、画像を共有できるとき）。パソコンはダウンロードにする */
+function savesToPhotos() {
+  if (!navigator.canShare) return false;
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) || matchMedia('(pointer: coarse)').matches;
+}
+
 function openExport({ batch }) {
   const opt = prefs.get('export', { format: 'image/jpeg', quality: 92, maxSide: 0 });
   if (opt.format === 'image/webp' && !canWebp) opt.format = 'image/jpeg';
@@ -2390,12 +2396,11 @@ function openExport({ batch }) {
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
   const q = slider({ label: '画質', min: 50, max: 100, value: opt.quality, def: 92, unit: '%', onChange: (v) => { opt.quality = v; save(); } });
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
-  const go = h('button', { type: 'button', class: 'primary' }, batch ? `${batch.length}枚を書き出す` : '書き出す');
-  const SHARE_LABEL = '写真アプリに保存';
-  // 写真アプリへの保存（iPhone など）は、1枚でもまとめてでも、いつも緑のボタンにする
-  const shareBtn = h('button', { type: 'button', class: 'primary', hidden: !navigator.canShare }, SHARE_LABEL);
-  if (!shareBtn.hidden) go.classList.remove('primary');
-  name.addEventListener('input', () => { ready = null; shareBtn.textContent = SHARE_LABEL; });
+  // ボタンは 1 つだけ。押すと書き出して、スマホは写真アプリへ（共有メニューの「画像を保存」）、パソコンはダウンロードまでする
+  const toPhotos = savesToPhotos();
+  const SAVE_LABEL = toPhotos ? '写真アプリに保存' : 'ダウンロード';
+  const go = h('button', { type: 'button', class: 'primary' }, SAVE_LABEL);
+  name.addEventListener('input', () => { ready = null; go.textContent = SAVE_LABEL; });
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'exp-h' },
     h('h2', { id: 'exp-h' }, batch ? `まとめて書き出し（${batch.length}枚）` : '書き出し'),
     h('div', { class: 'sub-head' }, h('b', {}, '形式')),
@@ -2407,10 +2412,10 @@ function openExport({ batch }) {
       chips([['display-p3', 'Display P3（鮮やかなまま）'], ['srgb', 'sRGB（プリント店・古い機器向け）']], opt.space, (v) => { opt.space = v; save(); }, { label: '色' }).el,
       h('p', { class: 'muted small' }, 'プリント店向けは sRGB')] : []),
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
-    ...(navigator.canShare ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
+    ...(toPhotos ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
     h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status, exportProgress,
-    h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), shareBtn, go));
+    h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), go));
   dlg.addEventListener('close', () => dlg.remove());
   const one = async () => {
     flushSave();
@@ -2450,15 +2455,11 @@ function openExport({ batch }) {
     }
     exportProgress.value = 100; status.textContent = `✓ ${batch.length}枚を書き出しました`;
   };
-  go.addEventListener('click', async () => {
-    go.disabled = true;
-    try {
-      if (!batch) { const r = await one(); download(r.blob, r.file); toast('書き出しました'); }
-      else await many(async (blob, file) => { download(blob, file); await new Promise((res) => setTimeout(res, 400)); });
-    } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
-  });
-  shareBtn.addEventListener('click', async () => {
-    shareBtn.disabled = true;
+  const downloadAll = async () => {
+    if (!batch) { const r = await one(); download(r.blob, r.file); toast('ダウンロードしました'); }
+    else await many(async (blob, file) => { download(blob, file); await new Promise((res) => setTimeout(res, 400)); });
+  };
+  const shareAll = async () => {
     let files = ready;
     try {
       if (!files) {
@@ -2466,12 +2467,16 @@ function openExport({ batch }) {
         else { const r = await one(); files = [new File([r.blob], r.file, { type: opt.format })]; }
       }
       if (!navigator.canShare({ files })) { for (const f of files) download(f, f.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
-      await navigator.share({ files }); ready = null; shareBtn.textContent = SHARE_LABEL;
+      await navigator.share({ files }); ready = null; go.textContent = SAVE_LABEL;
     } catch (e) {
-      if (e?.name === 'NotAllowedError' && files) { // 書き出しに時間がかかって、押したことが切れた。用意はできたので、もう一度押してもらう
-        ready = files; shareBtn.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
-      } else if (e?.name !== 'AbortError') status.textContent = '写真アプリに保存できませんでした';
-    } finally { shareBtn.disabled = false; }
+      if (e?.name === 'NotAllowedError' && files) { // 書き出しに時間がかかって、押したことが切れた（iPhone の決まり）。用意はできたので、もう一度押してもらう
+        ready = files; go.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
+      } else if (e?.name !== 'AbortError') { if (!files) exportProgress.hidden = true; status.textContent = files ? '写真アプリに保存できませんでした' : '書き出せませんでした。大きさを小さくしてお試しください。'; }
+    }
+  };
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    try { await (toPhotos ? shareAll() : downloadAll()); } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });
   document.body.append(dlg); dlg.showModal();
 }
@@ -2681,10 +2686,13 @@ function openGridExport() {
           bmp.close?.(); status.textContent = '写真一覧に保存しました。'; toast('写真一覧に保存しました');
         } catch { status.textContent = '保存できませんでした'; }
       } }, '写真一覧に保存'),
-      h('button', { type: 'button', hidden: !navigator.canShare, onclick: async () => {
-        try { const r = await make(); const f = new File([r.blob], fileName(), { type: opt.format }); if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f] }); else download(r.blob, fileName()); } catch (e) { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? '用意ができました。もう一度押してください。' : '写真アプリに保存できませんでした'; }
-      } }, '写真アプリに保存'),
-      h('button', { type: 'button', class: 'primary', onclick: async () => { try { const r = await make(); download(r.blob, fileName()); toast('書き出しました'); } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } } }, '書き出す')));
+      h('button', { type: 'button', class: 'primary', onclick: async () => {
+        // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード
+        try {
+          const r = await make(); const f = new File([r.blob], fileName(), { type: opt.format });
+          if (savesToPhotos() && navigator.canShare({ files: [f] })) await navigator.share({ files: [f] }); else { download(r.blob, fileName()); toast('ダウンロードしました'); }
+        } catch (e) { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? '用意ができました。もう一度押してください。' : '書き出せませんでした。大きさを小さくしてお試しください。'; }
+      } }, savesToPhotos() ? '写真アプリに保存' : 'ダウンロード')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();
 }
