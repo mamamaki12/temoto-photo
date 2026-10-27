@@ -736,14 +736,14 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
     } else if (ll) {
       if (llMiss) {
         cache.ll = null;
-        let grain = 0;
-        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g) => { grain = g; } });
-        cache.ll = { key: K.llKey, canvas: c, grain };
+        let grain = 0; let gface = null;
+        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g, f) => { grain = g; gface = f; } });
+        cache.ll = { key: K.llKey, canvas: c, grain, gface };
         if (db || wh) await onStage('ll', cache.ll); // この後に重い段があるときだけ（途中で落ちても、次はここから）
       } else if (!fresh(cache, 'll', K.llKey)) { // 前に途中で止まったときに保存しておいた、ノイズ除去と明るさ補正の結果
         const c = await cache.lls.load(); at0(0, 1);
         if (!c) { cache.lls = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
-        cache.ll = { key: K.llKey, canvas: c, grain: cache.lls.grain };
+        cache.ll = { key: K.llKey, canvas: c, grain: cache.lls.grain, gface: cache.lls.gface || null };
       }
       canvas = cache.ll.canvas;
     }
@@ -759,7 +759,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
         cache.db = { key: K.dbKey, res: r };
       }
       res = cache.db.res;
-      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
+      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0, face: ll ? cache.ll.gface : null }, { signal });
     }
     // ぼかしの元（4 分の 1 の写真と人物の地図）
     if (wantBs && cache.bs?.key !== K.bsKey) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(canvas, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
@@ -948,7 +948,7 @@ async function saveStage(e0, name, v) {
   if (!e0.hqCache) return;
   try {
     let part;
-    if (name === 'll') part = { key: v.key, grain: v.grain, data: await packPixels(v.canvas, e0.W, e0.H) };
+    if (name === 'll') part = { key: v.key, grain: v.grain, gface: v.gface || null, data: await packPixels(v.canvas, e0.W, e0.H) };
     else if (name === 'db') {
       const { width, height, data } = v.res; const q = new Int16Array(data.length);
       for (let i = 0; i < data.length; i++) q[i] = Math.max(-32767, Math.min(32767, Math.round(data[i] * RES_SCALE)));
@@ -965,7 +965,7 @@ async function saveStage(e0, name, v) {
 function seedStage(rec) {
   if (!rec || rec.ver !== VERSION || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
   const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {}); const z = rec.z;
-  if (rec.ll && rec.ll.key === K.llKey && !c.ll) { const { data, grain } = rec.ll; c.lls = { key: K.llKey, grain, load: () => unpackPixels(data, z, E.W, E.H) }; }
+  if (rec.ll && rec.ll.key === K.llKey && !c.ll) { const { data, grain, gface = null } = rec.ll; c.lls = { key: K.llKey, grain, gface, load: () => unpackPixels(data, z, E.W, E.H) }; }
   if (rec.db && rec.db.key === K.dbKey && !c.db) {
     const { data, width, height } = rec.db;
     c.dbs = { key: K.dbKey, load: async () => {

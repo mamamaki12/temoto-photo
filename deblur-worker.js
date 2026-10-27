@@ -1,8 +1,9 @@
 // 被写体ブレの補正の AI を動かす Worker（ONNX Runtime Web。WebGPU があれば GPU で、なければ CPU で。端末の中だけで動く）
-// 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか }
+// 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか,
+//   person, parts: 人物の地図・部位の地図（skinseg.js。ブレ補正を人物だけに効かせる。なければ全体） }
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
-import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, TILE } from './deblur.js';
+import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, subjectWeight, weightResidual, TILE } from './deblur.js';
 import { workerCount, lowMemory, limitOrtMemory } from './cores.js';
 
 limitOrtMemory(512); // GPU で動かすときだけ使う（CPU では deblur-infer-worker.js）
@@ -147,11 +148,14 @@ self.onmessage = async ({ data }) => {
     // 逆畳み込み（下）は AI の結果を使わないので、パソコン・Android では別の Worker で AI と同時に計算する（iPhone・iPad はメモリが少ないので後で）
     const dc = lowMemory(self.navigator) ? null : deconvInWorker(input);
     dc?.catch(() => {});
-    const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: 0.95 * t }) });
+    // 人物だけに（背景はピントの外れたぼけ。直すとガサガサになる）。肌のなめらかな所は弱く
+    const wt = subjectWeight(input, data.person || null, data.parts || null);
+    const res = await deblurResidual2(input, be.run, { concurrency: be.size, wt, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: 0.95 * t }) });
     // iPhone・iPad は、AI を片付けてから逆畳み込みをする（AI を抱えたままだと、計算用の配列と合わせてメモリが足りなくなる）
     if (lowMemory(self.navigator)) { backend.dispose(); backend = null; }
     // AI が直せない、なだらかなにじみ（ぼけ・小さなブレ）は、ぼけの形を仮定して戻す。AI がもう直した所には足さない
     addDeconv(res, dc ? await dc : deconvResidual(input), input);
+    weightResidual(res, wt);
     self.postMessage({ type: 'progress', phase: 'run', t: 1 });
     self.postMessage({ type: 'result', res }, [res.data.buffer]);
   } catch (error) {
