@@ -1568,7 +1568,7 @@ const PANELS = {
       hint('AI が髪の毛先・服の織りをくっきりさせます（肌は控えめ、背景はそのまま。初回は AI 約 5MB）。目・口・前髪の輪郭は「顔 AI」で。'),
       h('h3', {}, '背景をぼかす'),
       toggle('背景をぼかす', bokehActive(E.state.adj), live((v) => { E.state.adj.bokeh = v ? 50 : 0; commit(); })).el,
-      hint('AI が人物を見分けて、背景だけをやわらかくぼかします（髪・輪郭はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。'),
+      hint('AI が人物と写真の奥行きを見分けて、背景だけをやわらかくぼかします（髪・輪郭、透けたフリル・足元はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。初回は奥行きの AI（約 50MB）を読み込みます。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
