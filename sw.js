@@ -1,6 +1,6 @@
 // Service Worker: 一度開いたら、オフラインでも開けるようにする（ネットワーク優先・失敗したらキャッシュ）
-const CACHE = 'temoto-photo-v91';
-const VERSION = '1.34.13'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
+const CACHE = 'temoto-photo-v93';
+const VERSION = '1.35.2'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
 // vendor/ の大きなファイル（AI のモデル・WebAssembly。全部で 100MB ほど）は、版を上げても残す別のキャッシュに入れる
 // （前は版を上げるたびに消していたので、更新のたびに数十 MB をダウンロードし直し、電波の悪い所では AI の読み込みで止まって見えた）。
 // 名前の後ろは vendor/ の中身の指紋（tests/unit/version.test.js が確かめる。vendor/ を変えたら、テストが出す値に書き換える）
