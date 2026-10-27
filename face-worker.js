@@ -1,5 +1,5 @@
 // 顔専用 AI を動かす Worker（GFPGAN v1.4 を ONNX にしたもの。ONNX Runtime Web で、WebGPU があれば GPU、なければ CPU。端末の中だけで動く）
-// 受け取る: { type: 'run', faces: [{ crop: Float32Array（512×512 の RGB、0〜255）, pts: 顔の点（512 の座標）, refs: [{ img, pts }]（本人の写真） }] }
+// 受け取る: { type: 'run', faces: [{ crop: Float32Array（512×512 の RGB、0〜255）, pts: 顔の点（512 の座標）, refs: [{ img（RGB。8 ビットでもよい）, pts }]（本人の写真） }] }
 // 返す: { type: 'progress', phase: 'load' | 'run', t } … { type: 'result', outs: [Float32Array（512×512 の RGB、0〜255）] } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { SIZE, transferDetail } from './faceai.js';
@@ -149,15 +149,16 @@ async function restore(s, img) {
 self.onmessage = async ({ data }) => {
   if (data.type !== 'run') return;
   try {
+    // 本人の写真があれば、その細かい模様を先に移してから AI に通す（AI が本人らしい形を保つ）。
+    // AI を読み込む前に全部済ませ、本人の写真は手放す（本人の写真が何十枚あっても、大きな AI と同時にメモリに抱えないように。iPhone）
+    const srcs = data.faces.map((f) => (f.refs?.length ? transferDetail(f.crop, f.pts, f.refs) : f.crop));
+    data.faces = null;
     const s = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
     const outs = [];
-    for (let k = 0; k < data.faces.length; k++) {
-      const f = data.faces[k];
-      // 本人の写真があれば、その細かい模様を先に移してから AI に通す（AI が本人らしい形を保つ）
-      const src = f.refs?.length ? transferDetail(f.crop, f.pts, f.refs) : f.crop;
-      self.postMessage({ type: 'progress', phase: 'run', t: (k + 0.3) / data.faces.length });
-      outs.push(await restore(s, src));
-      self.postMessage({ type: 'progress', phase: 'run', t: (k + 1) / data.faces.length });
+    for (let k = 0; k < srcs.length; k++) {
+      self.postMessage({ type: 'progress', phase: 'run', t: (k + 0.3) / srcs.length });
+      outs.push(await restore(s, srcs[k])); srcs[k] = null;
+      self.postMessage({ type: 'progress', phase: 'run', t: (k + 1) / srcs.length });
     }
     self.postMessage({ type: 'result', outs }, outs.map((o) => o.buffer));
   } catch (error) {
