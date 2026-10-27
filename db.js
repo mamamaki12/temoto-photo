@@ -26,7 +26,7 @@ export const getProject = (id) => tx(['projects'], 'readonly', (p) => req(p.get(
 export const getBlob = (id) => tx(['blobs'], 'readonly', (b) => req(b.get(id)));
 export const putProject = (proj) => tx(['projects'], 'readwrite', (p) => { p.put(proj); });
 export const addProject = (proj, blob) => tx(['projects', 'blobs'], 'readwrite', (p, b) => { p.put(proj); b.put(blob, proj.id); });
-export const deleteProject = (id) => tx(['projects', 'blobs'], 'readwrite', (p, b) => { p.delete(id); b.delete(id); b.delete(`hq:${id}`); });
+export const deleteProject = (id) => tx(['projects', 'blobs'], 'readwrite', (p, b) => { p.delete(id); b.delete(id); b.delete(`hq:${id}`); b.delete(`stage:${id}`); });
 
 /**
  * 暗所補正・ブレ補正・顔 AI の結果（編集用の大きさ）。開き直したとき、計算し直さずにすぐ見せるため
@@ -35,9 +35,16 @@ export const deleteProject = (id) => tx(['projects', 'blobs'], 'readwrite', (p, 
 export const getHq = (id) => tx(['blobs'], 'readonly', (b) => req(b.get(`hq:${id}`)));
 export const putHq = (id, v) => tx(['blobs'], 'readwrite', (b) => { b.put(v, `hq:${id}`); });
 export const deleteHq = (id) => tx(['blobs'], 'readwrite', (b) => { b.delete(`hq:${id}`); });
+/**
+ * 仕上げの途中の結果（ノイズ除去と明るさ補正・ブレ補正・全体 AI の段ごと）。仕上げの途中で閉じた・アプリが落ちたとき、
+ * 次に開いたら済んだ段から続ける。仕上げが終わって結果（hq）を保存したら消す
+ */
+export const getStage = (id) => tx(['blobs'], 'readonly', (b) => req(b.get(`stage:${id}`)));
+export const putStage = (id, v) => tx(['blobs'], 'readwrite', (b) => { b.put(v, `stage:${id}`); });
+export const deleteStage = (id) => tx(['blobs'], 'readwrite', (b) => { b.delete(`stage:${id}`); });
 /** 補正の結果は大きい（1,670万画素で約 30MB）ので、新しく保存した keep 枚分だけ残す */
-export const pruneHq = (keep) => tx(['blobs'], 'readwrite', (b) => new Promise((res) => {
-  const list = []; const r = b.openCursor(IDBKeyRange.bound('hq:', 'hq:\uffff'));
+export const pruneHq = (keep, prefix = 'hq:') => tx(['blobs'], 'readwrite', (b) => new Promise((res) => {
+  const list = []; const r = b.openCursor(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
   r.onsuccess = () => {
     const c = r.result;
     if (c) { list.push([c.key, c.value?.at || 0]); c.continue(); return; }
