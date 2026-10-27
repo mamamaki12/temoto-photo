@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/faceai-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SCALE, TILE, TILE_IN, PAD, smallFrom, tiles, tileInput, tileRect, regionOf, tileResidual, putResidual, addDetail, applyDetail } from '../../wholeai.js';
+import { SCALE, TILE, TILE_IN, PAD, smallFrom, tiles, tileInput, tileRect, regionOf, tileResidual, putResidual, addDetail, applyDetail, edgeProtect } from '../../wholeai.js';
 import { SIZE, hairMask, widenMatrix, applyMatrix, invertMatrix } from '../../faceai.js';
 import { validateState } from '../../state.js';
 
@@ -65,6 +65,19 @@ test('AI がくっきりさせた所は足すが、まわりの明るさの幅�
   assert.ok(row(edge + 4) - row(edge - 4) > img[(100 * W + edge + 4) * 4] - img[(100 * W + edge - 4) * 4] + 10);
   // 縁取りは、写真の暗い〜明るいの幅からほとんどはみ出さない
   for (let x = 0; x < W; x++) { assert.ok(row(x) >= 40 - 4 && row(x) <= 200 + 4, `x=${x} ${row(x)}`); }
+});
+
+test('縁の保護: もともと強い縁（サテンの光沢など）は AI の差分を弱め、細かい模様や平らな所はそのまま', () => {
+  const W = 200; const H = 60; const edge = 100;
+  const rgb = (fn) => { const d = new Float32Array(W * H * 3); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d.fill(fn(x, y), (y * W + x) * 3, (y * W + x) * 3 + 3); return d; };
+  // なだらかで強い縁（暗い 40 → 明るい 200、幅 10 画素くらい）: 縁の上では、ほとんど足さない
+  const strong = edgeProtect(rgb((x) => 40 + 160 / (1 + Math.exp(-(x - edge) / 3))), W, H);
+  assert.ok(strong[30 * W + edge] < 0.3 && strong[30 * W + edge + 4] < 0.3 && strong[30 * W + edge - 4] < 0.3, `強い縁 ${strong[30 * W + edge]} ${strong[30 * W + edge + 4]}`);
+  // 縁から離れた平らな所は、そのまま
+  assert.ok(strong[30 * W + 20] > 0.95 && strong[30 * W + 180] > 0.95);
+  // 細かい模様（1 本 2 画素の線が 6 画素おき、明るさの差 30。髪の毛・織り）: 6 割以上はそのまま
+  const fine = edgeProtect(rgb((x) => (x % 6 < 2 ? 130 : 100)), W, H);
+  assert.ok(fine[30 * W + edge] > 0.6, `細かい模様 ${fine[30 * W + edge]}`);
 });
 
 test('書き出し: 差分を引き伸ばして足す（同じ大きさなら、そのまま足すのと同じ）', () => {
