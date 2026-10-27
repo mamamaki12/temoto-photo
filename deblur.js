@@ -206,9 +206,11 @@ export async function deblurResidual2(small, infer, { onProgress = () => {}, sig
   let wt2 = null;
   if (wt) { wt2 = new Float32Array(w2 * h2); for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) wt2[y * w2 + x] = Math.max(wt[2 * y * w + 2 * x], wt[Math.min(h - 1, 2 * y + 1) * w + Math.min(w - 1, 2 * x + 1)]); }
   const r1 = await deblurResidual2({ width: w2, height: h2, data: half }, infer, { signal, concurrency, levels: levels - 1, cap, wt: wt2, onProgress: (t) => onProgress(0.2 * t) });
-  const up = resizeRGB(r1, w, h).data;
-  const pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
+  let up = resizeRGB(r1, w, h).data;
+  let pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
+  up = null; // AI を動かす間は持たない（大きい。あとで同じものを作り直す）
   const r2 = await deblurResidual({ width: w, height: h, data: pre }, infer, { signal, concurrency, wt, onProgress: (t) => onProgress(0.2 + 0.8 * t) });
+  pre = null; up = resizeRGB(r1, w, h).data;
   for (let i = 0; i < data.length; i++) r2.data[i] += up[i];
   // 2 段の和も、元の絵の直してよい量までに抑える（頬のやわらかい光の境目が、角ばった形にならないように）
   if (cap > 0) limitResidual(r2.data, gateMap(data, w, h).map((a) => a * cap), w, h);

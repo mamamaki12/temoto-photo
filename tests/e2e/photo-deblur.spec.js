@@ -1,28 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { openTool } from './photo-helpers.js';
+import { openTool, blurredPhoto } from './photo-helpers.js';
 
 // ブレ補正の AI（約 36MB）を端末の中で動かすので、時間を長めに
 test.setTimeout(180_000);
-
-/** 横に流れた縞（左半分）と、平らな所（右半分）の写真 */
-async function blurredPhoto(page) {
-  const b64 = await page.evaluate(async () => {
-    const w = 360; const h = 300; const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
-    x.fillStyle = '#c9a27e'; x.fillRect(0, 0, w, h);
-    x.fillStyle = '#3b2a20'; for (let i = 0; i < 6; i++) x.fillRect(20 + i * 26, 40, 10, 220);
-    // 横に 12 画素ぶれた（動いた）ように、ずらして重ねる
-    const src = x.getImageData(0, 0, w / 2, h); const out = x.createImageData(w / 2, h);
-    for (let y = 0; y < h; y++) for (let X = 0; X < w / 2; X++) for (let ch = 0; ch < 4; ch++) {
-      let s = 0; for (let k = -6; k <= 6; k++) s += src.data[(y * (w / 2) + Math.min(w / 2 - 1, Math.max(0, X + k))) * 4 + ch];
-      out.data[(y * (w / 2) + X) * 4 + ch] = s / 13;
-    }
-    x.putImageData(out, 0, 0);
-    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
-    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-    return btoa(s);
-  });
-  return { name: 'blur.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') };
-}
 
 /** 補正した写真（編集用の大きさ）の、左半分の輪郭の強さと、右半分の平らな所の平均 */
 const measure = (page) => page.evaluate(() => {
@@ -105,4 +85,29 @@ test('被写体ブレの補正: 元の大きさの書き出しでも、編集中
   expect(r.grain).toBeGreaterThan(0);
   expect(r.size).toEqual([300, 700]);
   expect(r.diff).toBeLessThanOrEqual(3); // 粒（暗い写真では最大 4 階調）は明るさで強さが変わるので、GPU を通した 1〜2 階調の違いが少し広がる
+});
+
+test('被写体ブレの補正: iPhone（メモリの少ない端末）でも、パソコンと同じ差分になる（AI に 1 枚ずつ渡す・組み替えなし・終わったら片付ける）', async ({ browser }) => {
+  test.setTimeout(360_000); // AI を 2 回（パソコン・iPhone）動かす
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+  const run = async (userAgent) => {
+    const ctx = await browser.newContext({ baseURL: 'http://127.0.0.1:4173', ...(userAgent ? { userAgent } : {}) });
+    const page = await ctx.newPage(); await page.goto('/');
+    const r = await page.evaluate(async () => {
+      const { deblurResidualFor } = await import('/deblur-photo.js');
+      const w = 320; const h = 300; const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+      x.fillStyle = '#c9a27e'; x.fillRect(0, 0, w, h); x.fillStyle = '#3b2a20';
+      for (let i = 0; i < 7; i++) x.fillRect(20 + i * 40, 30, 14, 240);
+      x.filter = 'blur(3px)'; x.drawImage(c, 0, 0); x.filter = 'none';
+      const res = await deblurResidualFor(c, w, h, w, h);
+      let s = 0; for (let i = 0; i < res.data.length; i++) s += Math.abs(res.data[i]);
+      return { data: Array.from(res.data.filter((_, i) => i % 7 === 0)), s };
+    });
+    await ctx.close();
+    return r;
+  };
+  const pc = await run(null); const ios = await run(IPHONE);
+  expect(pc.s).toBeGreaterThan(1); // 直している
+  let mx = 0; for (let i = 0; i < pc.data.length; i++) mx = Math.max(mx, Math.abs(pc.data[i] - ios.data[i]));
+  expect(mx).toBeLessThan(1 / 255); // 違いは計算の丸めの分だけ（8bit の 1 階調より小さい）
 });
