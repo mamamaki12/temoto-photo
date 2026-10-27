@@ -202,9 +202,11 @@ export async function deblurResidual2(small, infer, { onProgress = () => {}, sig
   }
   // 進捗: 半分の大きさの段は区画が 4 分の 1 なので 2 割
   const r1 = await deblurResidual2({ width: w2, height: h2, data: half }, infer, { signal, concurrency, levels: levels - 1, cap, onProgress: (t) => onProgress(0.2 * t) });
-  const up = resizeRGB(r1, w, h).data;
-  const pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
+  let up = resizeRGB(r1, w, h).data;
+  let pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
+  up = null; // AI を動かす間は持たない（大きい。あとで同じものを作り直す）
   const r2 = await deblurResidual({ width: w, height: h, data: pre }, infer, { signal, concurrency, onProgress: (t) => onProgress(0.2 + 0.8 * t) });
+  pre = null; up = resizeRGB(r1, w, h).data;
   for (let i = 0; i < data.length; i++) r2.data[i] += up[i];
   // 2 段の和も、元の絵の直してよい量までに抑える（頬のやわらかい光の境目が、角ばった形にならないように）
   if (cap > 0) limitResidual(r2.data, gateMap(data, w, h).map((a) => a * cap), w, h);

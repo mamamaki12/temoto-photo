@@ -4,6 +4,7 @@
 import { deblurSize, applyResidual } from './deblur.js';
 import { addGrain } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
+import { lowMemory } from './cores.js';
 
 /** この編集で、ブレ補正を使うか */
 export const deblurActive = (adj) => adj.deblur > 0;
@@ -39,7 +40,9 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
   return new Promise((resolve, reject) => {
     const done = (err, res) => {
       wk.onmessage = null; wk.onerror = null; signal?.removeEventListener('abort', onAbort);
-      if (err) { wk.terminate(); if (worker === wk) worker = null; reject(err); } else resolve(res);
+      // iPhone・iPad では、終わったら AI を片付ける（次の段の計算・顔 AI とメモリを取り合わないように。次に使うときは読み込み直す）
+      if (err || lowMemory()) { wk.terminate(); if (worker === wk) worker = null; }
+      if (err) reject(err); else resolve(res);
     };
     const onAbort = () => done(abortError());
     signal?.addEventListener('abort', onAbort, { once: true });

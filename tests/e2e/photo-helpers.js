@@ -84,3 +84,23 @@ export async function openTool(page, name) {
   await page.getByRole('tab', { name: g, exact: true }).click();
   if (GROUP_OF[name]) await page.getByRole('tab', { name, exact: true }).click();
 }
+
+/** 横に流れた縞（左半分）と、平らな所（右半分）の写真 */
+export async function blurredPhoto(page) {
+  const b64 = await page.evaluate(async () => {
+    const w = 360; const h = 300; const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+    x.fillStyle = '#c9a27e'; x.fillRect(0, 0, w, h);
+    x.fillStyle = '#3b2a20'; for (let i = 0; i < 6; i++) x.fillRect(20 + i * 26, 40, 10, 220);
+    // 横に 12 画素ぶれた（動いた）ように、ずらして重ねる
+    const src = x.getImageData(0, 0, w / 2, h); const out = x.createImageData(w / 2, h);
+    for (let y = 0; y < h; y++) for (let X = 0; X < w / 2; X++) for (let ch = 0; ch < 4; ch++) {
+      let s = 0; for (let k = -6; k <= 6; k++) s += src.data[(y * (w / 2) + Math.min(w / 2 - 1, Math.max(0, X + k))) * 4 + ch];
+      out.data[(y * (w / 2) + X) * 4 + ch] = s / 13;
+    }
+    x.putImageData(out, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  return { name: 'blur.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') };
+}
