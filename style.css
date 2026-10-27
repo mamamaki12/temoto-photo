@@ -135,8 +135,9 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .side { grid-area: side; }
 .stage { grid-area: stage; }
 .editor.side-closed .side { display: none; }
+/* 見出しは上に貼り付ける（sticky）。iOS 26 のホーム画面アプリは、上端に「貼り付いた不透明な帯」が無いと、ステータスバーの下までぼかしをかける（写真一覧の見出しはぼやけない） */
 .ed-head {
-  position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(8px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
+  position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(8px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
   background: var(--header); color: #fff; border-bottom: 1px solid var(--header-line);
 }
 .ed-head button, .ed-head .menu summary { background: transparent; border-color: transparent; color: #fff; }
