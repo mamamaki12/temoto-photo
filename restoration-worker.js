@@ -41,10 +41,10 @@ self.onmessage = async ({ data }) => {
     self.postMessage({ type: 'tone', id: data.id, data: out }, [out.buffer]);
     return;
   }
-  // 背景のぼかし（bokeh-photo.js から。4 分の 1 に縮めた写真と人物の地図）
+  // 背景のぼかし（bokeh-photo.js から。4 分の 1 に縮めた写真と人物・奥行きの地図）
   if (data.type === 'bokeh') {
     try {
-      const alpha = personAlpha(data.rgba, data.w, data.h, data.person); self.postMessage({ type: 'progress', t: 0.2 });
+      const alpha = personAlpha(data.rgba, data.w, data.h, data.person, data.depth); self.postMessage({ type: 'progress', t: 0.2 });
       const auto = autoRadius(Math.max(data.w, data.h), data.face, data.person);
       const bokeh = computeBokeh(data.rgba, data.w, data.h, alpha, auto.r, (t) => self.postMessage({ type: 'progress', t: 0.2 + 0.8 * t }));
       bokeh.auto = auto;
@@ -57,7 +57,7 @@ self.onmessage = async ({ data }) => {
   // 人物の割合の地図だけ（crisp-photo.js から。髪・服をくっきりの重みに使う）
   if (data.type === 'alpha') {
     try {
-      const alpha = personAlpha(data.rgba, data.w, data.h, data.person);
+      const alpha = personAlpha(data.rgba, data.w, data.h, data.person, data.depth);
       self.postMessage({ type: 'result', alpha }, [alpha.buffer]);
     } catch (error) {
       self.postMessage({ type: 'error', message: error.message });
