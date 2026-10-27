@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.6'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.7'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -784,6 +784,12 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
   onProgress(1);
   return { canvas, res, faces, whole, bokeh: bkRes, partial, pre: pre !== canvas ? pre : null };
 }
+/** 前の結果から変えた項目の名前（計算し直す重い所がなく、合成し直すだけのときの進捗の表示に） */
+function changedItems(from, to) {
+  if (!from || !to) return [];
+  const a = JSON.parse(from); const b = JSON.parse(to); const diff = (...i) => i.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+  return [diff(0, 1) && 'ノイズ除去と明るさ補正', diff(2) && 'ブレ補正', diff(4, 5, 6) && '顔 AI', diff(8) && '髪・服をくっきり', diff(7) && '背景のぼかし'].filter(Boolean);
+}
 async function runLowlight() {
   if (!E) return;
   const key = hqKey(E.state);
@@ -799,7 +805,7 @@ async function runLowlight() {
   try {
     const { canvas, res, faces, whole, bokeh, partial, pre } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal,
-      onSteps: (names) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqSteps = names; hqBar(0); } },
+      onSteps: (names) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqSteps = names.length ? names : changedItems(E.hqLast?.key, key); hqBar(0); } },
       onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
     if (E !== e0 || E.hq?.ctrl !== ctrl) { dropPre(e0, pre); return; }
@@ -849,22 +855,26 @@ async function unpackPixels(data, z, W, H) {
  */
 async function saveHq(e0, key, canvas, { pre = null, K = null, faces = null, bokeh = null, bs = null } = {}) {
   await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
-  if (e0.hq?.key !== key || e0.hq.canvas !== canvas) { dropPre(e0, pre); return; } // 写真一覧に戻っても保存は続ける（計算してすぐ戻ると、次に開いたときまた計算し直すことになる）
+  try {
+    // 顔 AI の前の写真は、すぐ続けて別の値に変えても（結果の保存はやめても）詰めて取っておく。ぼかし・顔 AI の強さだけを変えたときは作り直さないので、ここで取っておかないと保存できない
+    if (pre && K && (K.fa || K.bk)) { const data = await packPixels(pre, e0.W, e0.H); e0.pfPack = { key: K.pfKey, data }; }
+  } catch (err) { console.warn('補正の途中の結果を保存できませんでした', err); }
+  dropPre(e0, pre); pre = null;
+  if (e0.hq?.key !== key || e0.hq.canvas !== canvas) return; // 写真一覧に戻っても保存は続ける（計算してすぐ戻ると、次に開いたときまた計算し直すことになる）
   try {
     const data = await packPixels(canvas, e0.W, e0.H);
-    if (e0.hq?.key !== key) { dropPre(e0, pre); return; }
-    // 顔 AI の前の写真: 今回作ったもの。作らなかった（使い回した）ときは、前に保存したものが同じならそのまま
+    if (e0.hq?.key !== key) return;
+    // 顔 AI の前の写真: 今回か前に詰めたもの。なければ、前に保存したものが同じならそのまま
     let pf = null;
     if (K && (K.fa || K.bk)) {
-      if (pre) pf = { key: K.pfKey, data: await packPixels(pre, e0.W, e0.H) };
+      if (e0.pfPack?.key === K.pfKey) pf = e0.pfPack;
       else { const old = await db.getHq(e0.id).catch(() => null); if (old?.pf?.key === K.pfKey && (old.raw ?? null) === (e0.rawKey ?? null) && old.z === canZip) pf = old.pf; }
     }
-    dropPre(e0, pre); pre = null;
     if (e0.hq?.key !== key) return;
     await db.putHq(e0.id, { key, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now(), raw: e0.rawKey ?? null, pfKey: K?.pfKey ?? null, pf,
       fa: K?.fa && faces ? { key: K.faKey, faces } : null, bk: K?.bk && bokeh ? { key: K.bkKey, res: bokeh } : null, bs: K && bs?.key === K.bsKey ? bs : null });
     await db.pruneHq(HQ_KEEP);
-  } catch (err) { dropPre(e0, pre); console.warn('補正の結果を保存できませんでした', err); }
+  } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
 }
 /** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
 async function loadHq(rec) {
@@ -878,8 +888,9 @@ async function loadHq(rec) {
 function seedHqCache(rec, canvas) {
   const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {});
   if ((rec.raw ?? null) !== (E.rawKey ?? null) || rec.pfKey !== K.pfKey) return;
+  if (rec.pf?.key === K.pfKey) E.pfPack = rec.pf;
   if (!K.fa && !K.bk) { const z = rec.z; const data = rec.data; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; } else if (rec.pf?.key === K.pfKey) { const { data } = rec.pf; const z = rec.z; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; }
-  if (K.fa && rec.fa?.key === K.faKey && Array.isArray(rec.fa.faces)) c.fa = { key: K.faKey, faces: rec.fa.faces, canvas: K.bk ? null : canvas, amount: K.bk ? null : E.state.faceai.amount };
+  if (K.fa && rec.fa?.key === K.faKey && Array.isArray(rec.fa.faces)) c.fa = { key: K.faKey, faces: rec.fa.faces, canvas: K.bk ? null : canvas, amount: E.state.faceai.amount };
   if (K.bk && rec.bk?.key === K.bkKey) c.bk = { key: K.bkKey, res: rec.bk.res };
   if (rec.bs?.key === K.bsKey) c.bs = { key: K.bsKey, src: rec.bs.src };
 }
