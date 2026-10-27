@@ -27,7 +27,8 @@ test('写真全体の明るさ: 操作・Undo・再読み込み・PNG書き出�
   const pending = page.waitForEvent('download');
   await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
-  await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
+  await expect(dlg).toContainText('✓ できました');
+  await expect(dlg.locator('.prog-pop')).toBeHidden();
 });
 
 test('開き直したとき、前に計算した明るさ補正の結果をすぐ見せる（計算し直さない）', async ({ page }) => {
@@ -149,7 +150,8 @@ test('暗い写真の補正: ノイズを取ってから明るくする処理を
   const pending = page.waitForEvent('download');
   await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
-  await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
+  await expect(dlg).toContainText('✓ できました');
+  await expect(dlg.locator('.prog-pop')).toBeHidden();
 });
 
 test('暗い写真の補正: 明るさ補正だけを変えたときは、ノイズ除去をやり直さずに仕上げ直す（最初から処理したのと同じ）。動かしている間は見本を見せる', async ({ page }) => {

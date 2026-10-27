@@ -645,10 +645,18 @@ test('書き出し: パソコンでは（共有できても）ボタンは「ダ
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
   const dlg = page.getByRole('dialog');
   await expect(dlg.locator('.dlg-actions button')).toHaveText(['閉じる', 'ダウンロード']);
+  // 進み具合は、画面の真ん中のポップアップの丸い円に % で出す
+  await page.evaluate(() => {
+    window.__ring = [];
+    new MutationObserver(() => { const r = document.querySelector('.prog-pop:not([hidden]) [role=progressbar]'); if (r) window.__ring.push(r.getAttribute('aria-label')); })
+      .observe(document.querySelector('.prog-pop'), { attributes: true, childList: true, subtree: true, characterData: true });
+  });
   const dl = page.waitForEvent('download');
   await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await dl).suggestedFilename()).toMatch(/_edit\.jpg$/);
   expect(await page.evaluate(() => window.__shared)).toBe(0);
+  expect(await page.evaluate(() => window.__ring)).toContain('画像の書き出し進捗');
+  await expect(dlg.locator('.prog-pop')).toBeHidden();
 });
 });
 
