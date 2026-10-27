@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.5'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -760,6 +760,8 @@ async function runLowlight() {
 // 写真を開き直すたびに一から計算し直し、その間（iPhone では数十秒）は補正前の暗い写真に見えていた。
 // 画素をそのまま（色空間もそのまま）保存して、開いたときに編集の値が同じならすぐ見せる。PNG にしないのは、Display P3 の色が変わらないように
 const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
+// 保存した版（VERSION）が今と違う結果は使わない。補正の計算を直しても、前に開いた写真は古い計算の結果のまま見えてしまう
+// （1.32.1 で肌の色味を戻したあとも、それより前に開いた写真は白っぽい肌のままだった）。版が変わったら一度だけ計算し直す
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
 async function saveHq(e0, key, canvas) {
   await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
@@ -769,13 +771,13 @@ async function saveHq(e0, key, canvas) {
     let data = new Blob([px]);
     if (canZip) data = await new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob();
     if (e0.hq?.key !== key) return;
-    await db.putHq(e0.id, { key, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
+    await db.putHq(e0.id, { key, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
     await db.pruneHq(HQ_KEEP);
   } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
 }
 /** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
 async function loadHq(rec) {
-  if (!rec || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE || !(rec.data instanceof Blob)) return null;
+  if (!rec || rec.ver !== VERSION || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE || !(rec.data instanceof Blob)) return null;
   if (rec.z && !canZip) return null;
   try {
     const buf = rec.z ? await new Response(rec.data.stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer() : await rec.data.arrayBuffer();
@@ -808,12 +810,31 @@ function startPrecompute() {
   promise.catch((err) => { if (err.name !== 'AbortError') console.warn('書き出しの先読み', err); if (e0.pre?.promise === promise) e0.pre = null; });
   E.pre = { key, ctrl, promise };
 }
-/** 写真の上の進捗バー（t: 0〜1、null で隠す） */
+/**
+ * 丸い円の進み具合（真ん中に %）。set(0〜100) で進め、set(null) は「準備中」（円が回る）
+ */
+function progressRing(label) {
+  const num = h('b', { class: 'ring-num' });
+  const el = h('div', { class: 'ring', role: 'progressbar', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': 100 }, num);
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('aria-hidden', 'true');
+  const circle = (cls) => { const c = document.createElementNS(NS, 'circle'); for (const [k, v] of Object.entries({ class: cls, cx: 24, cy: 24, r: 21, pathLength: 100 })) c.setAttribute(k, v); svg.append(c); return c; };
+  circle('ring-bg'); const fg = circle('ring-fg');
+  el.prepend(svg);
+  const set = (p) => {
+    el.classList.toggle('spin', p == null);
+    if (p == null) { el.removeAttribute('aria-valuenow'); num.textContent = ''; fg.style.strokeDashoffset = '75'; return; }
+    el.setAttribute('aria-valuenow', p); num.textContent = `${p}%`; fg.style.strokeDashoffset = String(100 - p);
+  };
+  set(0);
+  return { el, set };
+}
+/** 写真の上の進み具合（真ん中のポップアップ。t: 0〜1、null で隠す） */
 function hqBar(t) {
   if (!E?.hqEl) return;
   E.hqEl.hidden = t == null; if (t == null) return;
   const p = Math.min(99, Math.floor(t * 100));
-  E.hqEl.querySelector('progress').value = p;
+  E.hqRing.set(p);
   E.hqEl.querySelector('span').textContent = `${[lowlightActive(E.state.adj) && 'ノイズ除去と明るさ補正', deblurActive(E.state.adj) && 'ブレ補正', faceaiActive(E.state) && '顔 AI', crispActive(E.state.adj) && '髪・服をくっきり', bokehActive(E.state.adj) && '背景のぼかし'].filter(Boolean).join('・')}… 残り${100 - p}%`;
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
@@ -1030,7 +1051,8 @@ function buildEditor() {
   E.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); E.svg.classList.add('handles');
   E.wrap = h('div', { class: 'view-wrap' }, E.view, E.svg);
   E.origBadge = h('div', { class: 'orig-badge', hidden: true }, '編集前');
-  E.hqEl = h('div', { class: 'hq-status', role: 'status', hidden: true }, h('span', {}), h('progress', { max: 100, value: 0, 'aria-label': '暗い写真の補正の進捗' }));
+  E.hqRing = progressRing('暗い写真の補正の進捗');
+  E.hqEl = h('div', { class: 'hq-status prog-card', role: 'status', hidden: true }, E.hqRing.el, h('span', {}));
   E.stageEl = h('div', { class: 'stage', tabindex: '-1' }, E.wrap, E.origBadge, E.hqEl);
   setupPointer(E.stageEl);
   E.undoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': '元に戻す（Ctrl+Z）', title: '元に戻す（Ctrl+Z）', onclick: undo }, '↶');
@@ -2392,7 +2414,17 @@ function openExport({ batch }) {
   let ready = null; // 写真アプリへの保存で、用意できた画像（iPhone は時間がたつと共有を開けないので、もう一度押してもらう）
   const save = () => { prefs.set('export', opt); ready = null; };
   const status = h('p', { class: 'muted small', 'aria-live': 'polite' });
-  const exportProgress = h('progress', { max: 100, hidden: true, 'aria-label': '画像の書き出し進捗' });
+  // 書き出しの進み具合は、ダイアログの下ではなく画面の真ん中のポップアップ（丸い円と %）に出す
+  const ring = progressRing('画像の書き出し進捗');
+  const popText = h('span', {});
+  // popover にして、モーダルのダイアログよりも上（最前面）に出す
+  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText));
+  /** 進み具合を出す（p: 0〜100、null は準備中。text は円の下の説明。ダイアログの説明にも同じ文を出す） */
+  const busy = (p, text) => {
+    if (pop.hidden) { pop.hidden = false; try { pop.showPopover?.(); } catch { /* 開いている */ } }
+    ring.set(p); if (text != null) { popText.textContent = text; status.textContent = text; }
+  };
+  const idle = () => { if (pop.hidden) return; try { pop.hidePopover?.(); } catch { /* 閉じている */ } pop.hidden = true; };
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
   const q = slider({ label: '画質', min: 50, max: 100, value: opt.quality, def: 92, unit: '%', onChange: (v) => { opt.quality = v; save(); } });
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
@@ -2414,24 +2446,23 @@ function openExport({ batch }) {
     h('div', { class: 'field' }, h('label', { for: 'exp-name' }, 'ファイル名'), name),
     ...(toPhotos ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
     h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
-    status, exportProgress,
+    status, pop,
     h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), go));
   dlg.addEventListener('close', () => dlg.remove());
   const one = async () => {
     flushSave();
     const st = S.clone(E.state);
-    status.textContent = '書き出しています…';
-    exportProgress.hidden = false; exportProgress.removeAttribute('value');
+    busy(null, '書き出しています…');
     let full = null;
     if (useFull({ full: { width: E.proj.w || 0, height: E.proj.h || 0 }, W: E.W, H: E.H }, opt.format, opt.maxSide)) {
-      status.textContent = E.rawLin ? 'RAW を元の大きさで現像しています…（しばらくかかります）' : '元の大きさの写真を読み込んでいます…';
+      busy(null, E.rawLin ? 'RAW を元の大きさで現像しています…（しばらくかかります）' : '元の大きさの写真を読み込んでいます…');
       try { full = await loadFull(E.proj, await db.getBlob(E.id), st, E.rawLin?.gain); } catch (e) { console.warn('元の大きさの写真を読み込めませんでした', e); full = null; }
     }
-    const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); exportProgress.value = p; status.textContent = `画像を生成しています… 残り${100 - p}%`; };
+    const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); busy(p, `画像を生成しています… 残り${100 - p}%`); };
     let r;
     const lowlightPre = E.pre && E.pre.key === preKey(st) ? E.pre.promise : null;
     try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() && !E.hq.saved ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), hqWhole: hqWhole(), hqBokeh: hqBokeh(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
-    exportProgress.value = 100;
+    idle();
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
     return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
   };
@@ -2439,21 +2470,20 @@ function openExport({ batch }) {
   const many = async (onFile) => {
     let i = 0;
     // まとめて書き出すときも、全体の進み具合をバーに出す（暗所補正・ブレ補正のある写真は 1 枚に数分かかる）
-    exportProgress.hidden = false; exportProgress.value = 0;
-    const step = (t) => { exportProgress.value = Math.min(99, Math.floor(100 * (i - 1 + t) / batch.length)); };
+    const step = (t) => { busy(Math.min(99, Math.floor(100 * (i - 1 + t) / batch.length))); };
     for (const p of batch) {
-      status.textContent = `書き出しています… ${++i}/${batch.length}`; step(0);
+      busy(null, `書き出しています… ${++i}/${batch.length}`); step(0);
       const blob = await db.getBlob(p.id); const prep = await prepare(p, blob, undefined, { keepFull: true });
       if (portraitActive(S.validateState(p.state).portrait)) await ensureSkinSeg(ctx2d(toCanvas(prep.base, prep.W, prep.H), { willReadFrequently: true }).getImageData(0, 0, prep.W, prep.H)); // 美肌の肌を AI で見分ける
       if (!prep.full && prep.lin && useFull({ full: { width: p.w, height: p.h }, W: prep.W, H: prep.H }, opt.format, opt.maxSide)) {
-        status.textContent = `RAW を元の大きさで現像しています… ${i}/${batch.length}`;
+        busy(null, `RAW を元の大きさで現像しています… ${i}/${batch.length}`);
         try { prep.full = await loadFull(p, blob, S.validateState(p.state), prep.lin.gain); } catch { prep.full = null; }
       }
       let r;
       try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: step }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
       await onFile(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
     }
-    exportProgress.value = 100; status.textContent = `✓ ${batch.length}枚を書き出しました`;
+    idle(); status.textContent = `✓ ${batch.length}枚を書き出しました`;
   };
   const downloadAll = async () => {
     if (!batch) { const r = await one(); download(r.blob, r.file); toast('ダウンロードしました'); }
@@ -2471,12 +2501,12 @@ function openExport({ batch }) {
     } catch (e) {
       if (e?.name === 'NotAllowedError' && files) { // 書き出しに時間がかかって、押したことが切れた（iPhone の決まり）。用意はできたので、もう一度押してもらう
         ready = files; go.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
-      } else if (e?.name !== 'AbortError') { if (!files) exportProgress.hidden = true; status.textContent = files ? '写真アプリに保存できませんでした' : '書き出せませんでした。大きさを小さくしてお試しください。'; }
+      } else if (e?.name !== 'AbortError') { idle(); status.textContent = files ? '写真アプリに保存できませんでした' : '書き出せませんでした。大きさを小さくしてお試しください。'; }
     }
   };
   go.addEventListener('click', async () => {
     go.disabled = true;
-    try { await (toPhotos ? shareAll() : downloadAll()); } catch { exportProgress.hidden = true; status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
+    try { await (toPhotos ? shareAll() : downloadAll()); } catch { idle(); status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });
   document.body.append(dlg); dlg.showModal();
 }
