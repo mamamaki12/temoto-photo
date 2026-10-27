@@ -762,3 +762,20 @@ test('アプリとして入れられるブラウザでは、写真一覧に「�
   await expect.poll(() => page.evaluate(() => window.__prompted)).toBe(true);
   await expect(card).toHaveCount(0);
 });
+
+test('編集中にページが落ちても、読み込み直すと編集していた写真が編集したまま開く（ふつうに閉じたときは写真一覧）', async ({ page }) => {
+  await openWith(page);
+  await tab(page, 'ライト');
+  await setSlider(page, '露光量', 40);
+  await expect.poll(() => savedExposures(page), { timeout: 15000 }).toContain(40);
+  // ページが落ちたとき（iPhone でメモリが足りないとき）は pagehide が来ない。来なかったことにする
+  await page.evaluate(() => addEventListener('pagehide', () => localStorage.setItem('temoto:editing', JSON.stringify(window.__temoto.editor.id))));
+  await page.reload();
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
+  // ふつうに読み込み直したときは写真一覧
+  await page.evaluate(() => localStorage.removeItem('temoto:resumedAt'));
+  await page.reload();
+  await expect(page.locator('.lib-item')).toHaveCount(1);
+  expect(await page.evaluate(() => !!window.__temoto.editor)).toBe(false);
+});

@@ -8,17 +8,16 @@ const later = () => new Promise((r) => setTimeout(r, 0));
 const abortError = () => new DOMException('処理を中止しました', 'AbortError');
 
 /**
- * 編集用の大きさの写真から、ぼかした背景と人物の割合（4 分の 1 の大きさ）を求める。
- * 人物は AI（personSeg）で見分ける。AI が使えない端末では、背景が分からないので何もぼかさない（null）
- * @param {number} radius ぼかしの半径（編集用の大きさの画素。bokeh.js の bokehRadius）
- * @returns {Promise<{width:number,height:number,bg:Uint8ClampedArray,alpha:Uint8ClampedArray}|null>}
+ * ぼかしの元: 編集用の大きさの写真を 4 分の 1 に縮めたものと、人物の地図（AI の personSeg）。
+ * ぼかしの強さだけを変えたときは、これを使い回す（写真全体を読み直さない）。AI が使えない端末では null（何もぼかさない）
+ * @returns {Promise<{w:number,h:number,rgba:Uint8ClampedArray,person:{m,w,h}}|null>}
  */
-export async function bokehFor(image, W, H, radius, { signal, onProgress = () => {} } = {}) {
+export async function bokehSource(image, W, H, { signal, onProgress = () => {} } = {}) {
   if (signal?.aborted) throw abortError();
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
-  const person = await personSeg(smallPixels(c, W, H)); onProgress(0.3);
-  if (signal?.aborted) throw abortError();
+  const person = await personSeg(smallPixels(c, W, H)); onProgress(1);
+  if (signal?.aborted) { c.width = 0; c.height = 0; throw abortError(); }
   if (!person) { c.width = 0; c.height = 0; return null; }
   // 4 分の 1 に縮める（なめらかに）
   const w = Math.max(1, Math.round(W / SCALE)); const h = Math.max(1, Math.round(H / SCALE));
@@ -26,21 +25,42 @@ export async function bokehFor(image, W, H, radius, { signal, onProgress = () =>
   const sx = ctx2d(s, { willReadFrequently: true }); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, w, h);
   c.width = 0; c.height = 0;
   const img = sx.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }); s.width = 0; s.height = 0;
+  return { w, h, rgba: img.data, person: { m: person.m, w: person.w, h: person.h } };
+}
+
+/**
+ * ぼかしの元（bokehSource）から、ぼかした背景と人物の割合（4 分の 1 の大きさ）を求める（Worker で）
+ * @param {number} radius ぼかしの半径（編集用の大きさの画素。bokeh.js の bokehRadius）
+ * @returns {Promise<{width:number,height:number,bg:Uint8ClampedArray,alpha:Uint8ClampedArray}|null>}
+ */
+export async function bokehFromSource(src, radius, { signal, onProgress = () => {} } = {}) {
+  if (!src) return null;
+  if (signal?.aborted) throw abortError();
   const worker = new Worker(new URL('./restoration-worker.js', import.meta.url), { type: 'module' });
   try {
     const r = await new Promise((resolve, reject) => {
       const onAbort = () => reject(abortError());
       signal?.addEventListener('abort', onAbort, { once: true });
       worker.onmessage = ({ data: m }) => {
-        if (m.type === 'progress') onProgress(0.3 + 0.7 * m.t);
+        if (m.type === 'progress') onProgress(m.t);
         else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m.bokeh); } else if (m.type === 'error') reject(new Error(m.message));
       };
       worker.onerror = (e) => reject(new Error(e.message || 'worker'));
-      worker.postMessage({ type: 'bokeh', rgba: img.data, w, h, person: { m: person.m, w: person.w, h: person.h }, r: Math.max(1, Math.round(radius / SCALE)) }, [img.data.buffer]);
+      const rgba = src.rgba.slice(); // 元は使い回すので、写しを渡す
+      worker.postMessage({ type: 'bokeh', rgba, w: src.w, h: src.h, person: src.person, r: Math.max(1, Math.round(radius / SCALE)) }, [rgba.buffer]);
     });
     onProgress(1);
     return r;
   } finally { worker.terminate(); }
+}
+
+/**
+ * 編集用の大きさの写真から、ぼかした背景と人物の割合（4 分の 1 の大きさ）を求める（bokehSource → bokehFromSource）
+ * @returns {Promise<{width:number,height:number,bg:Uint8ClampedArray,alpha:Uint8ClampedArray}|null>}
+ */
+export async function bokehFor(image, W, H, radius, { signal, onProgress = () => {} } = {}) {
+  const src = await bokehSource(image, W, H, { signal, onProgress: (t) => onProgress(0.3 * t) });
+  return bokehFromSource(src, radius, { signal, onProgress: (t) => onProgress(0.3 + 0.7 * t) });
 }
 
 /** 編集用の大きさの写真に、背景のぼかしを合成した新しい Canvas */
