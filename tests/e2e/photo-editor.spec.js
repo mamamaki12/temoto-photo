@@ -41,7 +41,7 @@ async function exportFile(page, opts = {}) {
   if (opts.format) await dlg.getByRole('button', { name: opts.format }).click();
   if (opts.size) await dlg.getByRole('button', { name: opts.size }).click();
   const dl = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   const d = await dl;
   const buf = await readFile(await d.path());
   await dlg.getByRole('button', { name: '閉じる' }).click();
@@ -360,7 +360,7 @@ test('保存して再読み込みしても編集が残る・プリセット・�
   await page.getByRole('button', { name: 'まとめて書き出し' }).click();
   const files = [];
   page.on('download', (d) => files.push(d.suggestedFilename()));
-  await page.getByRole('dialog').getByRole('button', { name: '2枚を書き出す' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'ダウンロード', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('2枚を書き出しました', { timeout: 15000 });
   expect(files).toHaveLength(2);
   await page.getByRole('dialog').getByRole('button', { name: '閉じる' }).click();
@@ -637,7 +637,30 @@ test('書き出し: 「写真アプリに保存」で共有メニューに画像
   await expect(dlg.getByRole('button', { name: '写真アプリに保存' })).toBeVisible();
 });
 
-test('書き出し: 写真アプリに保存できる端末では、1枚でもまとめてでも緑のボタンは「写真アプリに保存」。まとめては全部を一度に渡す', async ({ page }) => {
+test.describe('パソコン', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, deviceScaleFactor: 1 });
+test('書き出し: パソコンでは（共有できても）ボタンは「ダウンロード」の 1 つだけで、押すとダウンロードまでする', async ({ page }) => {
+  await page.addInitScript(() => { window.__shared = 0; navigator.canShare = () => true; navigator.share = async () => { window.__shared++; }; });
+  await openWith(page);
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  const dlg = page.getByRole('dialog');
+  await expect(dlg.locator('.dlg-actions button')).toHaveText(['閉じる', 'ダウンロード']);
+  // 進み具合は、画面の真ん中のポップアップの丸い円に % で出す
+  await page.evaluate(() => {
+    window.__ring = [];
+    new MutationObserver(() => { const r = document.querySelector('.prog-pop:not([hidden]) [role=progressbar]'); if (r) window.__ring.push(r.getAttribute('aria-label')); })
+      .observe(document.querySelector('.prog-pop'), { attributes: true, childList: true, subtree: true, characterData: true });
+  });
+  const dl = page.waitForEvent('download');
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
+  expect((await dl).suggestedFilename()).toMatch(/_edit\.jpg$/);
+  expect(await page.evaluate(() => window.__shared)).toBe(0);
+  expect(await page.evaluate(() => window.__ring)).toContain('画像の書き出し進捗');
+  await expect(dlg.locator('.prog-pop')).toBeHidden();
+});
+});
+
+test('書き出し: 写真アプリに保存できる端末では、1枚でもまとめてでもボタンは「写真アプリに保存」の 1 つだけ。まとめては全部を一度に渡す', async ({ page }) => {
   await page.addInitScript(() => {
     window.__shared = [];
     navigator.canShare = (d) => !!d?.files?.length;
@@ -647,6 +670,7 @@ test('書き出し: 写真アプリに保存できる端末では、1枚でも�
   const green = page.getByRole('dialog').locator('.dlg-actions button.primary');
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
   await expect(green).toHaveText('写真アプリに保存');
+  await expect(page.getByRole('dialog').locator('.dlg-actions button')).toHaveText(['閉じる', '写真アプリに保存']);
   await page.getByRole('dialog').getByRole('button', { name: '閉じる' }).click();
   await page.getByRole('button', { name: '‹ 写真' }).click();
   await page.locator('#open-file').setInputFiles(await makePhoto(page, { w: 600, h: 900 }));
@@ -656,7 +680,7 @@ test('書き出し: 写真アプリに保存できる端末では、1枚でも�
   await page.getByRole('button', { name: 'すべて選択' }).click();
   await page.getByRole('button', { name: 'まとめて書き出し' }).click();
   await expect(green).toHaveText('写真アプリに保存');
-  await expect(page.getByRole('dialog').getByRole('button', { name: '2枚を書き出す' })).toBeVisible();
+  await expect(page.getByRole('dialog').locator('.dlg-actions button')).toHaveText(['閉じる', '写真アプリに保存']);
   await green.click();
   await expect.poll(() => page.evaluate(() => window.__shared)).toHaveLength(1);
   const [names] = await page.evaluate(() => window.__shared);
@@ -673,7 +697,7 @@ test('スマホ: 長いダイアログでも決定のボタンが見え、写真
   await page.setViewportSize({ width: 390, height: 640 });
   await openWith(page);
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
-  await expect(page.getByRole('dialog').getByRole('button', { name: '書き出す', exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'ダウンロード', exact: true })).toBeInViewport({ ratio: 1 });
   await page.keyboard.press('Escape');
   await page.locator('.menu summary').click();
   await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();

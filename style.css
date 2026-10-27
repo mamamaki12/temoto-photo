@@ -135,8 +135,9 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .side { grid-area: side; }
 .stage { grid-area: stage; }
 .editor.side-closed .side { display: none; }
+/* 見出しは上に貼り付ける（sticky）。iOS 26 のホーム画面アプリは、上端に「貼り付いた不透明な帯」が無いと、ステータスバーの下までぼかしをかける（写真一覧の見出しはぼやけない） */
 .ed-head {
-  position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(8px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
+  position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: calc(8px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
   background: var(--header); color: #fff; border-bottom: 1px solid var(--header-line);
 }
 .ed-head button, .ed-head .menu summary { background: transparent; border-color: transparent; color: #fff; }
@@ -146,7 +147,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .ed-head .export { background: #3ecf8e; color: #07130d; border-color: #3ecf8e; padding-inline: 18px; } /* 見出しはいつも黒なので、ライトでも明るい緑に黒い文字 */
 .ed-head .export:hover:not(:disabled) { background: #5ad9a0; border-color: #5ad9a0; }
 /* 書き出しのアイコン（共有の形）。スマホではアイコンだけにする */
-.ico-export { width: 1.15em; height: 1.15em; flex: none; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7.5 7.5 12 3l4.5 4.5M8 10.5H6.5a1.5 1.5 0 0 0-1.5 1.5v7.5A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V12a1.5 1.5 0 0 0-1.5-1.5H16'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7.5 7.5 12 3l4.5 4.5M8 10.5H6.5a1.5 1.5 0 0 0-1.5 1.5v7.5A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V12a1.5 1.5 0 0 0-1.5-1.5H16'/%3E%3C/svg%3E") center / contain no-repeat; }
+.ico-export { width: 1.15em; height: 1.15em; flex: none; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7.5 10.5 12 15l4.5-4.5M4.5 15v3.5A2.5 2.5 0 0 0 7 21h10a2.5 2.5 0 0 0 2.5-2.5V15'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7.5 10.5 12 15l4.5-4.5M4.5 15v3.5A2.5 2.5 0 0 0 7 21h10a2.5 2.5 0 0 0 2.5-2.5V15'/%3E%3C/svg%3E") center / contain no-repeat; }
 .ed-hist { display: flex; gap: 2px; padding-left: 6px; margin-left: 2px; border-left: 1px solid rgb(255 255 255 / 16%); }
 .ed-head .back { padding: 0 12px; font-weight: 600; font-size: clamp(22px, 1.3rem, 26px); line-height: 1; }
 .ed-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: .9rem; text-align: center; color: rgb(255 255 255 / 72%); letter-spacing: .03em; }
@@ -179,7 +180,7 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .handles .sel-rect { fill: rgb(242 193 78 / 15%); stroke: var(--accent); }
 .handles .cursor { fill: none; stroke: #fff; mix-blend-mode: difference; }
 .orig-badge { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); padding: 3px 12px; border-radius: 999px; background: rgb(14 19 24 / 75%); color: #fff; font-size: .8rem; }
-.hq-status { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: grid; gap: 4px; width: min(320px, calc(100% - 32px)); padding: 8px 14px; border-radius: 12px; background: rgb(14 19 24 / 80%); color: #fff; font-size: .8rem; text-align: center; pointer-events: none; }
+.hq-status { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 4; pointer-events: none; }
 .hq-status[hidden] { display: none; }
 /* 開いた写真へのおすすめ（暗い写真など）。写真の上の端に */
 .suggest { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; width: max-content; max-width: calc(100% - 24px); padding: 8px 10px 8px 14px; border-radius: 12px; background: rgb(14 19 24 / 85%); color: #fff; font-size: .85rem; box-shadow: 0 4px 16px rgb(0 0 0 / 25%); }
@@ -187,7 +188,6 @@ input[type=color] { width: 36px; height: 32px; padding: 0; border: 1px solid var
 .suggest-actions { display: flex; gap: 6px; }
 .suggest button.ghost { color: #fff; border-color: rgb(255 255 255 / 40%); }
 .suggest button.ghost:hover:not(:disabled) { background: rgb(255 255 255 / 12%); }
-.hq-status progress { width: 100%; }
 /* 表示の大きさ（右下） */
 .zoom { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 2px 10px var(--shadow); }
 .zoom button { min-height: 32px; min-width: 32px; padding: 0 8px; background: transparent; font-size: .95rem; }
@@ -418,8 +418,6 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .gaze-pad { display: grid; grid-template-columns: repeat(3, 48px); gap: 4px; justify-content: center; }
 .gaze-pad button { min-height: 40px; padding: 0; }
 .gaze-pad .gaze-arrow { font-size: 1.2rem; }
-.export progress { display: block; width: 100%; accent-color: var(--accent); }
-.export progress[hidden] { display: none; }
 
 /* 顔 AI */
 .faceai-step { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: .95rem; font-weight: 600; }
@@ -524,3 +522,19 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .editor:not(.grid-editor).side-closed .items { align-self: start; border-bottom: none; }
   .editor:not(.grid-editor).side-closed .items { grid-row: 2 / 4; }
 }
+
+/* 進み具合のポップアップ（画面の真ん中に、丸い円と %） */
+.prog-pop { position: fixed; inset: 0; z-index: 30; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; display: grid; place-items: center; background: rgb(0 0 0 / 55%); color: #fff; }
+.prog-pop .prog-card { background: #14191e; border: 1px solid rgb(255 255 255 / 10%); }
+.prog-pop[hidden] { display: none; }
+.prog-card { display: grid; justify-items: center; gap: 10px; width: max-content; max-width: min(300px, calc(100vw - 48px)); padding: 18px 22px 16px; border-radius: 18px; background: rgb(14 19 24 / 88%); color: #fff; font-size: .85rem; line-height: 1.4; text-align: center; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); }
+.prog-card[hidden] { display: none; }
+.ring { position: relative; width: 84px; height: 84px; }
+.ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 4.5; }
+.ring .ring-bg { stroke: rgb(255 255 255 / 18%); }
+.ring .ring-fg { stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke-dashoffset .3s ease; }
+.ring-num { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ring.spin svg { animation: ring-spin 1s linear infinite; }
+@keyframes ring-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+@media (prefers-reduced-motion: reduce) { .ring.spin svg { animation: none; } .ring .ring-fg { transition: none; } }

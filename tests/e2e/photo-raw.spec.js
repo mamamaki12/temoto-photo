@@ -42,7 +42,7 @@ test('DNG（可逆JPEG圧縮・ホワイトバランス・色変換つき）を�
   // 書き出しもできる
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
   const dl = page.waitForEvent('download');
-  await page.getByRole('dialog').getByRole('button', { name: '書き出す', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await dl).suggestedFilename()).toBe('IMG_0001_edit.jpg');
   expect(errors).toEqual([]);
 });
@@ -120,7 +120,7 @@ test('キヤノンなどの RAW は LibRaw で RAW データから現像し、�
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: /元の大きさ/ }).click();
   const dl = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await dl).suggestedFilename()).toBe('IMG_0004_edit.jpg');
   await expect(dlg.locator('p[aria-live]')).toContainText('600×400');
   expect(errors).toEqual([]);

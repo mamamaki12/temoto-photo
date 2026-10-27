@@ -25,9 +25,10 @@ test('写真全体の明るさ: 操作・Undo・再読み込み・PNG書き出�
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
-  await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
+  await expect(dlg).toContainText('✓ できました');
+  await expect(dlg.locator('.prog-pop')).toBeHidden();
 });
 
 test('開き直したとき、前に計算した明るさ補正の結果をすぐ見せる（計算し直さない）', async ({ page }) => {
@@ -54,6 +55,25 @@ test('開き直したとき、前に計算した明るさ補正の結果をす�
   await page.getByLabel('写真全体の明るさ補正', { exact: true }).fill('0');
   await page.getByLabel('写真全体の明るさ補正', { exact: true }).dispatchEvent('change');
   await expect.poll(() => page.evaluate(async () => !!(await (await import('/db.js')).getHq(window.__temoto.editor.id))), { timeout: 10000 }).toBe(false);
+});
+
+test('前の版で保存した補正の結果は使わず、計算し直す（補正の計算を直したら、開き直した写真にも効く）', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#34251c', { w: 128, h: 128 }));
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  await openTool(page, '自動補正');
+  const control = page.getByLabel('写真全体の明るさ補正', { exact: true });
+  await control.fill('70'); await control.dispatchEvent('change');
+  await page.waitForFunction(() => window.__temoto.editor.hq?.canvas);
+  await expect.poll(() => page.evaluate(async () => !!(await (await import('/db.js')).getHq(window.__temoto.editor.id))), { timeout: 10000 }).toBe(true);
+  // 保存した結果を、前の版で保存したものに書き換える
+  await page.evaluate(async () => { const db = await import('/db.js'); const id = window.__temoto.editor.id; const rec = await db.getHq(id); await db.putHq(id, { ...rec, ver: '1.31.3' }); });
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await page.reload();
+  await page.locator('.lib-open').first().click();
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  expect(await page.evaluate(() => !!window.__temoto.editor.hq?.saved)).toBe(false);
+  await page.waitForFunction(() => { const E = window.__temoto.editor; return E.hq?.canvas && !E.hq.ctrl; }); // 計算し直した
 });
 
 test('暗部を上げ、白と色を保つ。元解像度の書き出しにも適用', async ({ page }) => {
@@ -147,9 +167,10 @@ test('暗い写真の補正: ノイズを取ってから明るくする処理を
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
-  await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
+  await expect(dlg).toContainText('✓ できました');
+  await expect(dlg.locator('.prog-pop')).toBeHidden();
 });
 
 test('暗い写真の補正: 明るさ補正だけを変えたときは、ノイズ除去をやり直さずに仕上げ直す（最初から処理したのと同じ）。動かしている間は見本を見せる', async ({ page }) => {
@@ -247,7 +268,7 @@ test('暗い写真の補正は、明暗ブラシ・露光量と重ねて使え�
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   const file = await (await pending).path();
   const buf = (await import('node:fs')).readFileSync(file).toString('base64');
   const out = await page.evaluate(async ({ buf, R, other }) => {

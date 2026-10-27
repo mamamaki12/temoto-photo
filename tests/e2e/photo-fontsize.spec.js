@@ -56,7 +56,7 @@ for (const [px, w, h] of [[16, 561, 759], [20, 561, 759], [24, 390, 844], [32, 3
     expect(await overflow(page), 'メニュー').toEqual([]);
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '書き出し', exact: true }).click();
-    await expect(page.getByRole('dialog').getByRole('button', { name: '書き出す', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog').getByRole('button', { name: 'ダウンロード', exact: true })).toBeVisible();
     expect(await overflow(page), '書き出し').toEqual([]);
   });
 }
