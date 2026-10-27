@@ -946,9 +946,9 @@ function moveIris(img, eye, delta) {
     const i = y * bw + x; if (!P[i] || D[i] < 0.1 * R) continue; const ro = Math.hypot(x + 0.5 - oc[0], y + 0.5 - oc[1]); const L = src[i * 3] + src[i * 3 + 1] + src[i * 3 + 2];
     if (ro < 0.6 * R) { si += L; ni++; } else if (ro > 1.2 * R) smp.push([L, i, (y + 0.5 - up[x]) / Math.max(1, lo[x] - up[x])]);
   }
-  let scl = null; let sclN = 0; let th = Infinity; let thw = 1; let thLo = Infinity; // 白目とみなす明るさ（R+G+B）と、その境のなめらかさ、影の白目も含む低めの境
+  let scl = null; let sclN = 0; let th = Infinity; let thw = 1; // 白目とみなす明るさ（R+G+B）と、その境のなめらかさ
   if (ni && smp.length >= 8) {
-    const Ls = smp.map((q) => q[0]).sort((p, q) => p - q); const hi = Ls[Math.floor(Ls.length * 0.9)]; thLo = si / ni + 0.3 * (hi - si / ni); th = si / ni + 0.6 * (hi - si / ni); thw = Math.max(3, 0.25 * (hi - si / ni));
+    const Ls = smp.map((q) => q[0]).sort((p, q) => p - q); const hi = Ls[Math.floor(Ls.length * 0.9)]; th = si / ni + 0.6 * (hi - si / ni); thw = Math.max(3, 0.25 * (hi - si / ni));
     const acc = Array.from({ length: NB }, () => [0, 0, 0, 0]); const all = [0, 0, 0, 0]; let s2 = 0;
     for (const [L, i, tt] of smp) if (L >= th) { const a = acc[Math.max(0, Math.min(NB - 1, Math.floor(tt * NB)))]; for (const q of [a, all]) { q[0] += src[i * 3]; q[1] += src[i * 3 + 1]; q[2] += src[i * 3 + 2]; q[3]++; } s2 += L * L; }
     if (all[3] >= 5) {
@@ -968,13 +968,13 @@ function moveIris(img, eye, delta) {
     if (ext.length >= 3) { ext.sort((a, b) => a - b); Ri = Math.max(Ri, Math.min(1.5 * R, ext[ext.length >> 1] + 0.05 * R)); }
   }
   // 埋める白目の明るさ: 反対側（黒目が向かう側）の白目は光の当たり方が違うことがある（目頭側は明るく、目尻側は影で灰色、など）。
-  // 黒目が離れる側に元から見えていた白目があれば、その明るさに合わせる（暗くする方だけ。明るくはしない）
+  // 黒目が離れる側に元から見えていた白目（影でなく、白目の明るさのもの）があれば、その明るさに合わせる（暗くする方だけ、0.8 まで。影の側は白目で埋めるのが目的なので合わせない）
   let fillGain = 1;
   if (th < Infinity) {
     const sg0 = dx > 0 ? 1 : -1; const acc = [[], []]; // [向かう側, 離れる側] の白目の明るさ
     for (let y = Math.max(0, Math.round(oc[1] - 0.25 * R)); y <= Math.min(bh - 1, Math.round(oc[1] + 0.25 * R)); y++) for (let k = 0; k < 2; k++) {
       const sg = k ? -sg0 : sg0;
-      for (let e = Ri; e < 6 * R; e += 1) { const xq = Math.floor(oc[0] + sg * e); if (xq < 0 || xq >= bw) break; const q = y * bw + xq; if (!P[q]) break; if (D[q] < 0.12 * R) continue; const L = src[q * 3] + src[q * 3 + 1] + src[q * 3 + 2]; if (L >= (k ? thLo : th)) acc[k].push(L); }
+      for (let e = Ri; e < 6 * R; e += 1) { const xq = Math.floor(oc[0] + sg * e); if (xq < 0 || xq >= bw) break; const q = y * bw + xq; if (!P[q]) break; if (D[q] < 0.12 * R) continue; const L = src[q * 3] + src[q * 3 + 1] + src[q * 3 + 2]; if (L >= th) acc[k].push(L); }
     }
     const med = (a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; };
     if (acc[0].length >= 6 && acc[1].length >= 6) fillGain = Math.max(0.8, Math.min(1, med(acc[1]) / med(acc[0])));
@@ -999,7 +999,7 @@ function moveIris(img, eye, delta) {
         // 縦は、上まぶたと下まぶたの間の同じ割合の所から。まぶたのきわの影・まつげが白目の真ん中に来ないように）。
         // 折り返した先が黒目・まぶたのきわで使えないときは、この目の白目の色（まぶたの間の高さごとの平均）で
         t = (Y - up[x]) / Math.max(1, lo[x] - up[x]);
-        wf = (1 - ahead) * Math.min(1, Math.abs(dx) / (0.4 * R)) * smooth((r - Ri) / (0.6 * R)) * smooth(D[y * bw + x] / (0.12 * R)) * smooth((ry / R + 0.8) / 0.3) * smooth(t / 0.35) * smooth((1 - t) / 0.15);
+        wf = (1 - ahead) * Math.min(1, Math.abs(dx) / (0.4 * R)) * smooth((r - Ri) / (0.4 * R)) * smooth(D[y * bw + x] / (0.12 * R)) * smooth((ry / R + 0.8) / 0.3) * smooth(t / 0.35) * smooth((1 - t) / 0.15);
         wf *= smooth((Math.min(Math.hypot(X - cornerL[0], Y - cornerL[1]), Math.hypot(X - cornerR[0], Y - cornerR[1])) / R - 0.2) / 0.3);
         wf *= smooth((((lo[x] - up[x]) || 0) / R - 0.3) / 0.4); // まぶたの間が狭い所（角へ向かって細くなる所）も元のまま
         // 折り返しは、そのまま裏返すのではなく「伸び縮み」させる: 黒目が離れた側（新しい黒目のふちから目尻・目頭まで）の幅に、
