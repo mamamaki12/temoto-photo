@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/deblur-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deblurSize, deblurResidual, deblurResidual2, deconvResidual, addDeconv, applyResidual, gateMap, TILE } from '../../deblur.js';
+import { deblurSize, deblurResidual, deblurResidual2, deconvResidual, addDeconv, applyResidual, gateMap, subjectWeight, weightResidual, TILE } from '../../deblur.js';
 import { addGrain } from '../../restoration-lowlight.js';
 
 /** 縮めた絵（RGB を並べたもの）。fn(x, y) は 0〜1 の明るさ */
@@ -143,4 +143,34 @@ test('deblur: AI がもう直した所には、逆畳み込みの差分を上乗
   const i = 32 * 64 + 8; // 縞の境目
   assert.ok(Math.abs(full.data[i * 3] - A[i]) < 1e-6, 'AI が上限まで直した所は、そのまま');
   assert.ok(none.data[i * 3] > 0.01, 'AI が直していない所には足す');
+});
+
+test('deblur: 人物だけに効かせる（背景は 0）。肌のなめらかな所は弱く、肌の中の輪郭はそのまま。人物がいなければ全体（null）', () => {
+  const w = 400; const h = 400;
+  // 左半分が人物。その上半分が顔の肌で、y = 100 に横の輪郭（口のような明るさの段差）
+  const img = small(w, h, (x, y) => (y < 100 ? 0.5 : 0.3));
+  const pw = 100; const ph = 100; const m = new Float32Array(pw * ph);
+  for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) m[y * pw + x] = x < 50 ? 1 : 0;
+  const parts = new Float32Array(6 * pw * ph);
+  for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) parts[3 * pw * ph + y * pw + x] = x < 50 && y < 50 ? 1 : 0;
+  const wt = subjectWeight(img, { m, w: pw, h: ph }, { w: pw, h: ph, parts });
+  const at = (x, y) => wt[y * w + x];
+  assert.ok(at(380, 300) < 0.01, `背景 ${at(380, 300)}`);
+  assert.ok(at(50, 300) > 0.99, `人物（肌でない所） ${at(50, 300)}`);
+  assert.ok(Math.abs(at(50, 40) - 0.15) < 0.02, `肌のなめらかな所 ${at(50, 40)}`);
+  assert.ok(at(50, 100) > 0.9, `肌の中の輪郭 ${at(50, 100)}`);
+  assert.equal(subjectWeight(img, { m: new Float32Array(pw * ph), w: pw, h: ph }, null), null);
+  assert.equal(subjectWeight(img, null, null), null);
+  const res = { width: w, height: h, data: new Float32Array(w * h * 3).fill(0.1) };
+  weightResidual(res, wt);
+  assert.ok(res.data[(300 * w + 380) * 3] < 0.001 && Math.abs(res.data[(300 * w + 50) * 3] - 0.1) < 0.001);
+});
+
+test('deblur: 人物から離れた区画は AI に通さない', async () => {
+  const w = 600; const h = 300; const img = small(w, h, (x, y) => stripes(x + y));
+  const wt = new Float32Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < 200; x++) wt[y * w + x] = 1;
+  let calls = 0; let all = 0;
+  await deblurResidual(img, async (input) => { calls++; return input; }, { wt });
+  await deblurResidual(img, async (input) => { all++; return input; });
+  assert.ok(calls < all, `${calls} / ${all}`);
 });

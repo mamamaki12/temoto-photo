@@ -733,9 +733,9 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
     } else if (ll) {
       if (llMiss) {
         cache.ll = null;
-        let grain = 0;
-        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g) => { grain = g; } });
-        cache.ll = { key: K.llKey, canvas: c, grain };
+        let grain = 0; let gface = null;
+        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g, f) => { grain = g; gface = f; } });
+        cache.ll = { key: K.llKey, canvas: c, grain, gface };
       }
       canvas = cache.ll.canvas;
     }
@@ -746,7 +746,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
         cache.db = { key: K.dbKey, res: r };
       }
       res = cache.db.res;
-      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
+      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0, face: ll ? cache.ll.gface : null }, { signal });
     }
     // ぼかしの元（4 分の 1 の写真と人物の地図）
     if (wantBs && cache.bs?.key !== K.bsKey) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(canvas, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }

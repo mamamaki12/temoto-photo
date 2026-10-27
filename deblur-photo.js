@@ -3,6 +3,8 @@
 // AI は元の写真の大きさで決めた大きさ（deblurSize）で 1 回だけ動かし、直した差分を、編集用の写真にも書き出す元の大きさの写真にも足す。
 import { deblurSize, applyResidual } from './deblur.js';
 import { addGrain } from './restoration-lowlight.js';
+import { smallPixels } from './restoration-photo.js';
+import { personSeg, segParts } from './skinseg.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 
 /** この編集で、ブレ補正を使うか */
@@ -32,6 +34,11 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = ctx2d(c, { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(image, 0, 0, W, H, 0, 0, w, h);
   const px = x.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }).data; c.width = 0; c.height = 0;
+  // 人物と肌の地図（ブレ補正を人物だけに、肌のなめらかな所は弱く。暗所補正・髪服くっきりと同じ AI。使えなければ全体に）
+  const sp = smallPixels(image, W, H);
+  const person = await personSeg(sp);
+  const parts = person ? await segParts({ width: sp.width, height: sp.height, data: sp.data }) : null;
+  if (signal?.aborted) throw abortError();
   const rgb = new Float32Array(w * h * 3);
   for (let i = 0; i < w * h; i++) { rgb[i * 3] = px[i * 4] / 255; rgb[i * 3 + 1] = px[i * 4 + 1] / 255; rgb[i * 3 + 2] = px[i * 4 + 2] / 255; }
   if (!worker) worker = new Worker(new URL('./deblur-worker.js', import.meta.url), { type: 'module' });
@@ -51,7 +58,7 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
       else if (m.type === 'error') done(new Error(m.message));
     };
     wk.onerror = () => done(new Error('ブレ補正の AI を開始・実行できませんでした（端末のメモリが足りない可能性があります）'));
-    wk.postMessage({ type: 'run', small: { width: w, height: h, data: rgb }, denoise }, [rgb.buffer]);
+    wk.postMessage({ type: 'run', small: { width: w, height: h, data: rgb }, denoise, person, parts }, [rgb.buffer]);
   });
 }
 
@@ -59,9 +66,9 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
  * 8bit の RGBA（横幅いっぱいの何行か）に、ブレ補正の差分と細かい粒を足す
  * @param {{y0:number,fullW:number,fullH:number}} at
  */
-export function finishBand(data, rows, at, { res, amount, grain }) {
+export function finishBand(data, rows, at, { res, amount, grain, face = null }) {
   if (res) applyResidual(data, rows, at, res, amount);
-  if (grain > 0) addGrain(data, at.fullW, rows, at, grain);
+  if (grain > 0) addGrain(data, at.fullW, rows, at, grain, face);
   return data;
 }
 
