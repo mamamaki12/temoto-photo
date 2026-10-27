@@ -44,7 +44,7 @@ void main() {
     float k = Lo / (L + 1e-4); float kc = k > 1.0 ? pow(k, uSat) : k;
     c = Lo + (c - L) * kc;
     float mx = max(c.r, max(c.g, c.b));
-    if (mx > uKnee) { float u = min(1.0, (mx - uKnee) / (2.0 * (1.0 - uKnee))); c *= (uKnee + (1.0 - uKnee) * u * (2.0 - u)) / mx; }
+    if (mx > uKnee) c *= (uKnee + (1.0 - uKnee) * (1.0 - exp(-(mx - uKnee) / (1.0 - uKnee)))) / mx;
   }
   o = vec4(srgb(c.r), srgb(c.g), srgb(c.b), 1.0);
 }`;

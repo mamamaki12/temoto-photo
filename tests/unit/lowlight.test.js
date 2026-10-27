@@ -125,6 +125,18 @@ test('lowlight: 明るくしても白は飛ばさず、色の順番（赤 > 緑 
   assert.ok(tone.gain > 1 && tone.gain <= 16);
 });
 
+test('lowlight: 暗い舞台で大きく明るくしても、白い衣装のサテンのひだ（明るい所の濃淡）は 255 で切れずに残る', () => {
+  // 暗い幕の前の、照明の当たった白いサテン（琥珀色の白。明るい筋と、少し暗い筋）。IMG_9296・9365 の衣装
+  const w = 96; const h = 96;
+  const data = rgba(w, h, (x, y) => (x > 32 && x < 64 && y > 32 && y < 64 ? ((x >> 2) & 1 ? [200, 186, 168] : [160, 148, 132]) : [22, 15, 10]));
+  const tone = planTone({ width: w, height: h, data }, 50);
+  const out = whole(data, w, h, { nr: 0, profile: null, tone });
+  const px = (x) => [...out.subarray((48 * w + x) * 4, (48 * w + x) * 4 + 3)];
+  for (let x = 36; x < 60; x++) assert.ok(Math.max(...px(x)) < 255, `白飛びしない ${x}: ${px(x)}`);
+  const hi = px(37); const lo = px(41); // 明るい筋・暗い筋
+  assert.ok(hi[0] - lo[0] >= 5, `赤でもひだの濃淡が残る ${hi} / ${lo}`);
+});
+
 test('lowlight: ノイズを取ったあとに残る小さな点は消し、細い線と光の点は残す', () => {
   const w = 160; const h = 160; const rand = randomNormal(11);
   const raw = new Float32Array(w * h).map(() => rand());

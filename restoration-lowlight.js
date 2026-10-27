@@ -574,7 +574,10 @@ const FACE_MIN = 0.0015; // 顔の肌がこれより小さい（写真の割合�
 const FACE_RANGE = 2; // 顔で決める倍率は、写真全体で決めた倍率の 1/2〜2 倍まで
 const FACE_WEIGHT = 0.6; // 顔で決めた倍率を混ぜる割合（残りは写真全体で決めた倍率）
 const FACE_LIGHT50 = 1 + 50 / 400; // 明るさ補正 50 のときの倍率の上乗せ（planTone の gainAt）
-export const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる（2 - KNEE で白に届く）
+export const KNEE = 0.65; // いちばん明るい色（リニア）がこれを超えたら、なだらかに押さえはじめる
+// 押さえ方: 白（1）には近づくだけで届かない（rawdev.js と同じ形）。前は 2 - KNEE で白に届き、それより明るい白い衣装のサテン・
+// 照明の当たったレースは 1 色（赤）だけ 255 で切れて、ひだが平らなピンクの白に抜けた（IMG_9296・9365。2026-10-27）
+const shoulder = (x) => KNEE + (1 - KNEE) * (1 - Math.exp(-(x - KNEE) / (1 - KNEE)));
 function whiteBalance(data, n, amount) {
   const lum = new Float32Array(n); const lin = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -634,16 +637,17 @@ export function applyTone(Y, Cb, Cr, w, h, tone, at, out = new Uint8ClampedArray
         const warm = r >= g && g >= bl ? p : 0; // 人物の暖色だけ色の濃さを抑える
         const kc = k > 1 && warm > 0 ? k ** (1 - (1 - tone.sat) * warm) : k;
         r = Lo + (r - L) * kc; g = Lo + (g - L) * kc; bl = Lo + (bl - L) * kc;
-        // いちばん明るい色（舞台の照明の下の肌では赤）が白に近づいたら、3 色を同じ割合でなだらかに押さえる。
-        // 1 を超えた分を白に寄せると、光の当たった頬だけが白っぽく平らに抜けて、頬の丸み（立体感）が消える（IMG_9263）
-        const mx = Math.max(r, g, bl);
-        if (mx > KNEE) { const u = Math.min(1, (mx - KNEE) / (2 * (1 - KNEE))); const q = (KNEE + (1 - KNEE) * u * (2 - u)) / mx; r *= q; g *= q; bl *= q; }
         // 黒を締める: v → v²/(v + BLACK)。BLACK より十分明るい所は v − BLACK とほぼ同じで、黒のそばは 0 に向かってなだらかに
         // 縮む（一律に引いて 0 で切ると、暗い所の 1〜2 階調の塊が逆に目立つ）。3 色とも同じ式なので色みは変わらない
         r = r * r / (r + BLACK); g = g * g / (g + BLACK); bl = bl * bl / (bl + BLACK);
         // 中間の明るさのメリハリを少し足す（中間の灰色 0.18 を中心に、明るさだけ CONTRAST 乗。3 色を同じ倍率にするので色みは変わらない）
         const Lc = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
         if (Lc > 1e-5) { const f = (Lc / 0.18) ** (CONTRAST - 1); r *= f; g *= f; bl *= f; }
+        // いちばん明るい色（舞台の照明の下の肌では赤）が白に近づいたら、3 色を同じ割合でなだらかに押さえる（いちばん最後に。
+        // メリハリの後に置かないと、押さえた明るい所をメリハリがまた 1 割ほど持ち上げて白く飛ばす）。
+        // 1 を超えた分を白に寄せると、光の当たった頬だけが白っぽく平らに抜けて、頬の丸み（立体感）が消える（IMG_9263）
+        const mx = Math.max(r, g, bl);
+        if (mx > KNEE) { const q = shoulder(mx) / mx; r *= q; g *= q; bl *= q; }
       }
       // 8bit にするとき、ごく弱いディザ（位置で決まるので、帯に分けても同じ）
       const p = (at.y0 + y) * at.fullW + x + ox;
