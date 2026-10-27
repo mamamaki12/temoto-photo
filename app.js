@@ -2743,14 +2743,18 @@ function openExport({ batch }) {
   // 書き出しの進み具合は、ダイアログの下ではなく画面の真ん中のポップアップ（丸い円と %）に出す
   const ring = progressRing('画像の書き出し進捗');
   const popText = h('span', {});
-  let behind = false; // 「設定を変える」を押した: 先に作るのは裏で続け、進み具合はボタンに出す
+  // スマホは、開いたら画面をふさがずに裏で画像を作っておく（画質などを選んでいる間に）。
+  // 「写真アプリに保存」を押したときにできていれば、その場で共有メニューを開く（1 回で保存）。
+  // まだなら、押したあとに丸い円で進み具合を出し、できたら円の下の「写真アプリに保存」を押してもらう（iPhone は待つと共有メニューを開けないため）
+  let quiet = true; // 裏で作っている（ポップアップは出さない）
+  let waiting = false; // 押したが、まだできていない
   let pct = null;
-  const later = h('button', { type: 'button', class: 'ghost small', onclick: () => { behind = true; idle(); refresh(); } }, '設定を変える');
+  const finish = h('button', { type: 'button', class: 'primary', hidden: true, onclick: () => { finish.hidden = true; waiting = false; quiet = true; idle(); refresh(); shareNow(); } }, '写真アプリに保存');
   // popover にして、モーダルのダイアログよりも上（最前面）に出す
-  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText, ...(toPhotos ? [later] : [])));
+  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText, ...(toPhotos ? [finish] : [])));
   /** 進み具合を出す（p: 0〜100、null は準備中。text は円の下の説明。ダイアログの説明にも同じ文を出す） */
   const busy = (p, text) => {
-    if (behind) { pct = p; if (text != null) status.textContent = text; refresh(); return; }
+    if (quiet && toPhotos) { pct = p; status.textContent = `保存の用意をしています…${p == null ? '' : ` ${p}%`}`; return; }
     if (pop.hidden) { pop.hidden = false; try { pop.showPopover?.(); } catch { /* 開いている */ } }
     ring.set(p); if (text != null) { popText.textContent = text; status.textContent = text; }
   };
@@ -2764,11 +2768,7 @@ function openExport({ batch }) {
   /** 先に作った画像を見分ける印（写真・編集・設定。ファイル名は含めない） */
   const sig = () => JSON.stringify([batch ? batch.map((p) => [p.id, p.updated]) : [E.id, E.state], opt.format, opt.quality, opt.maxSide, opt.space]);
   const fresh = () => exportReady?.sig === sig();
-  /** スマホのボタン: 画像ができるまでは押せない（押してから作ると、iPhone では共有メニューを開けない） */
-  const refresh = () => {
-    if (!toPhotos) return;
-    go.disabled = !fresh(); go.textContent = fresh() ? SAVE_LABEL : `用意しています…${pct == null ? '' : ` ${pct}%`}`;
-  };
+  const refresh = () => { if (toPhotos) go.disabled = waiting; };
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'exp-h' },
     h('h2', { id: 'exp-h' }, batch ? `まとめて書き出し（${batch.length}枚）` : '書き出し'),
     h('div', { class: 'sub-head' }, h('b', {}, '形式')),
@@ -2829,24 +2829,28 @@ function openExport({ batch }) {
   };
   /** 写真アプリ用の画像を先に作る（設定が変わったら作り直す） */
   const prepareAhead = () => {
-    if (fresh()) { idle(); refresh(); return; }
+    if (fresh()) return;
     exportRun = exportRun.then(async () => {
       for (;;) {
         if (!dlg.isConnected) return;
         const key = sig(); if (exportReady?.sig === key) break;
-        pct = null; refresh();
+        pct = null;
         const items = [];
         if (batch) await many((blob, f, i, p) => { items.push({ blob, i, p }); });
         else { flushSave(); const r = await one(); items.push({ blob: r.blob, i: 1, p: null }); }
         exportReady = { sig: key, items };
       }
-      idle(); behind = false; refresh();
-      if (dlg.isConnected) status.textContent = batch ? `✓ ${batch.length}枚の用意ができました。「写真アプリに保存」を押してください` : `✓ 用意ができました。「写真アプリに保存」を押してください`;
-    }).catch((e) => { console.warn('書き出しの用意', e); idle(); behind = false; if (dlg.isConnected) { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; go.textContent = SAVE_LABEL; go.disabled = false; } });
+      if (!dlg.isConnected) return;
+      status.textContent = batch ? `✓ ${batch.length}枚の用意ができました` : '✓ 用意ができました';
+      if (waiting) { quiet = false; busy(100, 'できました。押すと写真アプリに保存します'); finish.hidden = false; finish.focus(); } else idle();
+    }).catch((e) => {
+      console.warn('書き出しの用意', e); idle(); waiting = false; quiet = true; refresh();
+      if (dlg.isConnected) status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。';
+    });
   };
   /** 写真アプリに渡す。押してすぐ（待たずに）共有メニューを開く */
   const shareNow = () => {
-    if (!fresh()) { prepareAhead(); return; }
+    if (!fresh()) { waiting = true; quiet = false; refresh(); busy(pct, batch ? '書き出しています…' : '画像を生成しています…'); prepareAhead(); return; }
     const files = exportReady.items.map(({ blob, i, p }) => new File([blob], fileName(i, p), { type: opt.format }));
     if (!navigator.canShare({ files })) { for (const f of files) download(f, f.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
     navigator.share({ files }).then(() => { status.textContent = '✓ 写真アプリに渡しました'; }, (e) => {
@@ -3075,11 +3079,14 @@ function openGridExport() {
       } }, '写真一覧に保存'),
       h('button', { type: 'button', class: 'primary', onclick: async () => {
         // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード。スマホは先に作っておいた画像を、待たずにその場で渡す（iPhone は待つと開けない）
-        if (toPhotos && last?.key === gridKey()) {
-          const f = new File([last.r.blob], fileName(), { type: opt.format });
-          if (navigator.canShare({ files: [f] })) { navigator.share({ files: [f] }).catch((e) => { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? 'もう一度押してください。' : '写真アプリに保存できませんでした'; }); return; }
-        }
-        try { const r = await make(); download(r.blob, fileName()); toast('ダウンロードしました'); } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }
+        const share = (r) => {
+          const f = new File([r.blob], fileName(), { type: opt.format });
+          if (!navigator.canShare({ files: [f] })) return false;
+          navigator.share({ files: [f] }).catch((e) => { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? '用意ができました。もう一度押してください。' : '写真アプリに保存できませんでした'; });
+          return true;
+        };
+        if (toPhotos && last?.key === gridKey() && share(last.r)) return;
+        try { const r = await make(); if (!(toPhotos && share(r))) { download(r.blob, fileName()); toast('ダウンロードしました'); } } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }
       } }, toPhotos ? '写真アプリに保存' : 'ダウンロード')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();
