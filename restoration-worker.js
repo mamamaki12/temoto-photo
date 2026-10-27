@@ -1,7 +1,7 @@
 import { restoreLinear } from './restoration.js';
 import { denoiseBand, finishBand, keepBand, previewPlanes, tonePreview } from './restoration-lowlight.js';
 import { deconvResidual } from './deblur.js';
-import { personAlpha, computeBokeh } from './bokeh.js';
+import { personAlpha, computeBokeh, autoRadius } from './bokeh.js';
 
 self.onmessage = async ({ data }) => {
   // ブレ補正の逆畳み込み（deblur-worker.js から。AI の計算と同時に、別の CPU で）
@@ -45,7 +45,9 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'bokeh') {
     try {
       const alpha = personAlpha(data.rgba, data.w, data.h, data.person); self.postMessage({ type: 'progress', t: 0.2 });
-      const bokeh = computeBokeh(data.rgba, data.w, data.h, alpha, data.r, (t) => self.postMessage({ type: 'progress', t: 0.2 + 0.8 * t }));
+      const auto = autoRadius(Math.max(data.w, data.h), data.face, data.person);
+      const bokeh = computeBokeh(data.rgba, data.w, data.h, alpha, auto.r, (t) => self.postMessage({ type: 'progress', t: 0.2 + 0.8 * t }));
+      bokeh.auto = auto;
       self.postMessage({ type: 'result', bokeh }, [bokeh.bg.buffer, bokeh.alpha.buffer]);
     } catch (error) {
       self.postMessage({ type: 'error', message: error.message });
