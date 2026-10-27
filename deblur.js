@@ -9,6 +9,7 @@
 // （scripts/deblur-proto/clampnet.py・export_onnx.py）。
 
 import { boxBlur, measureNoise, enhanceBand } from './restoration-lowlight.js';
+import { resizeMap } from './bokeh.js';
 
 export const TILE = 256; // AI に通す区画の大きさ（モデルはこの大きさで作ってある）
 const OVERLAP = 32; // 区画の重なり（つなぎ目をなめらかに混ぜる）
@@ -98,15 +99,16 @@ function limitResidual(acc, A, w, h) {
  * @param {{onProgress?:(t:number)=>void, signal?:AbortSignal, concurrency?:number}} hooks concurrency: 同時に AI に渡す区画の数
  * @returns {Promise<{width:number,height:number,data:Float32Array}>} 差分（RGB を並べたもの）
  */
-export async function deblurResidual(small, infer, { onProgress = () => {}, signal, concurrency = 1 } = {}) {
+export async function deblurResidual(small, infer, { onProgress = () => {}, signal, concurrency = 1, wt = null } = {}) {
   const { width: w, height: h, data: rgb } = small;
   const A = gateMap(rgb, w, h);
   const acc = new Float32Array(w * h * 3); const wsum = new Float32Array(w * h);
   const tiles = [];
   for (const y0 of starts(h)) for (const x0 of starts(w)) {
     // 直してよい量がほとんどない区画（平らな背景など）は AI に通さない
+    // 人物から離れた区画（subjectWeight が 0。背景）も通さない
     let mx = 0;
-    for (let y = y0; y < Math.min(h, y0 + TILE); y++) for (let x = x0; x < Math.min(w, x0 + TILE); x++) mx = Math.max(mx, A[y * w + x]);
+    for (let y = y0; y < Math.min(h, y0 + TILE); y++) for (let x = x0; x < Math.min(w, x0 + TILE); x++) mx = Math.max(mx, wt ? A[y * w + x] * Math.min(1, wt[y * w + x] * 100) : A[y * w + x]);
     tiles.push({ y0, x0, skip: mx < 0.5 / 255 });
   }
   const P = TILE * TILE;
@@ -190,9 +192,9 @@ function taps(n, N) {
  * levels: 段の数（3 なら 1/4 → 1/2 → そのまま）。cap: 和を、元の絵の直してよい量の何倍までに抑えるか
  * @returns 差分（small と同じ大きさ。各段の和）
  */
-export async function deblurResidual2(small, infer, { onProgress = () => {}, signal, concurrency = 1, levels = 3, cap = 1 } = {}) {
+export async function deblurResidual2(small, infer, { onProgress = () => {}, signal, concurrency = 1, levels = 3, cap = 1, wt = null } = {}) {
   const { width: w, height: h, data } = small;
-  if (levels < 2 || Math.min(w, h) < 2 * TILE) return deblurResidual(small, infer, { onProgress, signal, concurrency });
+  if (levels < 2 || Math.min(w, h) < 2 * TILE) return deblurResidual(small, infer, { onProgress, signal, concurrency, wt });
   const w2 = Math.ceil(w / 2); const h2 = Math.ceil(h / 2); const half = new Float32Array(w2 * h2 * 3);
   for (let y = 0; y < h2; y++) {
     for (let x = 0; x < w2; x++) {
@@ -201,11 +203,13 @@ export async function deblurResidual2(small, infer, { onProgress = () => {}, sig
     }
   }
   // 進捗: 半分の大きさの段は区画が 4 分の 1 なので 2 割
-  const r1 = await deblurResidual2({ width: w2, height: h2, data: half }, infer, { signal, concurrency, levels: levels - 1, cap, onProgress: (t) => onProgress(0.2 * t) });
+  let wt2 = null;
+  if (wt) { wt2 = new Float32Array(w2 * h2); for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) wt2[y * w2 + x] = Math.max(wt[2 * y * w + 2 * x], wt[Math.min(h - 1, 2 * y + 1) * w + Math.min(w - 1, 2 * x + 1)]); }
+  const r1 = await deblurResidual2({ width: w2, height: h2, data: half }, infer, { signal, concurrency, levels: levels - 1, cap, wt: wt2, onProgress: (t) => onProgress(0.2 * t) });
   let up = resizeRGB(r1, w, h).data;
   let pre = new Float32Array(data.length); for (let i = 0; i < data.length; i++) pre[i] = data[i] + up[i];
   up = null; // AI を動かす間は持たない（大きい。あとで同じものを作り直す）
-  const r2 = await deblurResidual({ width: w, height: h, data: pre }, infer, { signal, concurrency, onProgress: (t) => onProgress(0.2 + 0.8 * t) });
+  const r2 = await deblurResidual({ width: w, height: h, data: pre }, infer, { signal, concurrency, wt, onProgress: (t) => onProgress(0.2 + 0.8 * t) });
   pre = null; up = resizeRGB(r1, w, h).data;
   for (let i = 0; i < data.length; i++) r2.data[i] += up[i];
   // 2 段の和も、元の絵の直してよい量までに抑える（頬のやわらかい光の境目が、角ばった形にならないように）
@@ -328,6 +332,55 @@ export function addDeconv(res, dc, small) {
     const d = Math.max(-room, Math.min(room, dc.data[i * 3]));
     R[i * 3] += d; R[i * 3 + 1] += d; R[i * 3 + 2] += d;
   }
+  return res;
+}
+
+/**
+ * ブレ補正を効かせる場所の重み（縮めた絵の画素ごと、0〜1）。ブレ補正は「被写体」ブレの補正なので:
+ * - 人物（personSeg の地図を少し広げたもの）だけ。背景（ピントの外れたカーテンなど）は、AI がぼけをブレと見てひだの縁をギザギザにし、
+ *   逆畳み込みも縁を立てて、写真全体がガサガサに見えた（2026-10-27 ユーザーの声「おまかせ＋ブレ補正＋くっきりでめっちゃガサガサ」）
+ * - 肌のなめらかな所は SKIN_KEEP まで弱める（ノイズ除去の後のごくゆるい段差を、AI と逆畳み込みが「直して」まだらな面にする）。
+ *   目・口・あご・鼻の輪郭のような、はっきりした明るさの変化（SKIN_EDGE）のある所はそのまま
+ * 人物が見つからない写真（人の写っていない写真・AI が使えない端末）は null（全体に効かせる。今までどおり）
+ * @param {{width:number,height:number,data:Float32Array}} small 縮めた絵（RGB、0〜1）
+ * @param {{m:Float32Array,w:number,h:number}|null} person skinseg.js の personSeg
+ * @param {{w:number,h:number,parts:Float32Array}|null} parts skinseg.js の segParts（なければ肌を弱めない）
+ * @returns {Float32Array|null}
+ */
+const SUBJECT_GROW = 0.012; // 人物の地図を広げる幅（地図の長い辺に対して。輪郭の外にはみ出した髪・手の先もブレ補正する）
+const SKIN_EDGE = [0.015, 0.035]; // 肌の中で、ぼかした明るさの傾き（1 画素あたり）がこの間で、弱める → そのまま
+const SKIN_KEEP = 0.15; // 肌のなめらかな所に残す割合
+export function subjectWeight(small, person, parts) {
+  if (!person) return null;
+  const { width: w, height: h, data } = small; const n = w * h;
+  const pw = person.w; const ph = person.h; let mx = 0;
+  for (let i = 0; i < pw * ph; i++) mx = Math.max(mx, person.m[i]);
+  if (mx < 0.3) return null;
+  const r = Math.max(1, Math.round(SUBJECT_GROW * Math.max(pw, ph)));
+  const p = resizeMap(blur3(minMax(person.m, pw, ph, r, Math.max), pw, ph, Math.max(1, Math.round(r / 2))), pw, ph, w, h);
+  if (!parts) { for (let i = 0; i < n; i++) p[i] = Math.min(1, p[i]); return p; }
+  const m = parts.w * parts.h; const s0 = new Float32Array(m);
+  for (let i = 0; i < m; i++) s0[i] = Math.min(1, parts.parts[2 * m + i] + parts.parts[3 * m + i]);
+  const sk = resizeMap(s0, parts.w, parts.h, w, h);
+  // 肌の中の輪郭（ぼかした明るさの傾き）
+  const Y = new Float32Array(n); for (let i = 0; i < n; i++) Y[i] = 0.299 * data[i * 3] + 0.587 * data[i * 3 + 1] + 0.114 * data[i * 3 + 2];
+  const tmp = new Float32Array(n); const g = gaussKernel(1.5); gaussBlur(Y, w, h, g, Y, tmp);
+  const k = new Float32Array(n); const at = (x, y) => Y[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1) - at(x - 1, y - 1) - 2 * at(x - 1, y) - at(x - 1, y + 1)) / 8;
+      const gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1) - at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1)) / 8;
+      k[y * w + x] = Math.min(1, Math.max(0, (Math.hypot(gx, gy) - SKIN_EDGE[0]) / (SKIN_EDGE[1] - SKIN_EDGE[0])));
+    }
+  }
+  const kd = minMax(k, w, h, 2, Math.max); gaussBlur(kd, w, h, g, kd, tmp); // 輪郭の両側を少し広めに
+  for (let i = 0; i < n; i++) p[i] = Math.min(1, p[i]) * (1 - Math.min(1, sk[i]) * (1 - Math.max(SKIN_KEEP, kd[i])));
+  return p;
+}
+/** 差分に重み（subjectWeight）を掛ける */
+export function weightResidual(res, wt) {
+  if (!wt) return res;
+  const R = res.data; for (let i = 0; i < wt.length; i++) { R[i * 3] *= wt[i]; R[i * 3 + 1] *= wt[i]; R[i * 3 + 2] *= wt[i]; }
   return res;
 }
 

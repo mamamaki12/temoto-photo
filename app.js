@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.35.6'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -677,7 +677,7 @@ function dropCanvas(c, ...keep) { if (c instanceof HTMLCanvasElement && !keep.in
  * @returns {Promise<{canvas, res, faces, whole, bokeh, partial, pre}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）、whole: 全体 AI { res, map, amount }（なければ null。map は髪・服をくっきりの重み、全体に足すときは null）、bokeh: 背景のぼかし（なければ null）。
  *   partial: 保存しておいた途中の結果から作ったので、書き出しに要る res・whole が欠けている（書き出しで計算し直す）。pre: 顔 AI の前の写真（今回作ったときだけ。保存用。顔 AI もぼかしも使わないときは canvas と同じなので null）
  */
-async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, onStage = async () => {}, state = null } = {}) {
+async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, onStage = async () => {}, onHint = () => {}, state = null } = {}) {
   const K = stageKeys(adj, state); const { db, fa, bk, cr, wh } = K;
   const ll = K.ll ? lowlightOptions(adj) : null;
   const cache = src.cache || {};
@@ -726,40 +726,40 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
   let A = null; let res = db ? (fresh(cache, 'db', K.dbKey) ? cache.db.res : null) : null; let whole = wholeOf(); let pre = null; let pre0 = null;
   if (needA && pfHit) {
     A = await cache.pf.load(); onProgress(w[5] / tot);
-    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); } // 読めなかった: 一から
+    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); } // 読めなかった: 一から
     if (!bsHit) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(A, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
   } else if (needA) {
     let canvas = src.base;
     if (a0Use) {
       canvas = await cache.a0.load(); onProgress(w[5] / tot);
-      if (!canvas) { cache.a0 = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); } // 読めなかった: 一から
+      if (!canvas) { cache.a0 = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); } // 読めなかった: 一から
     } else if (ll) {
       if (llMiss) {
         cache.ll = null;
-        let grain = 0;
-        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g) => { grain = g; } });
-        cache.ll = { key: K.llKey, canvas: c, grain };
+        let grain = 0; let gface = null;
+        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g, f) => { grain = g; gface = f; } });
+        cache.ll = { key: K.llKey, canvas: c, grain, gface };
         if (db || wh) await onStage('ll', cache.ll); // この後に重い段があるときだけ（途中で落ちても、次はここから）
       } else if (!fresh(cache, 'll', K.llKey)) { // 前に途中で止まったときに保存しておいた、ノイズ除去と明るさ補正の結果
         const c = await cache.lls.load(); at0(0, 1);
-        if (!c) { cache.lls = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
-        cache.ll = { key: K.llKey, canvas: c, grain: cache.lls.grain };
+        if (!c) { cache.lls = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
+        cache.ll = { key: K.llKey, canvas: c, grain: cache.lls.grain, gface: cache.lls.gface || null };
       }
       canvas = cache.ll.canvas;
     }
     if (db && !a0Use) {
       if (dbMiss) {
         cache.db = null;
-        const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at0(1, t) });
+        const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at0(1, t), onHint });
         cache.db = { key: K.dbKey, res: r };
         await onStage('db', cache.db);
       } else if (!fresh(cache, 'db', K.dbKey)) { // 前に途中で止まったときに保存しておいた、ブレ補正の差分
         const r = await cache.dbs.load();
-        if (!r) { cache.dbs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
+        if (!r) { cache.dbs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
         cache.db = { key: K.dbKey, res: r };
       }
       res = cache.db.res;
-      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
+      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0, face: ll ? cache.ll.gface : null }, { signal });
     }
     // ぼかしの元（4 分の 1 の写真と人物の地図）
     if (wantBs && cache.bs?.key !== K.bsKey) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(canvas, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
@@ -771,7 +771,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
         await onStage('wh', cache.wh);
       } else if (!fresh(cache, 'wh', K.whKey)) {
         const r = await cache.whs.load(); // 保存しておいた全体 AI の差分
-        if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
+        if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
         cache.wh = { key: K.whKey, res: r };
       }
       if (cr && !fresh(cache, 'cm', K.cmKey)) { cache.cm = null; cache.cm = { key: K.cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
@@ -837,6 +837,7 @@ async function runLowlight() {
     const { canvas, res, faces, whole, bokeh, partial, pre, pre0 } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal,
       onStage: (name, v) => saveStage(e0, name, v),
+      onHint: (hint) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqHint = hint; hqBar(E.hqT ?? 0); } },
       onSteps: (names) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqSteps = names.length ? names : changedItems(E.hqLast?.key, key); hqBar(0); } },
       onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
@@ -947,7 +948,7 @@ async function saveStage(e0, name, v) {
   if (!e0.hqCache) return;
   try {
     let part;
-    if (name === 'll') part = { key: v.key, grain: v.grain, data: await packPixels(v.canvas, e0.W, e0.H) };
+    if (name === 'll') part = { key: v.key, grain: v.grain, gface: v.gface || null, data: await packPixels(v.canvas, e0.W, e0.H) };
     else if (name === 'db') {
       const { width, height, data } = v.res; const q = new Int16Array(data.length);
       for (let i = 0; i < data.length; i++) q[i] = Math.max(-32767, Math.min(32767, Math.round(data[i] * RES_SCALE)));
@@ -964,7 +965,7 @@ async function saveStage(e0, name, v) {
 function seedStage(rec) {
   if (!rec || rec.ver !== VERSION || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
   const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {}); const z = rec.z;
-  if (rec.ll && rec.ll.key === K.llKey && !c.ll) { const { data, grain } = rec.ll; c.lls = { key: K.llKey, grain, load: () => unpackPixels(data, z, E.W, E.H) }; }
+  if (rec.ll && rec.ll.key === K.llKey && !c.ll) { const { data, grain, gface = null } = rec.ll; c.lls = { key: K.llKey, grain, gface, load: () => unpackPixels(data, z, E.W, E.H) }; }
   if (rec.db && rec.db.key === K.dbKey && !c.db) {
     const { data, width, height } = rec.db;
     c.dbs = { key: K.dbKey, load: async () => {
@@ -1080,13 +1081,20 @@ function progressRing(label) {
   return { el, set };
 }
 /** 写真の上の進み具合（真ん中のポップアップ。t: 0〜1、null で隠す） */
+const HQ_STILL = 20_000; // % がこれだけ変わらなければ「計算しています」と添える（iPhone のブレ補正は、% が 1 つ進むのに 30 秒ほどかかることがある）
 function hqBar(t) {
   if (!E?.hqEl) return;
-  E.hqEl.hidden = t == null; if (t == null) return;
+  E.hqEl.hidden = t == null;
+  if (t == null) { clearInterval(E.hqTick); E.hqTick = 0; E.hqT = null; E.hqHint = ''; return; }
   const p = Math.min(99, Math.floor(t * 100));
+  if (E.hqT == null || Math.floor(E.hqT * 100) !== p) E.hqAt = Date.now(); // % が変わった時刻
+  E.hqT = t;
   E.hqRing.set(p);
-  // いま計算している項目だけ（済んでいて使い回すものは出さない）
-  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%`;
+  // いま計算している項目だけ（済んでいて使い回すものは出さない）。長く同じ % のときは、止まっていないと分かるように添える
+  const still = Date.now() - E.hqAt >= HQ_STILL;
+  const note = E.hqHint || (still ? '計算しています。そのままお待ちください' : '');
+  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%${note ? `（${note}）` : ''}`;
+  if (!E.hqTick) { const e0 = E; E.hqTick = setInterval(() => { if (E !== e0 || e0.hqT == null) clearInterval(e0.hqTick); else hqBar(e0.hqT); }, 1000); }
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {
@@ -1568,7 +1576,7 @@ const PANELS = {
       hint('AI が髪の毛先・服の織りをくっきりさせます（肌は控えめ、背景はそのまま。初回は AI 約 5MB）。目・口・前髪の輪郭は「顔 AI」で。'),
       h('h3', {}, '背景をぼかす'),
       toggle('背景をぼかす', bokehActive(E.state.adj), live((v) => { E.state.adj.bokeh = v ? 50 : 0; commit(); })).el,
-      hint('AI が人物を見分けて、背景だけをやわらかくぼかします（髪・輪郭はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。'),
+      hint('AI が人物と写真の奥行きを見分けて、背景だけをやわらかくぼかします（髪・輪郭、透けたフリル・足元はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。初回は奥行きの AI（約 50MB）を読み込みます。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
@@ -2743,14 +2751,18 @@ function openExport({ batch }) {
   // 書き出しの進み具合は、ダイアログの下ではなく画面の真ん中のポップアップ（丸い円と %）に出す
   const ring = progressRing('画像の書き出し進捗');
   const popText = h('span', {});
-  let behind = false; // 「設定を変える」を押した: 先に作るのは裏で続け、進み具合はボタンに出す
+  // スマホは、開いたら画面をふさがずに裏で画像を作っておく（画質などを選んでいる間に）。
+  // 「写真アプリに保存」を押したときにできていれば、その場で共有メニューを開く（1 回で保存）。
+  // まだなら、押したあとに丸い円で進み具合を出し、できたら円の下の「写真アプリに保存」を押してもらう（iPhone は待つと共有メニューを開けないため）
+  let quiet = true; // 裏で作っている（ポップアップは出さない）
+  let waiting = false; // 押したが、まだできていない
   let pct = null;
-  const later = h('button', { type: 'button', class: 'ghost small', onclick: () => { behind = true; idle(); refresh(); } }, '設定を変える');
+  const finish = h('button', { type: 'button', class: 'primary', hidden: true, onclick: () => { finish.hidden = true; waiting = false; quiet = true; idle(); refresh(); shareNow(); } }, '写真アプリに保存');
   // popover にして、モーダルのダイアログよりも上（最前面）に出す
-  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText, ...(toPhotos ? [later] : [])));
+  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText, ...(toPhotos ? [finish] : [])));
   /** 進み具合を出す（p: 0〜100、null は準備中。text は円の下の説明。ダイアログの説明にも同じ文を出す） */
   const busy = (p, text) => {
-    if (behind) { pct = p; if (text != null) status.textContent = text; refresh(); return; }
+    if (quiet && toPhotos) { pct = p; status.textContent = `保存の用意をしています…${p == null ? '' : ` ${p}%`}`; return; }
     if (pop.hidden) { pop.hidden = false; try { pop.showPopover?.(); } catch { /* 開いている */ } }
     ring.set(p); if (text != null) { popText.textContent = text; status.textContent = text; }
   };
@@ -2764,11 +2776,7 @@ function openExport({ batch }) {
   /** 先に作った画像を見分ける印（写真・編集・設定。ファイル名は含めない） */
   const sig = () => JSON.stringify([batch ? batch.map((p) => [p.id, p.updated]) : [E.id, E.state], opt.format, opt.quality, opt.maxSide, opt.space]);
   const fresh = () => exportReady?.sig === sig();
-  /** スマホのボタン: 画像ができるまでは押せない（押してから作ると、iPhone では共有メニューを開けない） */
-  const refresh = () => {
-    if (!toPhotos) return;
-    go.disabled = !fresh(); go.textContent = fresh() ? SAVE_LABEL : `用意しています…${pct == null ? '' : ` ${pct}%`}`;
-  };
+  const refresh = () => { if (toPhotos) go.disabled = waiting; };
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'exp-h' },
     h('h2', { id: 'exp-h' }, batch ? `まとめて書き出し（${batch.length}枚）` : '書き出し'),
     h('div', { class: 'sub-head' }, h('b', {}, '形式')),
@@ -2829,24 +2837,28 @@ function openExport({ batch }) {
   };
   /** 写真アプリ用の画像を先に作る（設定が変わったら作り直す） */
   const prepareAhead = () => {
-    if (fresh()) { idle(); refresh(); return; }
+    if (fresh()) return;
     exportRun = exportRun.then(async () => {
       for (;;) {
         if (!dlg.isConnected) return;
         const key = sig(); if (exportReady?.sig === key) break;
-        pct = null; refresh();
+        pct = null;
         const items = [];
         if (batch) await many((blob, f, i, p) => { items.push({ blob, i, p }); });
         else { flushSave(); const r = await one(); items.push({ blob: r.blob, i: 1, p: null }); }
         exportReady = { sig: key, items };
       }
-      idle(); behind = false; refresh();
-      if (dlg.isConnected) status.textContent = batch ? `✓ ${batch.length}枚の用意ができました。「写真アプリに保存」を押してください` : `✓ 用意ができました。「写真アプリに保存」を押してください`;
-    }).catch((e) => { console.warn('書き出しの用意', e); idle(); behind = false; if (dlg.isConnected) { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; go.textContent = SAVE_LABEL; go.disabled = false; } });
+      if (!dlg.isConnected) return;
+      status.textContent = batch ? `✓ ${batch.length}枚の用意ができました` : '✓ 用意ができました';
+      if (waiting) { quiet = false; busy(100, 'できました。押すと写真アプリに保存します'); finish.hidden = false; finish.focus(); } else idle();
+    }).catch((e) => {
+      console.warn('書き出しの用意', e); idle(); waiting = false; quiet = true; refresh();
+      if (dlg.isConnected) status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。';
+    });
   };
   /** 写真アプリに渡す。押してすぐ（待たずに）共有メニューを開く */
   const shareNow = () => {
-    if (!fresh()) { prepareAhead(); return; }
+    if (!fresh()) { waiting = true; quiet = false; refresh(); busy(pct, batch ? '書き出しています…' : '画像を生成しています…'); prepareAhead(); return; }
     const files = exportReady.items.map(({ blob, i, p }) => new File([blob], fileName(i, p), { type: opt.format }));
     if (!navigator.canShare({ files })) { for (const f of files) download(f, f.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
     navigator.share({ files }).then(() => { status.textContent = '✓ 写真アプリに渡しました'; }, (e) => {
@@ -3075,11 +3087,14 @@ function openGridExport() {
       } }, '写真一覧に保存'),
       h('button', { type: 'button', class: 'primary', onclick: async () => {
         // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード。スマホは先に作っておいた画像を、待たずにその場で渡す（iPhone は待つと開けない）
-        if (toPhotos && last?.key === gridKey()) {
-          const f = new File([last.r.blob], fileName(), { type: opt.format });
-          if (navigator.canShare({ files: [f] })) { navigator.share({ files: [f] }).catch((e) => { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? 'もう一度押してください。' : '写真アプリに保存できませんでした'; }); return; }
-        }
-        try { const r = await make(); download(r.blob, fileName()); toast('ダウンロードしました'); } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }
+        const share = (r) => {
+          const f = new File([r.blob], fileName(), { type: opt.format });
+          if (!navigator.canShare({ files: [f] })) return false;
+          navigator.share({ files: [f] }).catch((e) => { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? '用意ができました。もう一度押してください。' : '写真アプリに保存できませんでした'; });
+          return true;
+        };
+        if (toPhotos && last?.key === gridKey() && share(last.r)) return;
+        try { const r = await make(); if (!(toPhotos && share(r))) { download(r.blob, fileName()); toast('ダウンロードしました'); } } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }
       } }, toPhotos ? '写真アプリに保存' : 'ダウンロード')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();

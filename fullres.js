@@ -191,7 +191,7 @@ async function lowlightFull(eng, src, work, FW, FH, options, deblur, onProgress)
   // ブレ補正があるときは、粒をそのあとに足す（強さは、この写真で測ったノイズの量で決まる）
   let after = deblur;
   await enhancePhoto({ width: FW, height: FH, read: bandReader(src, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur, fine: !deblur }, {
-    onProgress, onGrain: (grain) => { if (deblur) after = { ...deblur, grain }; },
+    onProgress, onGrain: (grain, face) => { if (deblur) after = { ...deblur, grain, face }; },
     onBand: (y, rows, data) => eng.putSourcePixels(0, y, FW, rows, after ? finishBand(data, rows, { y0: y, fullW: FW, fullH: FH }, after) : data),
   });
 }
@@ -204,16 +204,16 @@ async function lowlightFull(eng, src, work, FW, FH, options, deblur, onProgress)
  * @returns {Promise<{FW:number, FH:number, data:Uint8ClampedArray, grain:number}>} data: 補正した RGBA（ブレ補正の差分・粒を足す前）
  */
 export async function precomputeLowlight({ full, work, options, deblur, signal }) {
-  const FW = full.width; const FH = full.height; const data = new Uint8ClampedArray(FW * FH * 4); let grain = 0;
+  const FW = full.width; const FH = full.height; const data = new Uint8ClampedArray(FW * FH * 4); let grain = 0; let face = null;
   await enhancePhoto({ width: FW, height: FH, read: bandReader(full, FW), small: smallPixels(work, work.width, work.height) }, { ...options, grain: !deblur, fine: !deblur }, {
-    signal, onGrain: (g) => { grain = g; }, onBand: (y, rows, d) => data.set(d, y * FW * 4),
+    signal, onGrain: (g, f) => { grain = g; face = f; }, onBand: (y, rows, d) => data.set(d, y * FW * 4),
   });
-  return { FW, FH, data, grain };
+  return { FW, FH, data, grain, face };
 }
 
 /** 先に計算しておいた暗所補正を GPU に送る（ブレ補正があるときは、差分と粒をここで足す。lowlightFull と同じ） */
 async function lowlightCached(eng, pre, FW, FH, deblur, onProgress) {
-  const after = deblur ? { ...deblur, grain: pre.grain } : null;
+  const after = deblur ? { ...deblur, grain: pre.grain, face: pre.face } : null;
   const band = Math.max(1, Math.floor(STRIP_PIXELS / FW));
   for (let y = 0; y < FH; y += band) {
     const rows = Math.min(band, FH - y); const d = pre.data.slice(y * FW * 4, (y + rows) * FW * 4);

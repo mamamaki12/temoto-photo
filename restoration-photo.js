@@ -90,7 +90,7 @@ const abortError = () => new DOMException('処理を中止しました', 'AbortE
  * @param {object} hooks
  * @param {(y:number, rows:number, data:Uint8ClampedArray)=>void} hooks.onBand 補正できた帯（順番どおりとは限らない）
  * @param {(t:number)=>void} [hooks.onProgress] 0〜1（実際に処理した量）
- * @param {(grain:number)=>void} [hooks.onGrain] 足す粒の強さ（grainFor）。帯より先に 1 回。grain: false のときも、ブレ補正のあとに足す強さとして知らせる
+ * @param {(grain:number, face:object|null)=>void} [hooks.onGrain] 足す粒の強さ（grainFor）と、粒を弱める顔の肌の地図。帯より先に 1 回。grain: false のときも、ブレ補正のあとに足す強さとして知らせる
  * @param {AbortSignal} [hooks.signal]
  * @param {object} [hooks.cache] 途中の結果を取っておく入れ物（編集画面で、同じ写真に対して使い回す。写真が変わったら新しくする）。
  *   ノイズ除去の重い部分（denoiseBand）の結果を帯ごとに取っておき（cache.keepBands が false なら取っておかない）、
@@ -127,7 +127,7 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light, 
   // 取っておいたノイズ除去の結果（cache.bands）が使えず、毎回最初からやり直しになる
   nr *= autoNr(tone && { gain: Math.min(16, tone.auto * (1 + 50 / 400)) });
   if (cache && cache.nr !== nr) { cache.nr = nr; cache.bands = []; cache.pv = null; }
-  onGrain(grainFor(nr, profile, tone));
+  onGrain(grainFor(nr, profile, tone), (tone && tone.face) || null);
   // 3. 帯ごとに、いくつかの Worker で
   const ROWS = Math.max(64, Math.min(512, Math.floor(1_000_000 / width / 4) * 4));
   const bands = [];

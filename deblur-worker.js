@@ -1,13 +1,15 @@
 // 被写体ブレの補正の AI を動かす Worker（ONNX Runtime Web。WebGPU があれば GPU で、なければ CPU で。端末の中だけで動く）
-// 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか }
+// 受け取る: { type: 'run', small: { width, height, data: Float32Array（RGB、0〜1） }, denoise: AI に渡す前にノイズを取るか,
+//   person, parts: 人物の地図・部位の地図（skinseg.js。ブレ補正を人物だけに効かせる。なければ全体） }
 // 返す: { type: 'progress', phase: 'load' | 'denoise' | 'run', t } … { type: 'result', res: { width, height, data } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
-import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, TILE } from './deblur.js';
+import { addDeconv, deblurResidual2, deconvResidual, denoiseSmall, subjectWeight, weightResidual, TILE } from './deblur.js';
 import { workerCount, lowMemory, limitOrtMemory } from './cores.js';
 
 limitOrtMemory(512); // GPU で動かすときだけ使う（CPU では deblur-infer-worker.js）
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
+const MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 /** モデルを読み込む（はじめての 1 回は 36MB をダウンロード。以後はキャッシュ） */
 async function download(onProgress) {
@@ -91,31 +93,50 @@ async function init(onProgress) {
   ort.env.wasm.numThreads = 1;
   const model = await download(onProgress);
   let gpu = false;
-  try {
+  // スマホ（iPhone・iPad・Android）は GPU を使わない（顔 AI・全体 AI と同じ）。iPhone の Safari では GPU の準備（シェーダーの組み立て）で
+  // Worker が固まり、45 秒の見切りも効かずに「AI を準備しています」のまま 4 分以上止まった（1.35.3 でユーザーが確認）
+  if (!MOBILE) try {
     const a = navigator.gpu && await navigator.gpu.requestAdapter();
     // ソフトウェアで GPU のふりをするもの（SwiftShader など）は、CPU で動かすより遅い
     const info = a?.info || {};
     gpu = !!a && !(info.isFallbackAdapter || a.isFallbackAdapter || /swiftshader|llvmpipe|software/i.test(`${info.vendor} ${info.architecture} ${info.description}`));
   } catch { gpu = false; }
+  onProgress(1); self.postMessage({ type: 'progress', phase: 'init', t: 0 });
   if (gpu) {
     try {
-      const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'] });
-      // GPU の計算が正しく動くか、小さな絵で確かめる（おかしければ CPU で）
-      const x = new Float32Array(3 * TILE * TILE).map((_, i) => 0.3 + 0.4 * ((i * 7919) % 97) / 97);
-      const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, TILE, TILE]) })).output.data;
-      let bad = false; for (let i = 0; i < y.length; i += 101) if (!Number.isFinite(y[i]) || Math.abs(y[i] - x[i]) > 0.6) { bad = true; break; }
-      if (!bad) {
+      // GPU の準備（シェーダーの組み立て）が終わらない端末がある（iPhone の Safari で、何分たっても進まなかった）。
+      // GPU_WAIT を過ぎたら、待たずに CPU で動かす
+      const s = await withTimeout(gpuSession(model), GPU_WAIT, 'GPU の準備に時間がかかりすぎました');
+      if (s) {
         const run1 = async (input, n) => (await s.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) })).output.data;
         backend = { size: 1, run: lowMemory(self.navigator) ? (input, n) => splitBatch(input, n, run1) : run1, dispose: () => s.release() };
         return backend;
       }
-      await s.release();
     } catch (e) { console.warn('WebGPU でブレ補正を動かせないので CPU で動かします', e); }
   }
   const pool = cpuPool(model);
-  await pool.ready;
+  await withTimeout(pool.ready, CPU_WAIT, 'ブレ補正の AI を開始できませんでした（端末のメモリが足りない可能性があります）');
   backend = pool;
   return backend;
+}
+const GPU_WAIT = 45_000; // GPU の準備を待つ上限
+const CPU_WAIT = 120_000; // CPU の AI の読み込みを待つ上限（26MB の WebAssembly の読み込みを含む）
+/** 待っても終わらなければ失敗にする（終わらない方の処理は放っておく。終わったときに片付ける） */
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+/** GPU の AI。計算が正しく動くか、小さな絵で確かめる（おかしければ null = CPU で） */
+async function gpuSession(model) {
+  const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'] });
+  const x = new Float32Array(3 * TILE * TILE).map((_, i) => 0.3 + 0.4 * ((i * 7919) % 97) / 97);
+  const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, TILE, TILE]) })).output.data;
+  let bad = false; for (let i = 0; i < y.length; i += 101) if (!Number.isFinite(y[i]) || Math.abs(y[i] - x[i]) > 0.6) { bad = true; break; }
+  if (!bad) return s;
+  await s.release();
+  return null;
 }
 
 self.onmessage = async ({ data }) => {
@@ -127,11 +148,14 @@ self.onmessage = async ({ data }) => {
     // 逆畳み込み（下）は AI の結果を使わないので、パソコン・Android では別の Worker で AI と同時に計算する（iPhone・iPad はメモリが少ないので後で）
     const dc = lowMemory(self.navigator) ? null : deconvInWorker(input);
     dc?.catch(() => {});
-    const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: 0.95 * t }) });
+    // 人物だけに（背景はピントの外れたぼけ。直すとガサガサになる）。肌のなめらかな所は弱く
+    const wt = subjectWeight(input, data.person || null, data.parts || null);
+    const res = await deblurResidual2(input, be.run, { concurrency: be.size, wt, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: 0.95 * t }) });
     // iPhone・iPad は、AI を片付けてから逆畳み込みをする（AI を抱えたままだと、計算用の配列と合わせてメモリが足りなくなる）
     if (lowMemory(self.navigator)) { backend.dispose(); backend = null; }
     // AI が直せない、なだらかなにじみ（ぼけ・小さなブレ）は、ぼけの形を仮定して戻す。AI がもう直した所には足さない
     addDeconv(res, dc ? await dc : deconvResidual(input), input);
+    weightResidual(res, wt);
     self.postMessage({ type: 'progress', phase: 'run', t: 1 });
     self.postMessage({ type: 'result', res }, [res.data.buffer]);
   } catch (error) {

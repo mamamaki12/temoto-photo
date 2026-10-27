@@ -89,7 +89,8 @@ rawlib.js rawdev.js   LibRaw での RAW の読み込みと、16bit からの現�
 vendor/libraw/   LibRaw（WebAssembly。libraw-wasm 1.6.0。ライセンスは vendor/libraw/LICENSE.txt）
 skinseg.js vendor/mediapipe/   AI による肌・唇の判定（MediaPipe tasks-vision 0.10.21 と、肌の判定・顔の目印のモデル。Apache License 2.0。Worker の中で同じサイトのファイルだけを読み、写真は外に送らない。はじめて美肌・リップを使うときに約 30MB を読み込む）
 deblur.js deblur-photo.js deblur-worker.js deblur-infer-worker.js   被写体ブレの補正（AI に区画ごとに通し、直した差分を元の大きさに足す）
-bokeh.js bokeh-photo.js   背景をぼかす（人物の地図を輪郭に沿わせ、背景だけ円形にぼかして合成。docs/bokeh-handoff.md）
+bokeh.js bokeh-photo.js depth-worker.js   背景をぼかす（人物の地図と奥行きの AI で、人物と同じ近さの所を残し、背景だけ円形にぼかして合成。docs/bokeh-handoff.md）
+vendor/depth/   奥行きの AI（Depth Anything V2 Small、Apache-2.0。重み半精度 50MB。はじめて背景をぼかすときに読み込む）
 crisp.js crisp-photo.js   髪・服をくっきり（全体 AI の差分を、髪・服 1・肌 0.35・背景 0 の重みで足す。docs/bokeh-handoff.md）
 vendor/ort/ vendor/deblur/   ONNX Runtime Web 1.30.0（MIT）と、NAFNet GoPro width32（MIT）を ONNX にしたモデル（途中の値が暴走しないよう止める処理を足したもの。docs/deblur-handoff.md）
 grid.js       グリッド（コラージュ）
