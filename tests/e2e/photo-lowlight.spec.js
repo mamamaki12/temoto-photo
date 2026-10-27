@@ -57,6 +57,25 @@ test('開き直したとき、前に計算した明るさ補正の結果をす�
   await expect.poll(() => page.evaluate(async () => !!(await (await import('/db.js')).getHq(window.__temoto.editor.id))), { timeout: 10000 }).toBe(false);
 });
 
+test('前の版で保存した補正の結果は使わず、計算し直す（補正の計算を直したら、開き直した写真にも効く）', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#34251c', { w: 128, h: 128 }));
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  await openTool(page, '自動補正');
+  const control = page.getByLabel('写真全体の明るさ補正', { exact: true });
+  await control.fill('70'); await control.dispatchEvent('change');
+  await page.waitForFunction(() => window.__temoto.editor.hq?.canvas);
+  await expect.poll(() => page.evaluate(async () => !!(await (await import('/db.js')).getHq(window.__temoto.editor.id))), { timeout: 10000 }).toBe(true);
+  // 保存した結果を、前の版で保存したものに書き換える
+  await page.evaluate(async () => { const db = await import('/db.js'); const id = window.__temoto.editor.id; const rec = await db.getHq(id); await db.putHq(id, { ...rec, ver: '1.31.3' }); });
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await page.reload();
+  await page.locator('.lib-open').first().click();
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  expect(await page.evaluate(() => !!window.__temoto.editor.hq?.saved)).toBe(false);
+  await page.waitForFunction(() => { const E = window.__temoto.editor; return E.hq?.canvas && !E.hq.ctrl; }); // 計算し直した
+});
+
 test('暗部を上げ、白と色を保つ。元解像度の書き出しにも適用', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {

@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.5'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -761,6 +761,8 @@ async function runLowlight() {
 // 写真を開き直すたびに一から計算し直し、その間（iPhone では数十秒）は補正前の暗い写真に見えていた。
 // 画素をそのまま（色空間もそのまま）保存して、開いたときに編集の値が同じならすぐ見せる。PNG にしないのは、Display P3 の色が変わらないように
 const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
+// 保存した版（VERSION）が今と違う結果は使わない。補正の計算を直しても、前に開いた写真は古い計算の結果のまま見えてしまう
+// （1.32.1 で肌の色味を戻したあとも、それより前に開いた写真は白っぽい肌のままだった）。版が変わったら一度だけ計算し直す
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
 async function saveHq(e0, key, canvas) {
   await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
@@ -770,13 +772,13 @@ async function saveHq(e0, key, canvas) {
     let data = new Blob([px]);
     if (canZip) data = await new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob();
     if (e0.hq?.key !== key) return;
-    await db.putHq(e0.id, { key, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
+    await db.putHq(e0.id, { key, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
     await db.pruneHq(HQ_KEEP);
   } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
 }
 /** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
 async function loadHq(rec) {
-  if (!rec || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE || !(rec.data instanceof Blob)) return null;
+  if (!rec || rec.ver !== VERSION || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE || !(rec.data instanceof Blob)) return null;
   if (rec.z && !canZip) return null;
   try {
     const buf = rec.z ? await new Response(rec.data.stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer() : await rec.data.arrayBuffer();
