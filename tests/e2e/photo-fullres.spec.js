@@ -30,7 +30,7 @@ async function exportFile(page, { size, format = 'JPEG', space } = {}) {
   await dlg.getByRole('button', { name: size }).click();
   if (space) await dlg.getByRole('button', { name: space }).click();
   const dl = page.waitForEvent('download', { timeout: 150_000 });
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   const buf = await (await dl).createReadStream().then((s) => new Promise((res) => { const b = []; s.on('data', (c) => b.push(c)); s.on('end', () => res(Buffer.concat(b))); }));
   await dlg.getByRole('button', { name: '閉じる' }).click();
   return buf;

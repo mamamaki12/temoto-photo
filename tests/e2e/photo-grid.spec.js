@@ -55,7 +55,7 @@ test('4枚を選んでグリッド: 2×2・すき間の色・レイアウト変�
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: '1080px（SNS）' }).click();
   const dl = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   const d = await dl;
   const buf = await readFile(await d.path());
   const size = await page.evaluate(async (b64) => { const bmp = await createImageBitmap(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))])); return [bmp.width, bmp.height]; }, buf.toString('base64'));
@@ -131,7 +131,7 @@ test('グリッド: 写真の間の線をドラッグして大きさの割合を
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: '1080px（SNS）' }).click();
   const dl = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   const buf = await readFile(await (await dl).path());
   const px = await page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))]));
