@@ -21,13 +21,13 @@ let worker = null; // AI を読み込んだ Worker は使い回す（読み込�
  * @param {CanvasImageSource} image ブレ補正の元にする写真（暗所補正をするなら、した後のもの）
  * @param {number} W image の幅 @param {number} H image の高さ
  * @param {number} origW 元の写真の幅 @param {number} origH 元の写真の高さ（AI に通す大きさを決める）
- * @param {{onProgress?:(t:number)=>void, signal?:AbortSignal, denoise?:boolean}} hooks onProgress は 0〜1。
+ * @param {{onProgress?:(t:number)=>void, onHint?:(s:string)=>void, signal?:AbortSignal, denoise?:boolean}} hooks onProgress は 0〜1。onHint: いま何をしているかの補足（'' で消す）。
  *   denoise: AI に渡す前に、縮めた絵のノイズを取る（ノイズ軽減を使っていない写真。ざらつきを AI がブレと見て格子を作るのを防ぐ）
  */
 /** ブレ補正の AI を片付けて、メモリを空ける（顔専用 AI のような大きな AI を動かす前に。次に使うときは読み込み直す） */
 export function releaseDeblur() { worker?.terminate(); worker = null; }
 
-export async function deblurResidualFor(image, W, H, origW, origH, { onProgress = () => {}, signal, denoise = false } = {}) {
+export async function deblurResidualFor(image, W, H, origW, origH, { onProgress = () => {}, onHint = () => {}, signal, denoise = false } = {}) {
   if (signal?.aborted) throw abortError();
   const { width: w, height: h } = deblurSize(origW || W, origH || H);
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -42,6 +42,7 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
       wk.onmessage = null; wk.onerror = null; signal?.removeEventListener('abort', onAbort);
       // iPhone・iPad では、終わったら AI を片付ける（次の段の計算・顔 AI とメモリを取り合わないように。次に使うときは読み込み直す）
       if (err || lowMemory()) { wk.terminate(); if (worker === wk) worker = null; }
+      onHint('');
       if (err) reject(err); else resolve(res);
     };
     const onAbort = () => done(abortError());
@@ -49,7 +50,12 @@ export async function deblurResidualFor(image, W, H, origW, origH, { onProgress 
     // 進捗: AI の読み込み（はじめての 1 回だけ時間がかかる）に 1 割、ノイズ除去に 1 割、計算に残り
     const d = denoise ? 0.1 : 0;
     wk.onmessage = ({ data: m }) => {
-      if (m.type === 'progress') onProgress(m.phase === 'load' ? 0.1 * m.t : m.phase === 'denoise' ? 0.1 + d * m.t : 0.1 + d + (0.9 - d) * m.t);
+      if (m.type === 'progress') {
+        // AI の準備（読み込んだ後の、GPU・CPU の起動。iPhone では 1 分近くかかることがある）の間は、そう伝える
+        if (m.phase === 'init') onHint('ブレ補正の AI を準備しています');
+        else if (m.phase === 'run' && m.t > 0) onHint('');
+        onProgress(m.phase === 'load' ? 0.1 * m.t : m.phase === 'init' ? 0.1 : m.phase === 'denoise' ? 0.1 + d * m.t : 0.1 + d + (0.9 - d) * m.t);
+      }
       else if (m.type === 'result') done(null, m.res);
       else if (m.type === 'error') done(new Error(m.message));
     };

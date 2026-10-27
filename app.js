@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.35.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -677,7 +677,7 @@ function dropCanvas(c, ...keep) { if (c instanceof HTMLCanvasElement && !keep.in
  * @returns {Promise<{canvas, res, faces, whole, bokeh, partial, pre}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）、whole: 全体 AI { res, map, amount }（なければ null。map は髪・服をくっきりの重み、全体に足すときは null）、bokeh: 背景のぼかし（なければ null）。
  *   partial: 保存しておいた途中の結果から作ったので、書き出しに要る res・whole が欠けている（書き出しで計算し直す）。pre: 顔 AI の前の写真（今回作ったときだけ。保存用。顔 AI もぼかしも使わないときは canvas と同じなので null）
  */
-async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, onStage = async () => {}, state = null } = {}) {
+async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, onStage = async () => {}, onHint = () => {}, state = null } = {}) {
   const K = stageKeys(adj, state); const { db, fa, bk, cr, wh } = K;
   const ll = K.ll ? lowlightOptions(adj) : null;
   const cache = src.cache || {};
@@ -726,13 +726,13 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
   let A = null; let res = db ? (fresh(cache, 'db', K.dbKey) ? cache.db.res : null) : null; let whole = wholeOf(); let pre = null; let pre0 = null;
   if (needA && pfHit) {
     A = await cache.pf.load(); onProgress(w[5] / tot);
-    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); } // 読めなかった: 一から
+    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); } // 読めなかった: 一から
     if (!bsHit) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(A, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
   } else if (needA) {
     let canvas = src.base;
     if (a0Use) {
       canvas = await cache.a0.load(); onProgress(w[5] / tot);
-      if (!canvas) { cache.a0 = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); } // 読めなかった: 一から
+      if (!canvas) { cache.a0 = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); } // 読めなかった: 一から
     } else if (ll) {
       if (llMiss) {
         cache.ll = null;
@@ -742,7 +742,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
         if (db || wh) await onStage('ll', cache.ll); // この後に重い段があるときだけ（途中で落ちても、次はここから）
       } else if (!fresh(cache, 'll', K.llKey)) { // 前に途中で止まったときに保存しておいた、ノイズ除去と明るさ補正の結果
         const c = await cache.lls.load(); at0(0, 1);
-        if (!c) { cache.lls = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
+        if (!c) { cache.lls = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
         cache.ll = { key: K.llKey, canvas: c, grain: cache.lls.grain };
       }
       canvas = cache.ll.canvas;
@@ -750,12 +750,12 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
     if (db && !a0Use) {
       if (dbMiss) {
         cache.db = null;
-        const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at0(1, t) });
+        const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at0(1, t), onHint });
         cache.db = { key: K.dbKey, res: r };
         await onStage('db', cache.db);
       } else if (!fresh(cache, 'db', K.dbKey)) { // 前に途中で止まったときに保存しておいた、ブレ補正の差分
         const r = await cache.dbs.load();
-        if (!r) { cache.dbs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
+        if (!r) { cache.dbs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
         cache.db = { key: K.dbKey, res: r };
       }
       res = cache.db.res;
@@ -771,7 +771,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
         await onStage('wh', cache.wh);
       } else if (!fresh(cache, 'wh', K.whKey)) {
         const r = await cache.whs.load(); // 保存しておいた全体 AI の差分
-        if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
+        if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
         cache.wh = { key: K.whKey, res: r };
       }
       if (cr && !fresh(cache, 'cm', K.cmKey)) { cache.cm = null; cache.cm = { key: K.cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
@@ -837,6 +837,7 @@ async function runLowlight() {
     const { canvas, res, faces, whole, bokeh, partial, pre, pre0 } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal,
       onStage: (name, v) => saveStage(e0, name, v),
+      onHint: (hint) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqHint = hint; hqBar(E.hqT ?? 0); } },
       onSteps: (names) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqSteps = names.length ? names : changedItems(E.hqLast?.key, key); hqBar(0); } },
       onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
@@ -1080,13 +1081,20 @@ function progressRing(label) {
   return { el, set };
 }
 /** 写真の上の進み具合（真ん中のポップアップ。t: 0〜1、null で隠す） */
+const HQ_STILL = 20_000; // % がこれだけ変わらなければ「計算しています」と添える（iPhone のブレ補正は、% が 1 つ進むのに 30 秒ほどかかることがある）
 function hqBar(t) {
   if (!E?.hqEl) return;
-  E.hqEl.hidden = t == null; if (t == null) return;
+  E.hqEl.hidden = t == null;
+  if (t == null) { clearInterval(E.hqTick); E.hqTick = 0; E.hqT = null; E.hqHint = ''; return; }
   const p = Math.min(99, Math.floor(t * 100));
+  if (E.hqT == null || Math.floor(E.hqT * 100) !== p) E.hqAt = Date.now(); // % が変わった時刻
+  E.hqT = t;
   E.hqRing.set(p);
-  // いま計算している項目だけ（済んでいて使い回すものは出さない）
-  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%`;
+  // いま計算している項目だけ（済んでいて使い回すものは出さない）。長く同じ % のときは、止まっていないと分かるように添える
+  const still = Date.now() - E.hqAt >= HQ_STILL;
+  const note = E.hqHint || (still ? '計算しています。そのままお待ちください' : '');
+  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%${note ? `（${note}）` : ''}`;
+  if (!E.hqTick) { const e0 = E; E.hqTick = setInterval(() => { if (E !== e0 || e0.hqT == null) clearInterval(e0.hqTick); else hqBar(e0.hqT); }, 1000); }
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {

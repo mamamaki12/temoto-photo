@@ -1,6 +1,6 @@
 {
   "name": "temoto-photo",
-  "version": "1.35.1",
+  "version": "1.35.3",
   "private": true,
   "description": "てもとフォト: 写真を端末の外に出さずに編集できる写真編集Webアプリ",
   "type": "module",
