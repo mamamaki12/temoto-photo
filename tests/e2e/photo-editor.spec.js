@@ -619,45 +619,38 @@ test.describe('はじめて使う端末', () => {
   });
 });
 
-test('書き出し: 「写真アプリに保存」で共有メニューに画像を渡す。時間切れで開けなかったら、もう一度押すと用意した画像を渡す', async ({ page }) => {
+test('書き出し: スマホは画面を開いたらすぐ画像を作り、「写真アプリに保存」を 1 回押すだけで（押したその場で）共有メニューに渡す', async ({ page }) => {
   await page.addInitScript(() => {
-    window.__shared = []; let n = 0;
+    window.__shared = [];
     navigator.canShare = (d) => !!d?.files?.length;
-    navigator.share = async (d) => { if (n++ === 0) throw new DOMException('no activation', 'NotAllowedError'); window.__shared.push({ name: d.files[0].name, type: d.files[0].type, size: d.files[0].size }); };
+    // iPhone は、押してから時間がたつと共有メニューを開けない（押したことが続いているときだけ開ける）
+    navigator.share = async (d) => {
+      if (!navigator.userActivation.isActive) throw new DOMException('no activation', 'NotAllowedError');
+      window.__shared.push({ name: d.files[0].name, type: d.files[0].type, size: d.files[0].size });
+    };
   });
   await openWith(page);
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
   const dlg = page.getByRole('dialog');
-  await dlg.getByRole('button', { name: '写真アプリに保存' }).click();
-  await expect(dlg.getByRole('button', { name: 'もう一度押して保存' })).toBeVisible({ timeout: 20000 });
-  await dlg.getByRole('button', { name: 'もう一度押して保存' }).click();
+  const save = dlg.getByRole('button', { name: '写真アプリに保存' });
+  await expect(save).toBeEnabled({ timeout: 20000 });
+  await expect(dlg).toContainText('用意ができました');
+  await dlg.getByLabel('ファイル名').fill('mine');
+  await save.click();
   await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(1);
   const f = (await page.evaluate(() => window.__shared))[0];
-  expect(f.type).toBe('image/jpeg'); expect(f.name).toMatch(/_edit\.jpg$/); expect(f.size).toBeGreaterThan(1000);
-  await expect(dlg.getByRole('button', { name: '写真アプリに保存' })).toBeVisible();
-});
-
-test.describe('パソコン', () => {
-  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, deviceScaleFactor: 1 });
-test('書き出し: パソコンでは（共有できても）ボタンは「ダウンロード」の 1 つだけで、押すとダウンロードまでする', async ({ page }) => {
-  await page.addInitScript(() => { window.__shared = 0; navigator.canShare = () => true; navigator.share = async () => { window.__shared++; }; });
-  await openWith(page);
+  expect(f.type).toBe('image/jpeg'); expect(f.name).toBe('mine.jpg'); expect(f.size).toBeGreaterThan(1000);
+  // 設定を変えると作り直し、できるまでは押せない
+  await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
+  await expect(save).toBeEnabled({ timeout: 20000 });
+  await save.click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(2);
+  expect((await page.evaluate(() => window.__shared))[1].type).toBe('image/png');
+  // 閉じて同じ設定で開き直すと、作り直さずにすぐ押せる
+  await dlg.getByRole('button', { name: '閉じる' }).click();
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
-  const dlg = page.getByRole('dialog');
-  await expect(dlg.locator('.dlg-actions button')).toHaveText(['閉じる', 'ダウンロード']);
-  // 進み具合は、画面の真ん中のポップアップの丸い円に % で出す
-  await page.evaluate(() => {
-    window.__ring = [];
-    new MutationObserver(() => { const r = document.querySelector('.prog-pop:not([hidden]) [role=progressbar]'); if (r) window.__ring.push(r.getAttribute('aria-label')); })
-      .observe(document.querySelector('.prog-pop'), { attributes: true, childList: true, subtree: true, characterData: true });
-  });
-  const dl = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
-  expect((await dl).suggestedFilename()).toMatch(/_edit\.jpg$/);
-  expect(await page.evaluate(() => window.__shared)).toBe(0);
-  expect(await page.evaluate(() => window.__ring)).toContain('画像の書き出し進捗');
-  await expect(dlg.locator('.prog-pop')).toBeHidden();
-});
+  await expect(page.getByRole('dialog').getByRole('button', { name: '写真アプリに保存' })).toBeEnabled({ timeout: 1000 });
+  await page.getByRole('dialog').getByRole('button', { name: 'JPEG', exact: true }).click(); // 次のテストのために戻す（設定は端末に残る）
 });
 
 test('書き出し: 写真アプリに保存できる端末では、1枚でもまとめてでもボタンは「写真アプリに保存」の 1 つだけ。まとめては全部を一度に渡す', async ({ page }) => {
