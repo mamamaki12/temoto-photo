@@ -56,6 +56,8 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+/* ボタンを続けて押したとき、iPhone で画面がズームされないように（2 本指で広げるズームはできる） */
+html, button, .btn, label, input, select { touch-action: manipulation; }
 body { margin: 0; background: var(--page); color: var(--text); font-family: var(--font); line-height: 1.55; letter-spacing: .01em; font-feature-settings: "palt"; -webkit-text-size-adjust: 100%; -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); }
