@@ -619,7 +619,7 @@ test.describe('はじめて使う端末', () => {
   });
 });
 
-test('書き出し: スマホは画面を開いたらすぐ画像を作り、「写真アプリに保存」を 1 回押すだけで（押したその場で）共有メニューに渡す', async ({ page }) => {
+test('書き出し: スマホは画面をふさがずに裏で画像を作り、できていれば「写真アプリに保存」1 回で（押したその場で）共有メニューに渡す', async ({ page }) => {
   await page.addInitScript(() => {
     window.__shared = [];
     navigator.canShare = (d) => !!d?.files?.length;
@@ -633,23 +633,33 @@ test('書き出し: スマホは画面を開いたらすぐ画像を作り、「
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
   const dlg = page.getByRole('dialog');
   const save = dlg.getByRole('button', { name: '写真アプリに保存' });
-  await expect(save).toBeEnabled({ timeout: 20000 });
-  await expect(dlg).toContainText('用意ができました');
+  // 開いただけでは、ポップアップで画面をふさがない（画質などを選べる）
+  await expect(save).toBeEnabled();
+  await expect(dlg).toContainText('用意ができました', { timeout: 20000 });
+  await expect(page.locator('.prog-pop')).toBeHidden();
   await dlg.getByLabel('ファイル名').fill('mine');
   await save.click();
   await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(1);
   const f = (await page.evaluate(() => window.__shared))[0];
   expect(f.type).toBe('image/jpeg'); expect(f.name).toBe('mine.jpg'); expect(f.size).toBeGreaterThan(1000);
-  // 設定を変えると作り直し、できるまでは押せない
-  await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
-  await expect(save).toBeEnabled({ timeout: 20000 });
-  await save.click();
+  // できる前に押したときは、丸い円で進み具合を出し、できたら円の下の「写真アプリに保存」で渡す
+  await page.evaluate(() => { // 設定を変えてすぐ押す（まだできていない）
+    const d = document.querySelector('dialog[open]');
+    [...d.querySelectorAll('button')].find((b) => b.textContent === 'PNG（劣化なし）').click();
+    [...d.querySelectorAll('.dlg-actions button')].find((b) => b.textContent === '写真アプリに保存').click();
+  });
+  expect(await page.evaluate(() => window.__shared.length)).toBe(1);
+  const fin = page.locator('.prog-pop').getByRole('button', { name: '写真アプリに保存' });
+  await expect(fin).toBeVisible({ timeout: 20000 });
+  await fin.click();
   await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(2);
   expect((await page.evaluate(() => window.__shared))[1].type).toBe('image/png');
-  // 閉じて同じ設定で開き直すと、作り直さずにすぐ押せる
+  await expect(page.locator('.prog-pop')).toBeHidden();
+  // 閉じて同じ設定で開き直すと、作り直さずにすぐ渡せる
   await dlg.getByRole('button', { name: '閉じる' }).click();
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
-  await expect(page.getByRole('dialog').getByRole('button', { name: '写真アプリに保存' })).toBeEnabled({ timeout: 1000 });
+  await page.getByRole('dialog').getByRole('button', { name: '写真アプリに保存' }).click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(3);
   await page.getByRole('dialog').getByRole('button', { name: 'JPEG', exact: true }).click(); // 次のテストのために戻す（設定は端末に残る）
 });
 
@@ -674,6 +684,7 @@ test('書き出し: 写真アプリに保存できる端末では、1枚でも�
   await page.getByRole('button', { name: 'まとめて書き出し' }).click();
   await expect(green).toHaveText('写真アプリに保存');
   await expect(page.getByRole('dialog').locator('.dlg-actions button')).toHaveText(['閉じる', '写真アプリに保存']);
+  await expect(page.getByRole('dialog')).toContainText('2枚の用意ができました', { timeout: 20000 });
   await green.click();
   await expect.poll(() => page.evaluate(() => window.__shared)).toHaveLength(1);
   const [names] = await page.evaluate(() => window.__shared);
