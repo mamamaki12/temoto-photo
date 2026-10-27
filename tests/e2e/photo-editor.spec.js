@@ -803,3 +803,17 @@ test('編集中にページが落ちても、読み込み直すと編集して�
   await expect(page.locator('.lib-item')).toHaveCount(1);
   expect(await page.evaluate(() => !!window.__temoto.editor)).toBe(false);
 });
+
+test('進み具合のポップアップは、% や説明の文が変わっても大きさが変わらない', async ({ page }) => {
+  await openWith(page);
+  const sizes = await page.evaluate(() => {
+    const e = document.querySelector('.hq-status'); e.hidden = false;
+    const out = [];
+    for (const [p, t] of [[1, 'ノイズ除去と明るさ補正… 残り99%'], [42, 'ノイズ除去と明るさ補正… 残り58%'], [100, 'ブレ補正… 残り0%'], [7, 'ノイズ除去と明るさ補正・ブレ補正・顔 AI… 残り93%']]) {
+      e.querySelector('.ring-num').textContent = `${p}%`; e.querySelector('.hq-status > span').textContent = t;
+      const r = e.getBoundingClientRect(); out.push([Math.round(r.width), Math.round(r.height)]);
+    }
+    e.hidden = true; return out;
+  });
+  for (const s of sizes) expect(s).toEqual(sizes[0]);
+});

@@ -528,8 +528,10 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .prog-pop { position: fixed; inset: 0; z-index: 30; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; display: grid; place-items: center; background: rgb(0 0 0 / 55%); color: #fff; }
 .prog-pop .prog-card { background: #14191e; border: 1px solid rgb(255 255 255 / 10%); }
 .prog-pop[hidden] { display: none; }
-.prog-card { display: grid; justify-items: center; gap: 10px; width: max-content; max-width: min(300px, calc(100vw - 48px)); padding: 18px 22px 16px; border-radius: 18px; background: rgb(14 19 24 / 88%); color: #fff; font-size: .85rem; line-height: 1.4; text-align: center; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); }
+/* 大きさは決まった幅（% や説明の文が変わっても、枠の左右が動かないように）。数字は同じ幅の字にする */
+.prog-card { display: grid; justify-items: center; gap: 10px; box-sizing: border-box; width: min(280px, calc(100vw - 48px)); font-variant-numeric: tabular-nums; padding: 18px 22px 16px; border-radius: 18px; background: rgb(14 19 24 / 88%); color: #fff; font-size: .85rem; line-height: 1.4; text-align: center; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); }
 .prog-card[hidden] { display: none; }
+.prog-card > span { display: grid; place-items: center; min-height: 2.8em; } /* 説明が 1 行でも 2 行でも、枠の高さを変えない */
 .ring { position: relative; width: 84px; height: 84px; }
 .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .ring circle { fill: none; stroke-width: 4.5; }
