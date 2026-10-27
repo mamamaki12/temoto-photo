@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.10'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.35.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -1470,7 +1470,7 @@ const PANELS = {
       hint('AI が髪の毛先・服の織りをくっきりさせます（肌は控えめ、背景はそのまま。初回は AI 約 5MB）。目・口・前髪の輪郭は「顔 AI」で。'),
       h('h3', {}, '背景をぼかす'),
       toggle('背景をぼかす', bokehActive(E.state.adj), live((v) => { E.state.adj.bokeh = v ? 50 : 0; commit(); })).el,
-      hint('AI が人物を見分けて、背景だけをやわらかくぼかします（髪・輪郭はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。'),
+      hint('AI が人物と写真の奥行きを見分けて、背景だけをやわらかくぼかします（髪・輪郭、透けたフリル・足元はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。初回は奥行きの AI（約 50MB）を読み込みます。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');

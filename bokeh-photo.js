@@ -7,17 +7,49 @@ import { COLOR_SPACE, ctx2d } from './color.js';
 const later = () => new Promise((r) => setTimeout(r, 0));
 const abortError = () => new DOMException('処理を中止しました', 'AbortError');
 
+// 奥行きの AI がこれより長く何も返さなければ、あきらめる（奥行きなしでぼかす。端末のメモリが足りず Worker が止まったときなど）
+const DEPTH_TIMEOUT = 60000;
+
 /**
- * ぼかしの元: 編集用の大きさの写真を 4 分の 1 に縮めたものと、人物・顔の地図（AI の personSeg・faceSeg）。
+ * 写真の奥行き（depth-worker.js の AI。0〜1、大きいほど手前）。使えない端末・失敗したときは null（人物の地図だけでぼかす）
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} small 縮めた写真（長い辺 512）
+ */
+export async function depthMap(small, { signal, onProgress = () => {} } = {}) {
+  const worker = new Worker(new URL('./depth-worker.js', import.meta.url), { type: 'module' });
+  let timer = 0;
+  try {
+    return await new Promise((resolve, reject) => {
+      const arm = () => { clearTimeout(timer); timer = setTimeout(() => reject(new Error('奥行きの AI の返事がありません')), DEPTH_TIMEOUT); };
+      const onAbort = () => reject(abortError());
+      signal?.addEventListener('abort', onAbort, { once: true });
+      arm();
+      worker.onmessage = ({ data: m }) => {
+        arm();
+        if (m.type === 'progress') onProgress(m.t);
+        else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m.depth); } else if (m.type === 'error') reject(new Error(m.message));
+      };
+      worker.onerror = (e) => reject(new Error(e.message || 'worker'));
+      const rgba = small.data.slice();
+      worker.postMessage({ rgba, w: small.width, h: small.height }, [rgba.buffer]);
+    });
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e;
+    console.warn('奥行きの AI を使えませんでした（人物の地図だけでぼかします）', e); return null;
+  } finally { clearTimeout(timer); worker.terminate(); }
+}
+
+/**
+ * ぼかしの元: 編集用の大きさの写真を 4 分の 1 に縮めたものと、人物・顔・奥行きの地図（AI の personSeg・faceSeg・depthMap）。
  * 顔 AI などを変えたときは、これを使い回す（写真全体を読み直さない）。AI が使えない端末では null（何もぼかさない）
- * @returns {Promise<{w:number,h:number,rgba:Uint8ClampedArray,person:{m,w,h},face:{m,w,h}|null}|null>}
+ * @returns {Promise<{w:number,h:number,rgba:Uint8ClampedArray,person:{m,w,h},face:{m,w,h}|null,depth:{m,w,h}|null}|null>}
  */
 export async function bokehSource(image, W, H, { signal, onProgress = () => {} } = {}) {
   if (signal?.aborted) throw abortError();
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
   const small = smallPixels(c, W, H); const person = await personSeg(small);
-  const face = person && await faceSeg(small); onProgress(1);
+  const face = person && await faceSeg(small); onProgress(0.3);
+  const depth = person && await depthMap(small, { signal, onProgress: (t) => onProgress(0.3 + 0.7 * t) }); onProgress(1);
   if (signal?.aborted) { c.width = 0; c.height = 0; throw abortError(); }
   if (!person) { c.width = 0; c.height = 0; return null; }
   // 4 分の 1 に縮める（なめらかに）
@@ -26,7 +58,7 @@ export async function bokehSource(image, W, H, { signal, onProgress = () => {} }
   const sx = ctx2d(s, { willReadFrequently: true }); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, w, h);
   c.width = 0; c.height = 0;
   const img = sx.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }); s.width = 0; s.height = 0;
-  return { w, h, rgba: img.data, person: { m: person.m, w: person.w, h: person.h }, face: face && { m: face.m, w: face.w, h: face.h } };
+  return { w, h, rgba: img.data, person: { m: person.m, w: person.w, h: person.h }, face: face && { m: face.m, w: face.w, h: face.h }, depth };
 }
 
 /**
@@ -48,7 +80,7 @@ export async function bokehFromSource(src, { signal, onProgress = () => {} } = {
       };
       worker.onerror = (e) => reject(new Error(e.message || 'worker'));
       const rgba = src.rgba.slice(); // 元は使い回すので、写しを渡す
-      worker.postMessage({ type: 'bokeh', rgba, w: src.w, h: src.h, person: src.person, face: src.face }, [rgba.buffer]);
+      worker.postMessage({ type: 'bokeh', rgba, w: src.w, h: src.h, person: src.person, face: src.face, depth: src.depth || null }, [rgba.buffer]);
     });
     onProgress(1);
     return r;
