@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.10'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.11'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -2626,20 +2626,33 @@ function savesToPhotos() {
   return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) || matchMedia('(pointer: coarse)').matches;
 }
 
+/**
+ * スマホで写真アプリに保存するときに、先に作っておいた画像（{ sig, items: [{ blob, i, p }] }）。
+ * iPhone は、押してから時間がたつと共有メニューを開けない。書き出しの画面を開いたらすぐ作り始め、
+ * 「写真アプリに保存」を押したときには、待たずにその場で共有メニューを開く（1 回押すだけで保存できる）。
+ * 同じ写真・同じ編集・同じ設定でもう一度開いたときは、作り直さずに使う
+ */
+let exportReady = null;
+let exportRun = Promise.resolve(); // 作っている途中の書き出し（閉じても止まらないので、次はこれが終わってから作る。メモリを取り合わないように）
+
 function openExport({ batch }) {
   const opt = prefs.get('export', { format: 'image/jpeg', quality: 92, maxSide: 0 });
   if (opt.format === 'image/webp' && !canWebp) opt.format = 'image/jpeg';
   if (opt.space !== 'srgb' || COLOR_SPACE === 'srgb') opt.space = COLOR_SPACE;
-  let ready = null; // 写真アプリへの保存で、用意できた画像（iPhone は時間がたつと共有を開けないので、もう一度押してもらう）
-  const save = () => { prefs.set('export', opt); ready = null; };
+  const toPhotos = savesToPhotos();
+  const save = () => { prefs.set('export', opt); if (toPhotos) { refresh(); prepareAhead(); } };
   const status = h('p', { class: 'muted small', 'aria-live': 'polite' });
   // 書き出しの進み具合は、ダイアログの下ではなく画面の真ん中のポップアップ（丸い円と %）に出す
   const ring = progressRing('画像の書き出し進捗');
   const popText = h('span', {});
+  let behind = false; // 「設定を変える」を押した: 先に作るのは裏で続け、進み具合はボタンに出す
+  let pct = null;
+  const later = h('button', { type: 'button', class: 'ghost small', onclick: () => { behind = true; idle(); refresh(); } }, '設定を変える');
   // popover にして、モーダルのダイアログよりも上（最前面）に出す
-  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText));
+  const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText, ...(toPhotos ? [later] : [])));
   /** 進み具合を出す（p: 0〜100、null は準備中。text は円の下の説明。ダイアログの説明にも同じ文を出す） */
   const busy = (p, text) => {
+    if (behind) { pct = p; if (text != null) status.textContent = text; refresh(); return; }
     if (pop.hidden) { pop.hidden = false; try { pop.showPopover?.(); } catch { /* 開いている */ } }
     ring.set(p); if (text != null) { popText.textContent = text; status.textContent = text; }
   };
@@ -2647,11 +2660,17 @@ function openExport({ batch }) {
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
   const q = slider({ label: '画質', min: 50, max: 100, value: opt.quality, def: 92, unit: '%', onChange: (v) => { opt.quality = v; save(); } });
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
-  // ボタンは 1 つだけ。押すと書き出して、スマホは写真アプリへ（共有メニューの「画像を保存」）、パソコンはダウンロードまでする
-  const toPhotos = savesToPhotos();
+  // ボタンは 1 つだけ。スマホは写真アプリへ（共有メニューの「画像を保存」）、パソコンはダウンロードまでする
   const SAVE_LABEL = toPhotos ? '写真アプリに保存' : 'ダウンロード';
   const go = h('button', { type: 'button', class: 'primary' }, SAVE_LABEL);
-  name.addEventListener('input', () => { ready = null; go.textContent = SAVE_LABEL; });
+  /** 先に作った画像を見分ける印（写真・編集・設定。ファイル名は含めない） */
+  const sig = () => JSON.stringify([batch ? batch.map((p) => [p.id, p.updated]) : [E.id, E.state], opt.format, opt.quality, opt.maxSide, opt.space]);
+  const fresh = () => exportReady?.sig === sig();
+  /** スマホのボタン: 画像ができるまでは押せない（押してから作ると、iPhone では共有メニューを開けない） */
+  const refresh = () => {
+    if (!toPhotos) return;
+    go.disabled = !fresh(); go.textContent = fresh() ? SAVE_LABEL : `用意しています…${pct == null ? '' : ` ${pct}%`}`;
+  };
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'exp-h' },
     h('h2', { id: 'exp-h' }, batch ? `まとめて書き出し（${batch.length}枚）` : '書き出し'),
     h('div', { class: 'sub-head' }, h('b', {}, '形式')),
@@ -2683,8 +2702,10 @@ function openExport({ batch }) {
     try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() && !E.hq.saved ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), hqWhole: hqWhole(), hqBokeh: hqBokeh(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
     idle();
     status.textContent = `✓ できました（${r.w}×${r.h}・${fmtBytes(r.blob.size)}）`;
-    return { ...r, file: `${safeName(name.value.trim() || `${E.proj.name}_edit`)}.${EXT[opt.format]}` };
+    return { ...r, file: fileName(1, null) };
   };
+  /** ファイル名（まとめてのときは i 枚目・写真 p） */
+  const fileName = (i, p) => `${safeName(batch ? (name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`) : (name.value.trim() || `${E.proj.name}_edit`))}.${EXT[opt.format]}`;
   /** まとめて書き出す。1枚できるごとに onFile(blob, ファイル名) */
   const many = async (onFile) => {
     let i = 0;
@@ -2700,7 +2721,7 @@ function openExport({ batch }) {
       }
       let r;
       try { r = await renderToBlob({ base: prep.base, W: prep.W, H: prep.H, state: p.state, full: prep.full, origW: p.w, origH: p.h }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: step }); } finally { prep.base.close?.(); if (prep.full !== prep.base) prep.full?.close?.(); }
-      await onFile(r.blob, `${safeName(name.value.trim() ? `${name.value.trim()}_${i}` : `${p.name}_edit`)}.${EXT[opt.format]}`);
+      await onFile(r.blob, fileName(i, p), i, p);
     }
     idle(); status.textContent = `✓ ${batch.length}枚を書き出しました`;
   };
@@ -2708,26 +2729,40 @@ function openExport({ batch }) {
     if (!batch) { const r = await one(); download(r.blob, r.file); toast('ダウンロードしました'); }
     else await many(async (blob, file) => { download(blob, file); await new Promise((res) => setTimeout(res, 400)); });
   };
-  const shareAll = async () => {
-    let files = ready;
-    try {
-      if (!files) {
-        if (batch) { files = []; await many((blob, f) => { files.push(new File([blob], f, { type: opt.format })); }); }
-        else { const r = await one(); files = [new File([r.blob], r.file, { type: opt.format })]; }
+  /** 写真アプリ用の画像を先に作る（設定が変わったら作り直す） */
+  const prepareAhead = () => {
+    if (fresh()) { idle(); refresh(); return; }
+    exportRun = exportRun.then(async () => {
+      for (;;) {
+        if (!dlg.isConnected) return;
+        const key = sig(); if (exportReady?.sig === key) break;
+        pct = null; refresh();
+        const items = [];
+        if (batch) await many((blob, f, i, p) => { items.push({ blob, i, p }); });
+        else { flushSave(); const r = await one(); items.push({ blob: r.blob, i: 1, p: null }); }
+        exportReady = { sig: key, items };
       }
-      if (!navigator.canShare({ files })) { for (const f of files) download(f, f.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
-      await navigator.share({ files }); ready = null; go.textContent = SAVE_LABEL;
-    } catch (e) {
-      if (e?.name === 'NotAllowedError' && files) { // 書き出しに時間がかかって、押したことが切れた（iPhone の決まり）。用意はできたので、もう一度押してもらう
-        ready = files; go.textContent = 'もう一度押して保存'; status.textContent = '用意ができました。もう一度「もう一度押して保存」を押してください。';
-      } else if (e?.name !== 'AbortError') { idle(); status.textContent = files ? '写真アプリに保存できませんでした' : '書き出せませんでした。大きさを小さくしてお試しください。'; }
-    }
+      idle(); behind = false; refresh();
+      if (dlg.isConnected) status.textContent = batch ? `✓ ${batch.length}枚の用意ができました。「写真アプリに保存」を押してください` : `✓ 用意ができました。「写真アプリに保存」を押してください`;
+    }).catch((e) => { console.warn('書き出しの用意', e); idle(); behind = false; if (dlg.isConnected) { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; go.textContent = SAVE_LABEL; go.disabled = false; } });
+  };
+  /** 写真アプリに渡す。押してすぐ（待たずに）共有メニューを開く */
+  const shareNow = () => {
+    if (!fresh()) { prepareAhead(); return; }
+    const files = exportReady.items.map(({ blob, i, p }) => new File([blob], fileName(i, p), { type: opt.format }));
+    if (!navigator.canShare({ files })) { for (const f of files) download(f, f.name); toast('写真アプリに渡せないので、ファイルに保存しました'); return; }
+    navigator.share({ files }).then(() => { status.textContent = '✓ 写真アプリに渡しました'; }, (e) => {
+      if (e?.name === 'NotAllowedError') status.textContent = 'もう一度「写真アプリに保存」を押してください。';
+      else if (e?.name !== 'AbortError') status.textContent = '写真アプリに保存できませんでした';
+    });
   };
   go.addEventListener('click', async () => {
+    if (toPhotos) { shareNow(); return; }
     go.disabled = true;
-    try { await (toPhotos ? shareAll() : downloadAll()); } catch { idle(); status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
+    try { await downloadAll(); } catch { idle(); status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; } finally { go.disabled = false; }
   });
   document.body.append(dlg); dlg.showModal();
+  if (toPhotos) { refresh(); prepareAhead(); }
 }
 
 // ───────────────────────── グリッド（複数の写真を1枚に） ─────────────────────────
@@ -2910,19 +2945,24 @@ function openGridExport() {
   const busy = (on) => { for (const b of dlg.querySelectorAll('.dlg-actions button')) b.disabled = on; };
   // 同じ設定でもう一度作るとき（書き出した後に一覧へ保存など）は、前の結果を使う
   let last = null;
+  const gridKey = () => JSON.stringify([GR.grid, opt.size, opt.format]);
   const make = async () => {
-    const key = JSON.stringify([GR.grid, opt.size, opt.format]);
+    const key = gridKey();
     if (last?.key === key) return last.r;
     busy(true); status.textContent = '作っています…';
     try { const c = await renderGridFull(opt.size); const r = await canvasToBlob(c, opt.format, 0.92); status.textContent = `${r.w}×${r.h}・${fmtBytes(r.blob.size)}`; last = { key, r }; return r; } finally { busy(false); }
   };
   const fileName = () => `${safeName(name.value.trim() || 'grid')}.${EXT[opt.format]}`;
+  const toPhotos = savesToPhotos();
+  // スマホは開いたらすぐ（設定を変えたらまた）作っておき、押したときに待たずに渡せるようにする
+  let making = Promise.resolve();
+  const ahead = () => { if (toPhotos) making = making.then(() => (dlg.isConnected ? make() : null)).catch(() => { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }); };
   const dlg = h('dialog', { class: 'dlg export', 'aria-labelledby': 'gexp-h' },
     h('h2', { id: 'gexp-h' }, 'グリッドを書き出し'),
     h('div', { class: 'sub-head' }, h('b', {}, '形式')),
-    chips([['image/jpeg', 'JPEG'], ['image/png', 'PNG（劣化なし）'], ...(canWebp ? [['image/webp', 'WebP（小さい）']] : [])], opt.format, (v) => { opt.format = v; prefs.set('gridExport', opt); }, { label: '形式' }).el,
+    chips([['image/jpeg', 'JPEG'], ['image/png', 'PNG（劣化なし）'], ...(canWebp ? [['image/webp', 'WebP（小さい）']] : [])], opt.format, (v) => { opt.format = v; prefs.set('gridExport', opt); ahead(); }, { label: '形式' }).el,
     h('div', { class: 'sub-head' }, h('b', {}, '大きさ（長い辺）')),
-    chips([[1080, '1080px（SNS）'], [2048, '2048px'], [4096, '4096px']], opt.size, (v) => { opt.size = v; prefs.set('gridExport', opt); }, { label: '大きさ' }).el,
+    chips([[1080, '1080px（SNS）'], [2048, '2048px'], [4096, '4096px']], opt.size, (v) => { opt.size = v; prefs.set('gridExport', opt); ahead(); }, { label: '大きさ' }).el,
     h('div', { class: 'field' }, h('label', { for: 'grid-name' }, 'ファイル名'), name),
     h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status,
@@ -2936,14 +2976,16 @@ function openGridExport() {
         } catch { status.textContent = '保存できませんでした'; }
       } }, '写真一覧に保存'),
       h('button', { type: 'button', class: 'primary', onclick: async () => {
-        // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード
-        try {
-          const r = await make(); const f = new File([r.blob], fileName(), { type: opt.format });
-          if (savesToPhotos() && navigator.canShare({ files: [f] })) await navigator.share({ files: [f] }); else { download(r.blob, fileName()); toast('ダウンロードしました'); }
-        } catch (e) { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? '用意ができました。もう一度押してください。' : '書き出せませんでした。大きさを小さくしてお試しください。'; }
-      } }, savesToPhotos() ? '写真アプリに保存' : 'ダウンロード')));
+        // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード。スマホは先に作っておいた画像を、待たずにその場で渡す（iPhone は待つと開けない）
+        if (toPhotos && last?.key === gridKey()) {
+          const f = new File([last.r.blob], fileName(), { type: opt.format });
+          if (navigator.canShare({ files: [f] })) { navigator.share({ files: [f] }).catch((e) => { if (e?.name !== 'AbortError') status.textContent = e?.name === 'NotAllowedError' ? 'もう一度押してください。' : '写真アプリに保存できませんでした'; }); return; }
+        }
+        try { const r = await make(); download(r.blob, fileName()); toast('ダウンロードしました'); } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }
+      } }, toPhotos ? '写真アプリに保存' : 'ダウンロード')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();
+  ahead();
 }
 
 // ───────────────────────── はじまり ─────────────────────────
