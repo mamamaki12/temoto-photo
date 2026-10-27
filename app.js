@@ -28,7 +28,7 @@ import { bokehActive } from './bokeh.js';
 import { bokehFor, bokehCanvas } from './bokeh-photo.js';
 import { crispActive, crispAmount } from './crisp.js';
 import { crispMapFor, crispCanvas } from './crisp-photo.js';
-import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, loadPeople, loadPending, matchFace, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
+import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, guessPerson, loadPeople, loadPending, matchFace, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
@@ -1320,7 +1320,7 @@ const PANELS = {
           entry(g, true).person = sel.value; commit(); requestRender(); refresh();
         } }, h('option', { value: '' }, '本人の写真なし（AI だけで整える）'), people.map((p) => h('option', { value: p.id }, `${p.name}（${p.refs.length}枚）`)), h('option', { value: '+' }, '＋ 新しい人を登録…'));
         sel.value = f?.person && people.some((p) => p.id === f.person) ? f.person : '';
-        const tog = h('button', { type: 'button', class: 'faceai-tog', 'aria-pressed': String(!!f?.on), 'aria-label': `${i + 1}番の顔に顔 AI を使う`, onclick: () => { const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh(); } },
+        const tog = h('button', { type: 'button', class: 'faceai-tog', 'aria-pressed': String(!!f?.on), 'aria-label': `${i + 1}番の顔に顔 AI を使う`, onclick: () => toggleFace(g) },
           h('span', { class: 'faceai-thumb' }, faceThumb(src, E.W, E.H, g), h('b', {}, String(i + 1))),
           h('span', { class: 'faceai-face-txt' }, h('strong', {}, `${i + 1}番の顔`), st),
           h('span', { class: 'faceai-sw', 'aria-hidden': 'true' }));
@@ -1333,7 +1333,20 @@ const PANELS = {
       for (const [g, st] of stats) { const f = entry(g, false); st.textContent = status(f, people); const card = st.closest('.faceai-face'); card.dataset.on = String(!!f?.on); card.querySelector('.faceai-tog').setAttribute('aria-pressed', String(!!f?.on)); }
       drawHandles();
     };
-    E.onHq = refresh; E.onFaceTap = (g) => { const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh(); };
+    /**
+     * 顔のオン・オフ。はじめてオンにした顔は、登録した人（ほかの写真で登録した人も。端末に保存してある）のだれかを顔の特徴で見分けて、
+     * その人の本人の写真を参考にする（はっきりしなければ「本人の写真なし」のまま。下の「参考にする写真」で変えられる）
+     */
+    const toggleFace = async (g) => {
+      const first = !entry(g, false); const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh();
+      if (!first || !e.on || e.person) return;
+      const id = await guessPerson(baseImageData(), g);
+      const cur = id && E?.tool === 'faceai' ? entry(g, false) : null; if (!cur?.on || cur.person) return; // 見分けている間に、オフにした・人を選んだ
+      const p = (await loadPeople()).find((q) => q.id === id); if (!p) return;
+      cur.person = id; commit(); requestRender(); drawFaces(); drawPeople();
+      toast(`${p.name}の写真を参考にします（違うときは「参考にする写真」で変えられます）`, 4000);
+    };
+    E.onHq = refresh; E.onFaceTap = toggleFace;
     /**
      * 本人の写真（ファイル）を人 p に足す。何人も写っていれば本人を自動で選ぶ。
      * iPhone で何枚も入れてもメモリが足りなくならないよう 1 枚ずつ読み、読み終えた写真の顔はその都度「途中の記録」に保存する
@@ -1433,7 +1446,7 @@ const PANELS = {
       hint('写真の上の番号か、下の顔をタップするとオンになります。'),
       facesBox,
       h('h4', { class: 'faceai-step' }, h('span', {}, '2'), '本人の写真（任意）'),
-      hint(`登録すると、その人らしい顔に仕上がります（${MAX_REFS} 枚まで）。何人も写った写真でも、本人の顔を自動で選びます。`),
+      hint(`登録すると、その人らしい顔に仕上がります（${MAX_REFS} 枚まで）。何人も写った写真でも、本人の顔を自動で選びます。登録した人はこの端末に保存され、ほかの写真の顔 AI でもそのまま使えます（顔をオンにすると、だれかを自動で見分けます）。`),
       peopleBox,
       h('h4', { class: 'faceai-step' }, h('span', {}, '3'), '仕上がり'),
       slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,

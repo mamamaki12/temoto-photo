@@ -3,7 +3,7 @@
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 →（全体 AI）→ 顔 AI」。全体 AI（wholeai.js）は髪・服・背景の細かい所を整え、顔だけ浮かないようにする。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
 // AI は編集用の大きさの写真で 1 回だけ動かし、書き出しでは、その結果を元の大きさの写真に当て直す（mergeFace は大きさによらない）
 import { SIZE, alignMatrix, applyMatrix, invertMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace, widenMatrix } from './faceai.js';
-import { findPerson, recInput } from './facerec.js';
+import { MARGIN, findPerson, personScore, recInput } from './facerec.js';
 import { addDetail, applyDetail } from './wholeai.js';
 import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg, segParts } from './skinseg.js';
 import { releaseDeblur } from './deblur-photo.js';
@@ -225,6 +225,23 @@ export async function autoPick(photos, personId, { img = null, faces = [], dets 
     const notMe = list.find((q) => q.id === personId)?.notMe || [];
     const others = [...byPerson].filter(([id, e]) => id !== personId && e.length).map(([, e]) => e).concat(notMe.map((e) => [e]));
     return findPerson(photos.map((c) => c.map((f) => f.emb)), seeds, others);
+  } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); return null; }
+}
+
+/**
+ * 編集中の写真（ImageData）の顔 g が、登録した人のだれか（本人の写真の顔の特徴で見分ける）。
+ * 登録した人は端末に保存してあるので、別の写真の顔 AI でも、顔をオンにするだけで本人の写真を参考にできる
+ * @returns {Promise<string|null>} 人の id（はっきり見分けられなければ null）
+ */
+const GUESS = 0.45; // 暗い写真の顔と明るい本人の写真の近さ。テスト写真（暗い顔 9 つ・4 人）で、0.45 以上かつ 2 番目の人より MARGIN 近ければ 8 つ当たり、1 つは決めない、間違いなし（登録した人が一部だけのときも間違いなし）
+export async function guessPerson(img, g) {
+  try {
+    const list = (await loadPeople()).filter((p) => p.refs.length);
+    if (!list.length) return null;
+    const byPerson = await refEmbs(list); const e = await targetEmb(img, g);
+    const scores = list.map((p) => ({ id: p.id, s: personScore(e, byPerson.get(p.id)) })).sort((a, b) => b.s - a.s);
+    const [best, second] = scores;
+    return best.s >= GUESS && (!second || best.s - second.s >= MARGIN) ? best.id : null;
   } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); return null; }
 }
 

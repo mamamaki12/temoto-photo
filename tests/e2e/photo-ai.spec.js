@@ -269,3 +269,23 @@ test('顔 AI: 本人の写真を足している途中でアプリが落ちても
   expect(people).toEqual([{ id: 'p1', n: 2 }]);
   expect(pending).toBeNull();
 });
+
+test('顔 AI: 登録した人（名前・写真・顔の特徴）は端末に保存され、別の写真でも顔をオンにするだけで、その人の写真を参考にする', async ({ page }) => {
+  await open(page);
+  await page.evaluate(async (b64) => {
+    const m = await import('/face-photo.js');
+    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)); const blob = new Blob([bin], { type: 'image/jpeg' });
+    const [c] = await m.facesFromPhoto(blob);
+    await m.savePeople([{ id: 'p1', name: 'まき', refs: [{ id: 'r1', crop: c.crop, pts: c.pts, emb: c.emb }] }]);
+  }, PORTRAIT.buffer.toString('base64'));
+  // アプリを開き直して、別の写真（新しい編集）を開く
+  await page.reload();
+  await page.locator('#open-file').setInputFiles({ ...PORTRAIT, name: 'other.jpg' });
+  await page.waitForFunction(() => window.__temoto.editor?.proj?.name?.startsWith('other'), null, { timeout: 30000 });
+  await openTool(page, '顔 AI');
+  await expect(page.locator('.faceai-person input[aria-label="人の名前"]')).toHaveValue('まき', { timeout: 30000 }); // 登録した人が出ている
+  await page.getByRole('button', { name: '1番の顔に顔 AI を使う' }).click();
+  await expect(page.getByText('まきの写真を参考にします')).toBeVisible({ timeout: 60000 });
+  expect(await page.evaluate(() => window.__temoto.state.faceai.faces.map((f) => [f.on, f.person]))).toEqual([[true, 'p1']]);
+  await expect(page.locator('#fa-p-0')).toHaveValue('p1');
+});
