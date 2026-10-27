@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/bokeh-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bokehActive, bokehRadius, resizeMap, personAlpha, discSum, computeBokeh, applyBokeh } from '../../bokeh.js';
+import { bokehActive, faceScale, autoRadius, resizeMap, personAlpha, discSum, computeBokeh, applyBokeh } from '../../bokeh.js';
 import { validateState } from '../../state.js';
 
 /** w×h の RGBA。fn(x, y) → [r, g, b] */
@@ -12,12 +12,24 @@ function rgba(w, h, fn) {
   return d;
 }
 
-test('bokeh: 編集の値の形（0 で使わない。半径は横幅に比例し、50 で横幅の 2%）', () => {
+test('bokeh: 編集の値の形（0 でオフ、それ以外はオン。強さは持たない）', () => {
   const st = validateState({ adj: { bokeh: 50 } });
   assert.equal(st.adj.bokeh, 50); assert.equal(validateState({ adj: { bokeh: 500 } }).adj.bokeh, 100);
   assert.equal(bokehActive({ bokeh: 0 }), false); assert.equal(bokehActive({ bokeh: 30 }), true);
-  assert.ok(Math.abs(bokehRadius(3456, 50) - 69.12) < 1e-6);
-  assert.equal(bokehRadius(1000, 100), 40);
+});
+
+test('bokeh: 自動の強さは、いちばん大きい顔の大きさに比例し、下限と上限がある', () => {
+  const face = (w, h, boxes) => { const m = new Float32Array(w * h); for (const [x0, y0, x1, y1] of boxes) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m[y * w + x] = 1; return { m, w, h }; };
+  assert.equal(faceScale(null), 0);
+  assert.ok(Math.abs(faceScale(face(100, 100, [[10, 10, 20, 20]])) - 0.1) < 1e-6); // 10×10 → √100 / 100
+  assert.ok(Math.abs(faceScale(face(100, 100, [[10, 10, 20, 20], [50, 50, 55, 55]])) - 0.1) < 1e-6); // 大きい方
+  const stage = autoRadius(1251, face(100, 100, [[10, 10, 18, 18]])); // 顔 0.08（舞台の写真くらい）→ 25
+  assert.equal(stage.r, 25); assert.ok(Math.abs(stage.face - 0.08) < 1e-6);
+  assert.equal(autoRadius(1251, face(100, 100, [[10, 10, 30, 30]])).r, 44); // 顔アップ → 上限 0.035
+  assert.equal(autoRadius(1251, face(100, 100, [[10, 10, 11, 11]])).r, 8); // 小さすぎる顔 → 下限 0.006
+  // 顔が見つからなければ人物の大きさから（顔 ≈ 人物の 2 割）。人物もなければ下限
+  assert.equal(autoRadius(1251, null, face(100, 100, [[0, 0, 40, 40]])).r, 25);
+  assert.equal(autoRadius(1251, null, null).r, 8);
 });
 
 test('bokeh: 円形のぼかしは、円の中の画素の和（端は、範囲に入る所だけ）', () => {

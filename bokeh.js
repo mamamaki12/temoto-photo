@@ -10,18 +10,51 @@ import { boxBlur, guided } from './restoration-lowlight.js';
 
 /** 縮めて計算する倍率（4 分の 1） */
 export const SCALE = 4;
-/** スライダー 50 で、写真の横幅の 2%（横 3456px で半径 70px くらい。舞台の写真で確かめた） */
-const RADIUS_PER = 0.0004;
 const GUIDE_R = 8; // 地図を輪郭に沿わせる範囲（縮めた画素）
 const GUIDE_EPS = 1e-3;
 const FEATHER = 2; // 縁をなだらかにする範囲（縮めた画素。boxBlur 2 回 ≈ ガウス 1.5）
 const GROW = 1.15; // 人物を少し広げる
 const GAMMA = 2.2;
 
-/** この編集で、背景のぼかしを使うか */
+/** この編集で、背景のぼかしを使うか（オン／オフだけ。強さは写真ごとに autoRadius で決める） */
 export const bokehActive = (adj) => (adj.bokeh || 0) > 0;
-/** ぼかしの半径（編集用の大きさの画素）。W: 写真の横幅 */
-export const bokehRadius = (W, amount) => Math.max(0, W * RADIUS_PER * amount);
+
+/**
+ * 顔の大きさ（いちばん大きい顔の肌のかたまりの √面積 ÷ 写真の長い辺）。顔が見つからなければ 0
+ * @param {{m:Float32Array,w:number,h:number}|null} face 顔の肌の地図（skinseg.js の faceSeg）
+ */
+export function faceScale(face) {
+  if (!face) return 0;
+  const { m, w, h } = face; const seen = new Uint8Array(w * h); const stack = new Int32Array(w * h); let best = 0;
+  for (let i0 = 0; i0 < w * h; i0++) {
+    if (seen[i0] || m[i0] < 0.5) continue;
+    let n = 0; let sp = 0; stack[sp++] = i0; seen[i0] = 1;
+    while (sp) {
+      const i = stack[--sp]; n++; const x = i % w;
+      for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < w * h && !seen[j] && m[j] >= 0.5) { seen[j] = 1; stack[sp++] = j; }
+    }
+    best = Math.max(best, n);
+  }
+  return Math.sqrt(best) / Math.max(w, h);
+}
+
+/** 自動の強さ: 顔の大きさに比べて、ぼかしの半径をどのくらいにするか（望遠・明るいレンズで撮ったプロの写真に合わせた） */
+const FACE_K = 0.25;
+const MIN_R = 0.006; const MAX_R = 0.035; // 長い辺に対する割合
+
+/**
+ * 写真ごとのぼかしの半径（縮めた画素。長い辺 L に対して）。大きく写った人（近い・望遠）ほど背景のボケは大きく、集合写真のように小さく写った人では控えめ
+ * （レンズのボケは、背景が遠ければ、写った顔の大きさに比例する）。顔が見つからなければ人物の大きさから（顔 ≈ 人物の 2 割）。
+ * 舞台の写真（顔 0.06〜0.09）で 1.30 のスライダー 50 と同じくらい、顔アップ（0.13〜0.17）で上限、集合写真（0.05）で 7 割くらいになる
+ * @param {{m:Float32Array,w:number,h:number}|null} face 顔の肌の地図（skinseg.js の faceSeg）
+ * @param {{m:Float32Array,w:number,h:number}|null} person 人物の地図（personSeg）
+ */
+export function autoRadius(L, face, person = null) {
+  let fs = faceScale(face);
+  if (!fs && person) { let a = 0; for (let i = 0; i < person.m.length; i++) a += person.m[i] > 0.5 ? 1 : 0; fs = 0.2 * Math.sqrt(a) / Math.max(person.w, person.h); }
+  const r = L * Math.min(MAX_R, Math.max(MIN_R, FACE_K * fs));
+  return { r: Math.max(1, Math.round(r)), face: fs };
+}
 
 /** 小さな地図（w0×h0、0〜1）を w×h に引き伸ばす（双一次） */
 export function resizeMap(m, w0, h0, w, h) {
