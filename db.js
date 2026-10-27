@@ -59,3 +59,6 @@ export async function persist() { try { return await navigator.storage?.persist?
  */
 export const getPeople = () => tx(['blobs'], 'readonly', (b) => req(b.get('faceai:people'))).then((v) => (Array.isArray(v) ? v : []));
 export const putPeople = (list) => tx(['blobs'], 'readwrite', (b) => { b.put(list, 'faceai:people'); });
+/** 本人の写真を足している途中の記録（読み終えた写真の顔。途中でアプリが落ちても、次に開いたとき続きから足す）。null で消す */
+export const getPending = () => tx(['blobs'], 'readonly', (b) => req(b.get('faceai:pending'))).then((v) => v || null);
+export const putPending = (v) => tx(['blobs'], 'readwrite', (b) => { if (v) b.put(v, 'faceai:pending'); else b.delete('faceai:pending'); });

@@ -2,12 +2,12 @@
 // 暗い写真・ブレの大きい写真で、選んだ顔だけに当てる（明るい写真は、今までの歯・目元の道具で十分なので、自動では使わない）。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒 →（全体 AI）→ 顔 AI」。全体 AI（wholeai.js）は髪・服・背景の細かい所を整え、顔だけ浮かないようにする。顔 AI は大まかな形と色を変えず、いちばん細かい粒も残すので、粒の後でよい。
 // AI は編集用の大きさの写真で 1 回だけ動かし、書き出しでは、その結果を元の大きさの写真に当て直す（mergeFace は大きさによらない）
-import { SIZE, alignMatrix, applyMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace, widenMatrix } from './faceai.js';
+import { SIZE, alignMatrix, applyMatrix, invertMatrix, cropFace, faceMask, faceRegion, hairMask, mergeFace, widenMatrix } from './faceai.js';
 import { findPerson, recInput } from './facerec.js';
 import { addDetail, applyDetail } from './wholeai.js';
 import { faceMeshes, findAllFaces, fingerprint, releaseSkinSeg, segParts } from './skinseg.js';
 import { releaseDeblur } from './deblur-photo.js';
-import { getPeople, putPeople } from './db.js';
+import { getPeople, getPending, putPeople, putPending } from './db.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
 
 /** この編集で、顔 AI を使うか */
@@ -50,8 +50,8 @@ function toImageData(rgb) {
   for (let i = 0; i < n; i++) { d[i * 4] = rgb[i * 3]; d[i * 4 + 1] = rgb[i * 3 + 1]; d[i * 4 + 2] = rgb[i * 3 + 2]; d[i * 4 + 3] = 255; }
   return imageData(d, SIZE, SIZE);
 }
-function toRGB(img) {
-  const n = img.width * img.height; const out = new Float32Array(n * 3);
+function toRGB8(img) {
+  const n = img.width * img.height; const out = new Uint8Array(n * 3);
   for (let i = 0; i < n; i++) { out[i * 3] = img.data[i * 4]; out[i * 3 + 1] = img.data[i * 4 + 1]; out[i * 3 + 2] = img.data[i * 4 + 2]; }
   return out;
 }
@@ -98,31 +98,67 @@ export function faceThumb(src, W, H, face, size = 96) {
   return c;
 }
 
+const DETECT_SIDE = 2048; // 本人の写真で顔を見つける絵の長い辺（顔を見つける AI には十分。写真全体の画素は持たない）
+const REGION_MAX = 1024; // 1 つの顔の切り出し元の長い辺（512 の切り出しの 2 倍まで。それより細かい所は 512 に縮めると消える）
+/** ImageBitmap の一部（x, y, w, h）を、長い辺 max までに縮めて ImageData に。sx, sy: 掛けた倍率 */
+function drawRegion(bmp, x, y, w, h, max) {
+  const s = Math.min(1, max / Math.max(w, h));
+  const cw = Math.max(1, Math.round(w * s)); const ch = Math.max(1, Math.round(h * s));
+  const c = document.createElement('canvas'); c.width = cw; c.height = ch; const x2 = ctx2d(c, { willReadFrequently: true }); x2.imageSmoothingQuality = 'high';
+  x2.drawImage(bmp, x, y, w, h, 0, 0, cw, ch);
+  const d = x2.getImageData(0, 0, cw, ch, { colorSpace: COLOR_SPACE }); c.width = 0; c.height = 0; // iPhone は Canvas のメモリをすぐには返さないので、大きさを 0 にして返す
+  return { img: d, sx: cw / w, sy: ch / h };
+}
+
 /**
- * 本人の写真（ファイル）から、写っている顔を切り出す。顔が複数あれば全部（どれが本人かは autoPick で選ぶか、画面で選んでもらう）
+ * 本人の写真（ファイル）から、写っている顔を切り出す。顔が複数あれば全部（どれが本人かは autoPick で選ぶか、画面で選んでもらう）。
+ * iPhone で何枚も続けて入れても落ちないよう、写真全体の画素（1,200万画素で約 50MB）は作らない。顔は縮めた写真で見つけ、
+ * 切り出しは元の写真の顔のまわりだけから（512 の 2 倍まで縮めて）作る
  * @returns {Promise<{crop:Blob,pts:number[],url:string,emb:Float32Array|null}[]>} crop: 512 の PNG、pts: 顔の点（x, y の順）、url: 見せる用、
  *   emb: 顔の特徴（顔の見分けの AI を使えなければ null）
  */
 export async function facesFromPhoto(file) {
-  const img = await decode(file);
-  const found = await findAllFaces(img, { minFace: 120 });
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   const out = []; const recs = [];
-  for (const pts of found.slice(0, 8)) {
-    const p = await prepare(img, pts);
-    recs.push(recInput(p.crop, p.pts));
-    const c = document.createElement('canvas'); c.width = SIZE; c.height = SIZE; ctx2d(c).putImageData(toImageData(p.crop), 0, 0);
-    const crop = await new Promise((r) => c.toBlob(r, 'image/png'));
-    out.push({ crop, pts: p.pts.flat(), url: URL.createObjectURL(crop), emb: null });
-  }
+  try {
+    const W = bmp.width; const H = bmp.height;
+    let found;
+    {
+      const { img, sx, sy } = drawRegion(bmp, 0, 0, W, H, DETECT_SIDE);
+      found = (await findAllFaces(img, { minFace: 120 * sx })).map((pts) => pts.map(([x, y]) => [x / sx, y / sy]));
+    }
+    for (const pts of found.slice(0, 8)) {
+      // 512 の切り出しが写真のどこから来るか（少し広めに）
+      const inv = invertMatrix(alignMatrix(pts));
+      const cs = [[0, 0], [SIZE, 0], [0, SIZE], [SIZE, SIZE]].map(([u, v]) => applyMatrix(inv, u, v));
+      const x0 = Math.max(0, Math.floor(Math.min(...cs.map((q) => q[0]))) - 2); const x1 = Math.min(W, Math.ceil(Math.max(...cs.map((q) => q[0]))) + 2);
+      const y0 = Math.max(0, Math.floor(Math.min(...cs.map((q) => q[1]))) - 2); const y1 = Math.min(H, Math.ceil(Math.max(...cs.map((q) => q[1]))) + 2);
+      if (x1 - x0 < 8 || y1 - y0 < 8) continue;
+      const { img, sx, sy } = drawRegion(bmp, x0, y0, x1 - x0, y1 - y0, REGION_MAX);
+      const p = await prepare(img, pts.map(([x, y]) => [(x - x0) * sx, (y - y0) * sy]));
+      recs.push(recInput(p.crop, p.pts));
+      const c = document.createElement('canvas'); c.width = SIZE; c.height = SIZE; ctx2d(c).putImageData(toImageData(p.crop), 0, 0);
+      const crop = await new Promise((r) => c.toBlob(r, 'image/png')); c.width = 0; c.height = 0;
+      out.push({ crop, pts: p.pts.flat(), url: URL.createObjectURL(crop), emb: null });
+    }
+  } finally { bmp.close?.(); }
   try { const embs = await embed(recs); out.forEach((o, k) => { o.emb = embs[k]; }); } catch (e) { console.warn('顔の見分けの AI を使えませんでした', e); }
   return out;
 }
-const refCache = new WeakMap(); // 本人の写真の Blob → { img, pts }
+
+// ───── 途中の本人の写真（足している途中でアプリが落ちても、読み終えた写真の顔は消えないように） ─────
+/** 途中の記録 { person, total（足そうとした枚数）, photos: [{ name, cands: [{ crop, pts, emb }] }] }。なければ null */
+export const loadPending = () => getPending().catch(() => null);
+/** 途中の記録を保存する（null で消す） */
+export const savePending = (v) => putPending(v ? { ...v, photos: v.photos.map((ph) => ({ name: ph.name, cands: ph.cands.map(({ crop, pts, emb }) => ({ crop, pts, emb })) })) } : null)
+  .catch((e) => console.warn('途中の本人の写真を保存できませんでした', e));
+
+const refCache = new WeakMap(); // 本人の写真の Blob → { img（RGB 8 ビット。Float32 の 4 分の 1 のメモリ。40 枚で約 30MB）, pts }
 async function loadRef(r) {
   if (!refCache.has(r.crop)) {
     const d = await decode(r.crop, SIZE);
     const pts = []; for (let i = 0; i + 1 < r.pts.length; i += 2) pts.push([r.pts[i], r.pts[i + 1]]);
-    refCache.set(r.crop, { img: toRGB(d), pts });
+    refCache.set(r.crop, { img: toRGB8(d), pts });
   }
   return refCache.get(r.crop);
 }
