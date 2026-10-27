@@ -25,7 +25,7 @@ import { planTone } from './restoration-lowlight.js';
 import { TonePreviewGL } from './tone-gl.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas, releaseDeblur } from './deblur-photo.js';
 import { bokehActive } from './bokeh.js';
-import { bokehFor, bokehCanvas } from './bokeh-photo.js';
+import { bokehSource, bokehFromSource, bokehCanvas } from './bokeh-photo.js';
 import { crispActive, crispAmount } from './crisp.js';
 import { crispMapFor, crispCanvas } from './crisp-photo.js';
 import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, guessPerson, loadPeople, loadPending, matchFace, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.5'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.7'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -374,7 +374,7 @@ let libUrls = [];
 let selecting = new Set();
 let libGen = 0; // 一覧を作り直すたびに増やす（裏の見本の作り直しを止める目印）
 async function showLibrary() {
-  closeEditor();
+  closeEditor(); prefs.set('editing', null);
   document.title = 'てもとフォト';
   libUrls.forEach((u) => URL.revokeObjectURL(u)); libUrls = [];
   const projects = await db.listProjects().catch(() => []);
@@ -524,11 +524,12 @@ async function openEditor(id) {
   // 前に計算した暗所補正・ブレ補正・顔 AI の結果があれば、計算し直さずにすぐ見せる（書き出しでは元の大きさで計算し直す）。
   // 読み込む間は「写真を開いています」のまま（補正前の暗い写真を一瞬見せない）
   if (E.rawLin) E.rawKey = JSON.stringify({ ...state.raw, ca: null }); // rebuildSource と同じ（hqKey に使う）
+  prefs.set('editing', id); // ページが落ちて読み込み直されたとき（iPhone でメモリが足りないときなど）、写真一覧ではなくこの写真に戻る
   const e0 = E; await peopleP; if (E !== e0) return;
   const key = hqKey(state);
   const hqc = key ? await loadHq(await savedHq) : null;
   if (E !== e0) return; // 読み込む間に別の写真・一覧に移った（closeEditor が片付け済み）
-  if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; }
+  if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; seedHqCache(await savedHq, hqc); }
   buildEditor();
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
@@ -643,13 +644,11 @@ function scheduleLowlight() {
   clearTimeout(hqTimer); hqTimer = setTimeout(runLowlight, 400);
 }
 /**
- * 暗所補正・ブレ補正・顔 AI をした写真を作る（編集画面と、書き出しで編集中の結果がないときに使う）
- * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res}, wh: {key, res}, cm: {key, map}, fa: {key, canvas, faces}, bk: {key, res} }）
- * @returns {Promise<{canvas, res, faces, whole, bokeh}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）、whole: 全体 AI { res, map, amount }（なければ null。map は髪・服をくっきりの重み、全体に足すときは null）、bokeh: 背景のぼかし（なければ null）
+ * enhanceSource の途中の結果の鍵（編集の値だけで決まる。開き直しても同じ）。
+ * pf: 顔 AI の前まで（暗所補正 → ブレ補正 → 全体 AI・くっきり）、fa: 顔 AI の結果（強さは入れない）、bs: ぼかしの元、bk: 背景のぼかし
  */
-async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = null } = {}) {
-  const ll = lowlightActive(adj) ? lowlightOptions(adj) : null; const db = deblurActive(adj); const fa = !!state && faceaiActive(state); const bk = bokehActive(adj); const cr = crispActive(adj);
-  const cache = src.cache || {};
+function stageKeys(adj, state) {
+  const ll = lowlightActive(adj); const db = deblurActive(adj); const fa = !!state && faceaiActive(state); const bk = bokehActive(adj); const cr = crispActive(adj);
   // 粒はブレ補正の後に足す（ブレ補正があるときは、暗所補正では足さない）
   const llKey = ll ? JSON.stringify([adj.noise, adj.lowlight, db]) : null;
   const dbKey = JSON.stringify([adj.noise, adj.lowlight]);
@@ -657,77 +656,134 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = 
   const wh = (fa && faceaiWhole(state)) || cr;
   const whKey = wh ? JSON.stringify([llKey, db && dbKey, db && adj.deblur]) : null;
   const cmKey = cr ? JSON.stringify([whKey, 'map']) : null;
-  // 顔 AI の強さは、AI の結果を当てる強さだけなので、鍵に入れない（強さだけを変えたときは、当て直すだけ）。くっきりの強さは、顔 AI の前に足すので入れる
-  const faKey = fa ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faceaiKey(state), wh, cr && adj.crisp]) : null;
-  /** 全体 AI の差分を写真に足す（くっきりの重みがあればそれで、なければ全体に） */
-  const addWhole = async (canvas, at) => {
-    if (cr && cache.cm?.key !== cmKey) { cache.cm = null; cache.cm = { key: cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
-    const map = cr ? cache.cm.map : null; const amount = cr ? crispAmount(adj) : 1;
-    at?.(1);
-    return { canvas: map ? await crispCanvas(canvas, src.W, src.H, cache.wh.res, map, amount) : await wholeCanvas(canvas, src.W, src.H, cache.wh.res), whole: { res: cache.wh.res, map, amount } }; // Canvas は取っておかない（iPhone の Canvas のメモリの上限）
-  };
-  /** 取ってある全体 AI の差分（書き出し用。くっきりの重みも添える） */
-  const wholeOf = () => (wh && cache.wh ? { res: cache.wh.res, map: cr ? cache.cm?.map || null : null, amount: cr ? crispAmount(adj) : 1 } : null);
-  // 背景のぼかしは顔 AI を当てた写真から作るので、顔 AI の強さも鍵に入れる
-  const bkKey = bk ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faKey, fa && state.faceai.amount]) : null;
-  // 背景のぼかし（いちばん後）。人物の内側は変えないので、顔 AI・美肌の結果と重ならない
-  const bokeh = async (canvas, at) => {
-    if (!bk) return { canvas, bokeh: null };
-    if (cache.bk?.key !== bkKey) { cache.bk = null; cache.bk = { key: bkKey, res: await bokehFor(canvas, src.W, src.H, { signal, onProgress: at }) }; }
-    return { canvas: await bokehCanvas(canvas, src.W, src.H, cache.bk.res), bokeh: cache.bk.res }; // Canvas は取っておかない（iPhone の Canvas のメモリの上限）
-  };
+  const pfKey = JSON.stringify([llKey, db && dbKey, db && adj.deblur, whKey, cr && adj.crisp]);
+  // 顔 AI の強さは、AI の結果を当てる強さだけなので、鍵に入れない（強さだけを変えたときは、当て直すだけ）
+  const faKey = fa ? JSON.stringify([pfKey, faceaiKey(state)]) : null;
+  // 背景のぼかしは、全体 AI・顔 AI の前の写真（暗所補正・ブレ補正まで）から作る。人物の内側は変えず、背景の細かい所はぼかすと消えるので、
+  // 顔 AI・くっきりを変えても作り直さない（合成だけし直す）
+  const bsKey = JSON.stringify([llKey, db && dbKey, db && adj.deblur]);
+  const bkKey = bk ? bsKey : null; // 強さは写真ごとに自動（ぼかしの元の顔の大きさから）なので、オン／オフだけ
+  return { ll, db, fa, bk, cr, wh, llKey, dbKey, whKey, cmKey, pfKey, faKey, bsKey, bkKey };
+}
+/** 途中で作った Canvas を、取っておくもの以外は片付ける（iPhone は Canvas のメモリが少なく、使い切ると写真一覧に戻されることがある） */
+function dropCanvas(c, ...keep) { if (c instanceof HTMLCanvasElement && !keep.includes(c)) { c.width = 0; c.height = 0; } }
+/**
+ * 暗所補正・ブレ補正・顔 AI をした写真を作る（編集画面と、書き出しで編集中の結果がないときに使う）
+ * @param {object} src { base, W, H, origW, origH, cache? }。cache に途中の結果を取っておく（{ ll: {key, canvas}, db: {key, res}, wh: {key, res}, cm: {key, map}, fa: {key, canvas, faces}, bk: {key, res}, pf: {key, load}（開き直したときの、顔 AI の前の写真） }）
+ * @param {object} opts onSteps(names): いま計算する項目の名前（進捗の表示に。済んでいて使い回すものは入れない）
+ * @returns {Promise<{canvas, res, faces, whole, bokeh, partial, pre}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）、whole: 全体 AI { res, map, amount }（なければ null。map は髪・服をくっきりの重み、全体に足すときは null）、bokeh: 背景のぼかし（なければ null）。
+ *   partial: 保存しておいた途中の結果から作ったので、書き出しに要る res・whole が欠けている（書き出しで計算し直す）。pre: 顔 AI の前の写真（今回作ったときだけ。保存用。顔 AI もぼかしも使わないときは canvas と同じなので null）
+ */
+async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, state = null } = {}) {
+  const K = stageKeys(adj, state); const { db, fa, bk, cr, wh } = K;
+  const ll = K.ll ? lowlightOptions(adj) : null;
+  const cache = src.cache || {};
   // ノイズ除去の途中の結果（帯ごと）は、明るさ補正だけを変えたときに使い回す（編集画面だけ。大きいので、iPhone・iPad では AI を使うときは取っておかない）
   const den = src.cache ? (cache.den ||= {}) : null;
   if (den) { den.keepBands = !lowMemory() || (!db && !fa); if (!den.keepBands) den.bands = []; }
-  // 進捗の割合（暗所補正・ブレ補正・全体 AI・顔 AI・背景のぼかし）。済んでいるものは 0
-  const faSame = fa && cache.fa?.key === faKey;
-  const w = [ll && cache.ll?.key !== llKey ? (den?.bands?.some(Boolean) && den.key === JSON.stringify([src.W, src.H, ll.nr]) ? 0.08 : 0.3) : 0, db && cache.db?.key !== dbKey ? 0.6 : (db ? 0.05 : 0), wh && cache.wh?.key !== whKey ? 0.5 : (wh ? 0.05 : 0), fa ? (faSame ? 0.02 : 0.4) : 0, bk && cache.bk?.key !== bkKey ? 0.15 : 0];
-  if (faSame && cache.fa.amount === state.faceai.amount) { w[0] = w[1] = w[2] = w[3] = 0; }
-  const tot = w[0] + w[1] + w[2] + w[3] + w[4] || 1; const at = (k, t) => onProgress((w.slice(0, k).reduce((a, b) => a + b, 0) + w[k] * t) / tot);
-  if (faSame && cache.fa.amount === state.faceai.amount) { const r = await bokeh(cache.fa.canvas, (t) => at(4, t)); onProgress(1); return { canvas: r.canvas, res: db ? cache.db?.res || null : null, faces: cache.fa.faces, whole: wholeOf(), bokeh: r.bokeh }; }
-  let canvas = src.base;
-  if (ll) {
-    if (cache.ll?.key !== llKey) {
-      cache.ll = null;
-      let grain = 0;
-      const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at(0, t), onGrain: (g) => { grain = g; } });
-      cache.ll = { key: llKey, canvas: c, grain };
+  if (cache.pf && cache.pf.key !== K.pfKey) cache.pf = null;
+  // 顔 AI を当てた写真（ぼかしの前）を取ってあるか。ないときは、顔 AI の前の写真（A）から作る
+  const faHit = fa && cache.fa?.key === K.faKey;
+  const bHit = fa ? faHit && !!cache.fa.canvas && cache.fa.amount === state.faceai.amount : false;
+  const bkHit = !bk || cache.bk?.key === K.bkKey;
+  const bsHit = !bk || bkHit || cache.bs?.key === K.bsKey;
+  // A がいるのは、顔 AI を当て直すとき・顔 AI を使わずに合成し直すとき。ぼかしの元がないときは、暗所補正・ブレ補正の後の写真から作る
+  const needA = !bHit || (!fa && !bkHit) || !bsHit;
+  // 保存しておいた A を使えるか（ぼかしの元がないときは、全体 AI を使っていなければ A から作れる）
+  const pfHit = needA && !!cache.pf && (bsHit || !wh);
+  // 全体 AI を使うときは、ぼかしをまだ使っていなくても、ぼかしの元を作って取っておく（開き直したあと、はじめてぼかしたときに一からやり直さないように）
+  const wantBs = bk || (wh && !!src.cache);
+  const fresh = (c, k, key) => c[k]?.key === key;
+  // 各段の重さ（進捗の割合）と、計算する項目の名前。済んでいて使い回すものは 0
+  const llMiss = needA && !pfHit && !!ll && !fresh(cache, 'll', K.llKey);
+  const dbMiss = needA && !pfHit && db && !fresh(cache, 'db', K.dbKey);
+  const whMiss = needA && !pfHit && wh && !fresh(cache, 'wh', K.whKey);
+  const last = cache.lastA || {};
+  const dbRedo = needA && !pfHit && db && (dbMiss || llMiss || last.db !== adj.deblur); // ブレ補正の強さを変えた（差分を当て直す）
+  const crRedo = needA && !pfHit && cr && (whMiss || dbRedo || llMiss || last.cr !== adj.crisp || !fresh(cache, 'cm', K.cmKey));
+  const faRun = fa && !bHit; // 顔 AI を計算する・当て直す
+  const faNamed = faRun && (!faHit || cache.fa.amount !== state.faceai.amount); // 顔 AI の計算か、強さを変えた（保存しておいた結果を当て直すだけのときは出さない）
+  const w = [
+    llMiss ? (den?.bands?.some(Boolean) && den.key === JSON.stringify([src.W, src.H, ll.nr]) ? 0.08 : 0.3) : 0,
+    dbMiss ? 0.6 : (needA && !pfHit && db ? 0.05 : 0),
+    whMiss ? 0.5 : (needA && !pfHit && wh ? 0.05 : 0),
+    faRun ? (faHit ? 0.02 : 0.4) : 0,
+    bk ? (bkHit ? 0.02 : 0.15) : 0,
+    pfHit ? 0.03 : 0,
+  ];
+  onSteps([llMiss && 'ノイズ除去と明るさ補正', dbRedo && 'ブレ補正', (whMiss && !cr || faNamed) && '顔 AI', crRedo && '髪・服をくっきり', bk && !bkHit && '背景のぼかし'].filter((s, i, a) => s && a.indexOf(s) === i));
+  const tot = w.reduce((a, b) => a + b, 0) || 1;
+  const at = (k, t) => onProgress((w.slice(0, k).reduce((a, b) => a + b, 0) + w[k] * t) / tot);
+  const at0 = (k, t) => onProgress((w[5] + w.slice(0, k).reduce((a, b) => a + b, 0) + w[k] * t) / tot); // 保存した写真を読み込んでから
+  const wholeOf = () => (wh && cache.wh?.key === K.whKey ? { res: cache.wh.res, map: cr ? cache.cm?.map || null : null, amount: cr ? crispAmount(adj) : 1 } : null);
+  // ── 顔 AI の前の写真（A）: 暗所補正 → ブレ補正 → 全体 AI・くっきり ──
+  let A = null; let res = db ? (fresh(cache, 'db', K.dbKey) ? cache.db.res : null) : null; let whole = wholeOf(); let pre = null;
+  if (needA && pfHit) {
+    A = await cache.pf.load(); onProgress(w[5] / tot);
+    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, state }); } // 読めなかった: 一から
+    if (!bsHit) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(A, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
+  } else if (needA) {
+    let canvas = src.base;
+    if (ll) {
+      if (llMiss) {
+        cache.ll = null;
+        let grain = 0;
+        const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g) => { grain = g; } });
+        cache.ll = { key: K.llKey, canvas: c, grain };
+      }
+      canvas = cache.ll.canvas;
     }
-    canvas = cache.ll.canvas;
-  }
-  let res = null;
-  if (db) {
-    if (cache.db?.key !== dbKey) {
-      cache.db = null;
-      const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at(1, t) });
-      cache.db = { key: dbKey, res: r };
+    if (db) {
+      if (dbMiss) {
+        cache.db = null;
+        const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at0(1, t) });
+        cache.db = { key: K.dbKey, res: r };
+      }
+      res = cache.db.res;
+      canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
     }
-    res = cache.db.res;
-    canvas = await finishCanvas(canvas, src.W, src.H, { res, amount: deblurAmount(adj), grain: ll ? cache.ll.grain : 0 }, { signal });
-  }
-  // 全体 AI（髪・服・背景の細かい所。大まかな形と色・粒は変えない）。顔は、このあと顔 AI で置き換わる
-  let whole = null;
-  if (wh) {
-    if (cache.wh?.key !== whKey) {
-      cache.wh = null;
-      cache.wh = { key: whKey, res: await wholeResidual(canvas, src.W, src.H, { signal, onProgress: (t) => at(2, t * 0.9) }) };
+    // ぼかしの元（4 分の 1 の写真と人物の地図）
+    if (wantBs && cache.bs?.key !== K.bsKey) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(canvas, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
+    // 全体 AI（髪・服・背景の細かい所。大まかな形と色・粒は変えない）。顔は、このあと顔 AI で置き換わる
+    if (wh) {
+      if (whMiss) {
+        cache.wh = null;
+        cache.wh = { key: K.whKey, res: await wholeResidual(canvas, src.W, src.H, { signal, onProgress: (t) => at0(2, t * 0.9) }) };
+      }
+      if (cr && !fresh(cache, 'cm', K.cmKey)) { cache.cm = null; cache.cm = { key: K.cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
+      const map = cr ? cache.cm.map : null; const amount = cr ? crispAmount(adj) : 1;
+      const c = map ? await crispCanvas(canvas, src.W, src.H, cache.wh.res, map, amount) : await wholeCanvas(canvas, src.W, src.H, cache.wh.res);
+      at0(2, 1);
+      if (db) dropCanvas(canvas, cache.ll?.canvas, src.base);
+      canvas = c; whole = { res: cache.wh.res, map, amount };
     }
-    ({ canvas, whole } = await addWhole(canvas, (t) => at(2, 0.9 + 0.1 * t)));
+    cache.lastA = { db: db ? adj.deblur : null, cr: cr ? adj.crisp : null };
+    A = canvas;
+    if (fa || bk) pre = A;
   }
-  if (!fa) { const r = await bokeh(canvas, (t) => at(4, t)); onProgress(1); return { canvas: r.canvas, res, faces: null, whole, bokeh: r.bokeh }; }
-  // 顔 AI（選んだ顔だけ。大まかな形と色・粒は変えない）。強さだけが変わったときは、前の AI の結果を当て直す
-  if (cache.fa?.key === faKey) {
-    const c = remergeFaces(canvas, src.W, src.H, cache.fa.faces, faceaiAmount(state));
-    cache.fa = { ...cache.fa, canvas: c, amount: state.faceai.amount };
-    const b = await bokeh(c, (t) => at(4, t));
-    onProgress(1);
-    return { canvas: b.canvas, res, faces: cache.fa.faces, whole, bokeh: b.bokeh };
+  // ── 背景のぼかし（ぼかしの元から。いちばん後に合成する） ──
+  if (bk && !bkHit) { cache.bk = null; cache.bk = { key: K.bkKey, res: await bokehFromSource(cache.bs.src, { signal, onProgress: (t) => at0(4, 0.3 + t * 0.6) }) }; }
+  const bkRes = bk ? cache.bk.res : null;
+  // ── 顔 AI（選んだ顔だけ。大まかな形と色・粒は変えない）。強さだけが変わったときは、前の AI の結果を当て直す ──
+  let B = A; let faces = null;
+  if (fa) {
+    if (bHit) { B = cache.fa.canvas; faces = cache.fa.faces; } else if (faHit) {
+      B = remergeFaces(A, src.W, src.H, cache.fa.faces, faceaiAmount(state)); faces = cache.fa.faces;
+      cache.fa = { ...cache.fa, canvas: B, amount: state.faceai.amount };
+    } else {
+      const r = await applyFaceAI(A, src.W, src.H, state.faceai, { signal, onProgress: (t) => at0(3, t) });
+      B = r.canvas; faces = r.faces;
+      cache.fa = { key: K.faKey, canvas: B, faces, amount: state.faceai.amount };
+    }
   }
-  const r = await applyFaceAI(canvas, src.W, src.H, state.faceai, { signal, onProgress: (t) => at(3, t) });
-  cache.fa = { key: faKey, canvas: r.canvas, faces: r.faces, amount: state.faceai.amount };
-  const b = await bokeh(r.canvas, (t) => at(4, t));
+  let canvas = B;
+  if (bk) { canvas = await bokehCanvas(B, src.W, src.H, bkRes); at0(4, 1); } // Canvas は取っておかない（iPhone の Canvas のメモリの上限）
+  // A は、保存するとき（編集画面で、顔 AI かぼかしを使うとき）だけ返す。ほかは片付ける
+  if (!src.cache) pre = null;
+  const partial = (db && !res) || (wh && !whole);
+  if (A && A !== pre) dropCanvas(A, src.base, cache.ll?.canvas, cache.fa?.canvas, canvas);
   onProgress(1);
-  return { canvas: b.canvas, res, faces: r.faces, whole, bokeh: b.bokeh };
+  return { canvas, res, faces, whole, bokeh: bkRes, partial, pre: pre !== canvas ? pre : null };
 }
 async function runLowlight() {
   if (!E) return;
@@ -739,17 +795,23 @@ async function runLowlight() {
   if (E.pre && E.pre.key !== preKey(E.state)) { E.pre.ctrl.abort(); E.pre = null; }
   E.hq = { key, canvas: null, ctrl };
   E.hqCache ||= {};
-  hqBar(0); E.onHq?.();
-  const t0 = performance.now();
+  E.hqSteps = null; E.onHq?.();
+  const t0 = performance.now(); const K = stageKeys(E.state.adj, E.state);
   try {
-    const { canvas, res, faces, whole, bokeh } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
-      state: E.state, signal: ctrl.signal, onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
+    const { canvas, res, faces, whole, bokeh, partial, pre } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
+      state: E.state, signal: ctrl.signal,
+      onSteps: (names) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqSteps = names; hqBar(0); } },
+      onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
-    if (E !== e0 || E.hq?.ctrl !== ctrl) return;
-    E.hq = { key, canvas, res, faces, whole, bokeh, ctrl: null }; E.hqLast = { key, canvas }; hqBar(null);
+    if (E !== e0 || E.hq?.ctrl !== ctrl) { dropPre(e0, pre); return; }
+    const old = E.hqLast?.canvas;
+    // partial: 保存しておいた途中の結果から作った（書き出しに要るブレ補正の差分などがないので、書き出しでは計算し直す）
+    E.hq = { key, canvas, res, faces, whole, bokeh, ctrl: null, saved: partial || undefined }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender(); E.onHq?.();
+    // 前の結果の Canvas は、もう使わないので片付ける（iPhone は Canvas のメモリが少なく、使い切ると写真一覧に戻されることがある）
+    if (old && old !== canvas) dropCanvas(old, E.base, E.hqCache.ll?.canvas, E.hqCache.fa?.canvas);
     // 人物・顔の AI を使えなかったとき（通信が止まっていたなど）の結果は保存しない（次に開いたとき、AI を使って計算し直す）
-    startPrecompute(); if (!segFailedSince(t0)) saveHq(e0, key, canvas);
+    startPrecompute(); if (!segFailedSince(t0)) saveHq(e0, key, canvas, { pre, K, faces, bokeh, bs: E.hqCache.bs }); else dropPre(e0, pre);
   } catch (err) {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.();
@@ -764,29 +826,63 @@ const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
 // 保存した版（VERSION）が今と違う結果は使わない。補正の計算を直しても、前に開いた写真は古い計算の結果のまま見えてしまう
 // （1.32.1 で肌の色味を戻したあとも、それより前に開いた写真は白っぽい肌のままだった）。版が変わったら一度だけ計算し直す
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
-async function saveHq(e0, key, canvas) {
-  await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
-  if (e0.hq?.key !== key || e0.hq.canvas !== canvas) return; // 写真一覧に戻っても保存は続ける（計算してすぐ戻ると、次に開いたときまた計算し直すことになる）
+/** 保存し終えた（保存しない）顔 AI の前の写真を片付ける。計算の取っておき・表示に使っているもの（暗所補正だけのときの結果など）は残す */
+const dropPre = (e0, pre) => dropCanvas(pre, e0.base, e0.hqCache?.ll?.canvas, e0.hqCache?.fa?.canvas, e0.hq?.canvas, e0.hqLast?.canvas);
+/** Canvas の画素を、保存する形（Blob。圧縮できる端末では deflate）に */
+async function packPixels(canvas, W, H) {
+  const px = ctx2d(canvas, { willReadFrequently: true }).getImageData(0, 0, W, H, { colorSpace: COLOR_SPACE }).data;
+  const data = new Blob([px]);
+  return canZip ? new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob() : data;
+}
+async function unpackPixels(data, z, W, H) {
+  if (!(data instanceof Blob) || (z && !canZip)) return null;
   try {
-    const px = ctx2d(canvas, { willReadFrequently: true }).getImageData(0, 0, e0.W, e0.H, { colorSpace: COLOR_SPACE }).data;
-    let data = new Blob([px]);
-    if (canZip) data = await new Response(data.stream().pipeThrough(new CompressionStream('deflate'))).blob();
+    const buf = z ? await new Response(data.stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer() : await data.arrayBuffer();
+    if (buf.byteLength !== W * H * 4) return null;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    ctx2d(c).putImageData(imageData(new Uint8ClampedArray(buf), W, H), 0, 0);
+    return c;
+  } catch (err) { console.warn('保存した補正の結果を読めませんでした', err); return null; }
+}
+/**
+ * 補正の結果を保存する。顔 AI・背景のぼかしを使うときは、途中の結果（顔 AI の前の写真 pre、顔 AI の結果、ぼかし）も。
+ * 開き直したあと、ぼかし・顔 AI だけを変えたときに、ノイズ除去・ブレ補正からやり直さずに済む
+ */
+async function saveHq(e0, key, canvas, { pre = null, K = null, faces = null, bokeh = null, bs = null } = {}) {
+  await new Promise((r) => setTimeout(r, 1500)); // 計算の直後は避ける（続けて動かしたときに何度も保存しない）
+  if (e0.hq?.key !== key || e0.hq.canvas !== canvas) { dropPre(e0, pre); return; } // 写真一覧に戻っても保存は続ける（計算してすぐ戻ると、次に開いたときまた計算し直すことになる）
+  try {
+    const data = await packPixels(canvas, e0.W, e0.H);
+    if (e0.hq?.key !== key) { dropPre(e0, pre); return; }
+    // 顔 AI の前の写真: 今回作ったもの。作らなかった（使い回した）ときは、前に保存したものが同じならそのまま
+    let pf = null;
+    if (K && (K.fa || K.bk)) {
+      if (pre) pf = { key: K.pfKey, data: await packPixels(pre, e0.W, e0.H) };
+      else { const old = await db.getHq(e0.id).catch(() => null); if (old?.pf?.key === K.pfKey && (old.raw ?? null) === (e0.rawKey ?? null) && old.z === canZip) pf = old.pf; }
+    }
+    dropPre(e0, pre); pre = null;
     if (e0.hq?.key !== key) return;
-    await db.putHq(e0.id, { key, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now() });
+    await db.putHq(e0.id, { key, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now(), raw: e0.rawKey ?? null, pfKey: K?.pfKey ?? null, pf,
+      fa: K?.fa && faces ? { key: K.faKey, faces } : null, bk: K?.bk && bokeh ? { key: K.bkKey, res: bokeh } : null, bs: K && bs?.key === K.bsKey ? bs : null });
     await db.pruneHq(HQ_KEEP);
-  } catch (err) { console.warn('補正の結果を保存できませんでした', err); }
+  } catch (err) { dropPre(e0, pre); console.warn('補正の結果を保存できませんでした', err); }
 }
 /** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
 async function loadHq(rec) {
-  if (!rec || rec.ver !== VERSION || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE || !(rec.data instanceof Blob)) return null;
-  if (rec.z && !canZip) return null;
-  try {
-    const buf = rec.z ? await new Response(rec.data.stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer() : await rec.data.arrayBuffer();
-    if (buf.byteLength !== rec.W * rec.H * 4) return null;
-    const c = document.createElement('canvas'); c.width = rec.W; c.height = rec.H;
-    ctx2d(c).putImageData(imageData(new Uint8ClampedArray(buf), rec.W, rec.H), 0, 0);
-    return c;
-  } catch (err) { console.warn('保存した補正の結果を読めませんでした', err); return null; }
+  if (!rec || rec.ver !== VERSION || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return null;
+  return unpackPixels(rec.data, rec.z, rec.W, rec.H);
+}
+/**
+ * 保存しておいた途中の結果を、計算の取っておき（E.hqCache）に入れる。canvas は読み込んだ補正の結果。
+ * 顔 AI の前の写真は、使うときに読み込む（いつもメモリに置いておくと、iPhone で足りなくなる）
+ */
+function seedHqCache(rec, canvas) {
+  const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {});
+  if ((rec.raw ?? null) !== (E.rawKey ?? null) || rec.pfKey !== K.pfKey) return;
+  if (!K.fa && !K.bk) { const z = rec.z; const data = rec.data; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; } else if (rec.pf?.key === K.pfKey) { const { data } = rec.pf; const z = rec.z; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; }
+  if (K.fa && rec.fa?.key === K.faKey && Array.isArray(rec.fa.faces)) c.fa = { key: K.faKey, faces: rec.fa.faces, canvas: K.bk ? null : canvas, amount: K.bk ? null : E.state.faceai.amount };
+  if (K.bk && rec.bk?.key === K.bkKey) c.bk = { key: K.bkKey, res: rec.bk.res };
+  if (rec.bs?.key === K.bsKey) c.bs = { key: K.bsKey, src: rec.bs.src };
 }
 /** 書き出しの暗所補正の先読みの鍵（暗所補正を使わないときは null）。書き出しの補正の結果を決める値だけ */
 const preKey = (st) => (lowlightActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, deblurActive(st.adj)]) : null);
@@ -836,7 +932,8 @@ function hqBar(t) {
   E.hqEl.hidden = t == null; if (t == null) return;
   const p = Math.min(99, Math.floor(t * 100));
   E.hqRing.set(p);
-  E.hqEl.querySelector('span').textContent = `${[lowlightActive(E.state.adj) && 'ノイズ除去と明るさ補正', deblurActive(E.state.adj) && 'ブレ補正', faceaiActive(E.state) && '顔 AI', crispActive(E.state.adj) && '髪・服をくっきり', bokehActive(E.state.adj) && '背景のぼかし'].filter(Boolean).join('・')}… 残り${100 - p}%`;
+  // いま計算している項目だけ（済んでいて使い回すものは出さない）
+  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%`;
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
 function baseImageData() {
@@ -2561,7 +2658,7 @@ function openExport({ batch }) {
 // ───────────────────────── グリッド（複数の写真を1枚に） ─────────────────────────
 let GR = null;
 async function showGrid(projects) {
-  closeEditor();
+  closeEditor(); prefs.set('editing', null);
   const ps = projects.slice(0, MAX_GRID);
   if (ps.length < 2) { toast('グリッドには2枚以上の写真を選んでください'); return; }
   render(app, h('div', { class: 'loading' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), `グリッドを準備しています…（${ps.length}枚）`));
@@ -2781,13 +2878,20 @@ document.addEventListener('paste', (e) => {
 });
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => { if (e.dataTransfer?.files?.length && !e.target.closest?.('#drop')) { e.preventDefault(); importFiles(e.dataTransfer.files); } });
-addEventListener('pagehide', flushSave);
+// ふつうに閉じた・読み込み直した（pagehide が来た）ときは、次に開いたとき写真一覧から。ページが落ちたとき（iPhone でメモリが足りないときなど）は pagehide が来ないので、編集していた写真に戻る
+addEventListener('pagehide', () => { flushSave(); prefs.set('editing', null); });
+addEventListener('pageshow', (e) => { if (e.persisted && E) prefs.set('editing', E.id); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
 // ホーム画面のアプリとして「ファイルを開く」から起動されたとき
 if ('launchQueue' in window) window.launchQueue.setConsumer(async (p) => { const files = await Promise.all((p.files || []).map((f) => f.getFile())); if (files.length) importFiles(files); });
 // Service Worker の登録と、新しい版の確認（アプリに戻ってきたときも）。更新で読み込み直す前に、編集を保存する
-initUpdate(VERSION, { flush: flushSave });
+initUpdate(VERSION, { flush: () => { flushSave(); if (E) prefs.set('resume', E.id); } }); // 更新で読み込み直したときも、編集していた写真に戻る
 applyTheme();
-showLibrary();
+// 編集中にページが落ちて読み込み直された（iPhone でメモリが足りなくなったとき）・アプリの更新で読み込み直した: 写真一覧ではなく、編集していた写真を開き直す。
+// 編集の値はいつも自動で保存しているので、続きから。開き直してすぐまた落ちたとき（1 分以内）は、くり返さないように写真一覧にする
+{
+  const id = prefs.get('resume', null) || prefs.get('editing', null); const last = prefs.get('resumedAt', 0); prefs.set('resume', null);
+  if (id && !(Date.now() - last < 60_000)) { prefs.set('resumedAt', Date.now()); openEditor(id); } else showLibrary();
+}
 // テスト・デバッグ用（中身の確認だけ。外部には何も送らない）
 window.__temoto = { get state() { return E && S.clone(E.state); }, get editor() { return E; }, get grid() { return GR; } };

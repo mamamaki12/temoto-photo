@@ -94,16 +94,60 @@ export function tileResidual(out, o, reg, r) {
   // AI がくっきりさせた輪郭の外側に出る縁取り（白い服と黒い髪の境目の黒い線など）を防ぐため、
   // 結果は、写真のまわり（CLAMP 画素の四角）の明るさの幅に収める（顔 AI の逆畳み込みと同じ考え方）
   const [lo, hi] = rangeMaps(I, w, h, CLAMP);
+  const keep = edgeProtect(I, w, h);
   for (let Y = r.iy0; Y < r.iy1; Y++) {
     for (let X = r.ix0; X < r.ix1; X++) {
-      const d = ((Y - r.y0) * w + X - r.x0) * 3; const q = ((Y - r.iy0) * iw + X - r.ix0) * 3;
+      const p = (Y - r.y0) * w + X - r.x0; const d = p * 3; const q = ((Y - r.iy0) * iw + X - r.ix0) * 3;
       for (let c = 0; c < 3; c++) {
         const k = d + c; const v = I[k] + D[k] + I[k] - iF[k] - dL[k];
-        part[q + c] = Math.max(-127, Math.min(127, Math.round(Math.min(hi[k] + MARGIN, Math.max(lo[k] - MARGIN, v)) - I[k])));
+        part[q + c] = Math.max(-127, Math.min(127, Math.round((Math.min(hi[k] + MARGIN, Math.max(lo[k] - MARGIN, v)) - I[k]) * keep[p])));
       }
     }
   }
   return part;
+}
+
+/**
+ * 縁の保護: 写真にもともと強い縁がある所（サテンの光沢の縁、服のひだ、腕の輪郭など）は、AI の差分を弱める（0〜1 の倍率）。
+ * AI は、なだらかな光沢の縁を硬い線に描き直す（絵・イラストのように見える。2026-10-27、光沢のある服で確認）。
+ * 髪の毛・レース・織りのような細かい所は、縁の強さが小さいので、そのまま（髪は変わらない）。
+ * 縁の強さ = 明るさの 1.5〜5 画素の帯の絶対値を 11×11 で平均したもの。倍率 = 1 / (1 + (強さ / EDGE_T)²)
+ * @param {Float32Array} I 写真（RGB、0〜255）
+ * @returns {Float32Array} w×h の倍率
+ */
+export function edgeProtect(I, w, h) {
+  const n = w * h; const L = new Float32Array(n);
+  for (let i = 0; i < n; i++) L[i] = I[i * 3] * 0.299 + I[i * 3 + 1] * 0.587 + I[i * 3 + 2] * 0.114;
+  const a = gauss(L, w, h, 1, EDGE_FINE); const b = gauss(L, w, h, 1, EDGE_COARSE);
+  for (let i = 0; i < n; i++) a[i] = Math.abs(a[i] - b[i]);
+  const c = boxMean(a, w, h, EDGE_R);
+  for (let i = 0; i < n; i++) { const t = c[i] / EDGE_T; c[i] = 1 / (1 + t * t); }
+  return c;
+}
+/** 縁の保護の帯（ぼかしの σ、写真の画素）と、強さを平均する半径、半分に弱める強さ（1 = 1/255） */
+const EDGE_FINE = 1.5; const EDGE_COARSE = 5; const EDGE_R = 5; const EDGE_T = 4;
+/** 1 チャンネルを、(2r+1)² の四角で平均する（端は、ある画素だけで） */
+function boxMean(a, w, h, r) {
+  const t = new Float32Array(w * h); const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const o = y * w; let s = 0; let cnt = 0;
+    for (let x = 0; x <= Math.min(w - 1, r); x++) { s += a[o + x]; cnt++; }
+    for (let x = 0; x < w; x++) {
+      t[o + x] = s / cnt;
+      if (x + r + 1 < w) { s += a[o + x + r + 1]; cnt++; }
+      if (x - r >= 0) { s -= a[o + x - r]; cnt--; }
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let s = 0; let cnt = 0;
+    for (let y = 0; y <= Math.min(h - 1, r); y++) { s += t[y * w + x]; cnt++; }
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = s / cnt;
+      if (y + r + 1 < h) { s += t[(y + r + 1) * w + x]; cnt++; }
+      if (y - r >= 0) { s -= t[(y - r) * w + x]; cnt--; }
+    }
+  }
+  return out;
 }
 /** tileResidual の結果を、写真全体の差分（W×H×3）に書く */
 export function putResidual(res, W, r, part) {
