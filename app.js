@@ -24,7 +24,7 @@ import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from 
 import { planTone } from './restoration-lowlight.js';
 import { TonePreviewGL } from './tone-gl.js';
 import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas, releaseDeblur } from './deblur-photo.js';
-import { bokehActive, bokehRadius } from './bokeh.js';
+import { bokehActive } from './bokeh.js';
 import { bokehFor, bokehCanvas } from './bokeh-photo.js';
 import { crispActive, crispAmount } from './crisp.js';
 import { crispMapFor, crispCanvas } from './crisp-photo.js';
@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -565,7 +565,7 @@ function rebuildSource() {
 // スライダーを動かしている間は GPU の簡易版で見せ、手を止めたら Worker で計算する（進捗は写真の上のバーに）。
 // できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒」。途中の結果は取っておき、ブレ補正の強さだけを変えたときは AI を動かし直さない
-const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) || bokehActive(st.adj) || crispActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount, faceaiWhole(st), st.adj.bokeh, st.adj.crisp]) : null);
+const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) || bokehActive(st.adj) || crispActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount, faceaiWhole(st), bokehActive(st.adj), st.adj.crisp]) : null);
 function hqReady() { return !!E.hq?.canvas && E.hq.key === hqKey(E.state); }
 /**
  * いま見せる、暗所補正・ブレ補正をした写真。ブレ補正の強さだけを変えて計算し直している間は、前にできたものを見せる
@@ -669,11 +669,11 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, state = 
   /** 取ってある全体 AI の差分（書き出し用。くっきりの重みも添える） */
   const wholeOf = () => (wh && cache.wh ? { res: cache.wh.res, map: cr ? cache.cm?.map || null : null, amount: cr ? crispAmount(adj) : 1 } : null);
   // 背景のぼかしは顔 AI を当てた写真から作るので、顔 AI の強さも鍵に入れる
-  const bkKey = bk ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faKey, fa && state.faceai.amount, adj.bokeh]) : null;
+  const bkKey = bk ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, faKey, fa && state.faceai.amount]) : null;
   // 背景のぼかし（いちばん後）。人物の内側は変えないので、顔 AI・美肌の結果と重ならない
   const bokeh = async (canvas, at) => {
     if (!bk) return { canvas, bokeh: null };
-    if (cache.bk?.key !== bkKey) { cache.bk = null; cache.bk = { key: bkKey, res: await bokehFor(canvas, src.W, src.H, bokehRadius(src.W, adj.bokeh), { signal, onProgress: at }) }; }
+    if (cache.bk?.key !== bkKey) { cache.bk = null; cache.bk = { key: bkKey, res: await bokehFor(canvas, src.W, src.H, { signal, onProgress: at }) }; }
     return { canvas: await bokehCanvas(canvas, src.W, src.H, cache.bk.res), bokeh: cache.bk.res }; // Canvas は取っておかない（iPhone の Canvas のメモリの上限）
   };
   // ノイズ除去の途中の結果（帯ごと）は、明るさ補正だけを変えたときに使い回す（編集画面だけ。大きいので、iPhone・iPad では AI を使うときは取っておかない）
@@ -1275,9 +1275,8 @@ const PANELS = {
         onInput: live((v) => { E.state.adj.crisp = v; }), onChange: commit }).el,
       hint('AI が髪の毛先・服の織りをくっきりさせます（肌は控えめ、背景はそのまま。初回は AI 約 5MB）。目・口・前髪の輪郭は「顔 AI」で。'),
       h('h3', {}, '背景をぼかす'),
-      slider({ label: '背景をぼかす', min: 0, max: 100, value: E.state.adj.bokeh, def: 0,
-        onInput: live((v) => { E.state.adj.bokeh = v; }), onChange: commit }).el,
-      hint('AI が人物を見分けて、背景だけをやわらかくぼかします（髪・輪郭はそのまま）。'),
+      toggle('背景をぼかす', bokehActive(E.state.adj), live((v) => { E.state.adj.bokeh = v ? 50 : 0; commit(); })).el,
+      hint('AI が人物を見分けて、背景だけをやわらかくぼかします（髪・輪郭はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。'),
       row(btn('✦ 自動補正', () => {
         const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
         Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
