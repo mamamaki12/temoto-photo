@@ -1,7 +1,8 @@
 // 背景をぼかす（プロの舞台写真のような、人物だけくっきりで背景がやわらかいボケ）。
 // 仕組み（docs/bokeh-handoff.md）:
 //   ① 人物の地図（skinseg.js の personSeg。長い辺 512）を 4 分の 1 の大きさの写真に合わせ、ガイデッドフィルターで髪・輪郭に沿わせる
-//   ② 少し広げて（髪の縁が背景のぼかしに混ざらないよう）、人物の割合 a（0〜1）にする
+//   ② 少し広げて（髪の縁が背景のぼかしに混ざらないよう）、人物の割合 a（0〜1）にする。
+//      奥行きの AI（depth-worker.js）が使えれば、人物と同じくらい近い所も人物として扱う（人物の AI は、透けたフリル・写真の端で切れた脚・足元を見落とす）
 //   ③ 背景だけを円形にぼかす（人物の画素を重みから外す「正規化ぼかし」なので、人物の色が背景ににじまない）。
 //      明るい照明が丸く光るよう、ガンマを外した（リニアに近い）値でぼかす
 //   ④ 元の写真 × a ＋ ぼかした背景 × (1 − a)。編集用の大きさでも、書き出し（元の大きさ）でも同じ ②③ を引き伸ばして合成する
@@ -15,6 +16,12 @@ const GUIDE_EPS = 1e-3;
 const FEATHER = 2; // 縁をなだらかにする範囲（縮めた画素。boxBlur 2 回 ≈ ガウス 1.5）
 const GROW = 1.15; // 人物を少し広げる
 const GAMMA = 2.2;
+/** 奥行きの AI の大きさ（正方形。depth-worker.js） */
+export const DEPTH_SIDE = 518;
+// 奥行きで人物として扱う近さ: 背景（人物の AI が背景とした所の真ん中の近さ）から、人物の奥の方（人物の近さの 1 割点）までの間の、
+// NEAR_LO 〜 NEAR_HI の所でなだらかに 0 → 1（背景の下の方・床は奥の幕より近いので、人物の近さの手前ぎりぎりから。0.4 からにすると、脚の横の幕までぼけずに残った）。人物と背景の近さの差が DEPTH_MIN より小さい（壁の前など）写真では使わない
+const NEAR_LO = 0.85; const NEAR_HI = 1; const DEPTH_MIN = 0.08;
+const DEPTH_GROW = 2; // 縁で切れないよう、少し広げる（縮めた画素）
 
 /** この編集で、背景のぼかしを使うか（オン／オフだけ。強さは写真ごとに autoRadius で決める） */
 export const bokehActive = (adj) => (adj.bokeh || 0) > 0;
@@ -74,9 +81,10 @@ export function resizeMap(m, w0, h0, w, h) {
  * 人物の割合の地図を、縮めた写真に合わせて細かくする（①②）
  * @param {Uint8ClampedArray} rgba 縮めた写真（w×h）
  * @param {{m:Float32Array,w:number,h:number}|null} person 人物の地図（なければ null → 全部背景）
+ * @param {{m:Float32Array,w:number,h:number}|null} depth 奥行きの地図（なければ null → 人物の地図だけ）
  * @returns {Float32Array} w×h、0〜1（1 = 人物）
  */
-export function personAlpha(rgba, w, h, person) {
+export function personAlpha(rgba, w, h, person, depth = null) {
   if (!person) return new Float32Array(w * h);
   const luma = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) luma[i] = (rgba[i * 4] * 0.299 + rgba[i * 4 + 1] * 0.587 + rgba[i * 4 + 2] * 0.114) / 255;
@@ -85,6 +93,39 @@ export function personAlpha(rgba, w, h, person) {
   const tmp = new Float32Array(w * h); const a = boxBlur(g, w, h, FEATHER, new Float32Array(w * h), tmp);
   boxBlur(a, w, h, FEATHER, g, tmp);
   for (let i = 0; i < w * h; i++) g[i] = Math.min(1, Math.max(0, g[i] * GROW));
+  const near = depth && nearAlpha(luma, w, h, m, depth);
+  if (near) for (let i = 0; i < w * h; i++) g[i] = Math.max(g[i], near[i]);
+  return g;
+}
+
+/** 並べた値の p の点（0〜1） */
+function quantile(v, p) { const s = Float32Array.from(v).sort(); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : 0; }
+
+/** 横・縦に r ずつ広げる（その範囲の最大） */
+function grow(src, w, h, r) {
+  const t = new Float32Array(w * h); const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = 0; for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) v = Math.max(v, src[y * w + k]); t[y * w + x] = v; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = 0; for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) v = Math.max(v, t[k * w + x]); out[y * w + x] = v; }
+  return out;
+}
+
+/**
+ * 奥行きの地図から、人物と同じくらい近い所の割合（0〜1。縮めた写真の大きさ）。人物・背景の近さが分からない写真では null
+ * @param {Float32Array} luma 縮めた写真の明るさ（輪郭に沿わせる）
+ * @param {Float32Array} m 人物の AI の地図（縮めた写真の大きさ）
+ * @param {{m:Float32Array,w:number,h:number}} depth 奥行き（0〜1、大きいほど手前）
+ */
+export function nearAlpha(luma, w, h, m, depth) {
+  const d = resizeMap(depth.m, depth.w, depth.h, w, h);
+  const fg = []; const bg = [];
+  for (let i = 0; i < w * h; i++) { if (m[i] > 0.8) fg.push(d[i]); else if (m[i] < 0.2) bg.push(d[i]); }
+  if (fg.length < 0.005 * w * h || bg.length < 0.1 * w * h) return null;
+  const lo = quantile(fg, 0.1); const far = quantile(bg, 0.5); const gap = lo - far;
+  if (gap < DEPTH_MIN) return null;
+  const t0 = far + NEAR_LO * gap; const t1 = far + NEAR_HI * gap; const a = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) { const t = Math.min(1, Math.max(0, (d[i] - t0) / (t1 - t0))); a[i] = t * t * (3 - 2 * t); }
+  const g = guided(luma, grow(a, w, h, DEPTH_GROW), w, h, 4, GUIDE_EPS);
+  for (let i = 0; i < w * h; i++) g[i] = Math.min(1, Math.max(0, g[i]));
   return g;
 }
 

@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/bokeh-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bokehActive, faceScale, autoRadius, resizeMap, personAlpha, discSum, computeBokeh, applyBokeh } from '../../bokeh.js';
+import { bokehActive, faceScale, autoRadius, resizeMap, personAlpha, nearAlpha, discSum, computeBokeh, applyBokeh } from '../../bokeh.js';
 import { validateState } from '../../state.js';
 
 /** w×h の RGBA。fn(x, y) → [r, g, b] */
@@ -73,4 +73,22 @@ test('bokeh: 人物の地図を写真の輪郭に沿わせ、少し広げる。�
   assert.ok(personAlpha(img, w, h, null).every((v) => v === 0));
   const m = resizeMap(new Float32Array([0, 1]), 2, 1, 4, 1);
   assert.ok(m[0] === 0 && m[3] === 1 && m[1] < m[2]);
+});
+
+test('bokeh: 人物の AI が見落とした所でも、奥行きが人物と同じくらい近ければぼかさない（透けたフリル・写真の端の脚）', () => {
+  const w = 64; const h = 64;
+  // 人物: 上半分の真ん中（AI が見つけた）。脚: 左下の端（AI は見落とした。背景と同じような色）。奥行き: 人物と脚は手前（0.8）、背景は奥（0.1）
+  const body = (x, y) => y < 36 && x >= 20 && x < 44; const leg = (x, y) => y >= 36 && x < 12;
+  const img = rgba(w, h, (x, y) => (body(x, y) ? [210, 200, 190] : leg(x, y) ? [120, 100, 90] : [100, 90, 80]));
+  const person = { m: new Float32Array(w * h).map((_, i) => (body(i % w, Math.floor(i / w)) ? 1 : 0)), w, h };
+  const near = (x, y) => body(x, y) || leg(x, y);
+  const depth = { m: new Float32Array(w * h).map((_, i) => (near(i % w, Math.floor(i / w)) ? 0.8 : 0.1)), w, h };
+  const without = personAlpha(img, w, h, person); const a = personAlpha(img, w, h, person, depth);
+  assert.ok(without[50 * w + 4] < 0.2, '奥行きがなければ、脚は背景としてぼかされる');
+  assert.ok(a[50 * w + 4] > 0.95, '奥行きが人物と同じなら、脚はぼかさない');
+  assert.ok(a[16 * w + 30] > 0.95, '人物はそのまま'); assert.ok(a[10 * w + 58] < 0.05 && a[56 * w + 40] < 0.05, '奥の背景はぼかす');
+  // 人物と背景の近さが同じ（壁の前など）写真では、奥行きを使わない
+  const flat = { m: new Float32Array(w * h).fill(0.5), w, h };
+  assert.equal(nearAlpha(new Float32Array(w * h), w, h, person.m, flat), null);
+  assert.deepEqual(personAlpha(img, w, h, person, flat), without);
 });
