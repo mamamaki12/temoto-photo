@@ -160,8 +160,8 @@ function borderPts(size = SIZE, k = 8) {
 }
 
 /**
- * 本人の写真の切り出し（ref, RGB Float32）を、顔の点が合うように三角形ごとに曲げて、この顔（target の点）に重ねる
- * @param {Float32Array} ref @param {number[][]} refPts ref の顔の点（512 の座標） @param {number[][]} pts この顔の点（512 の座標）
+ * 本人の写真の切り出し（ref, RGB。Float32 でも 8 ビットでもよい）を、顔の点が合うように三角形ごとに曲げて、この顔（target の点）に重ねる
+ * @param {Float32Array|Uint8Array} ref @param {number[][]} refPts ref の顔の点（512 の座標） @param {number[][]} pts この顔の点（512 の座標）
  */
 export function meshWarp(ref, refPts, pts, size = SIZE) {
   const B = borderPts(size); const dst = pts.map((p) => [p[0], p[1]]).concat(B); const src = refPts.map((p) => [p[0], p[1]]).concat(B);
@@ -213,7 +213,7 @@ const EYE_TOP = 3;
  * 合わない所（口の開き方・目線が違う所）は、この顔の細かい所のまま。
  * 目のまわりだけは、その目の形がいちばん合う EYE_TOP 枚だけを使う（たくさんの写真を平均すると、黒目の光やまつげの線が薄まって目が眠そうに見えるため）
  * @param {Float32Array} face この顔の切り出し（RGB、0〜255） @param {number[][]} pts この顔の点（512 の座標）
- * @param {{img:Float32Array,pts:number[][]}[]} refs 本人の写真の切り出しと顔の点
+ * @param {{img:Float32Array|Uint8Array,pts:number[][]}[]} refs 本人の写真の切り出し（RGB）と顔の点
  */
 export function transferDetail(face, pts, refs, size = SIZE) {
   const n = size * size; const base = gauss(face, size, size, 3, SPLIT); const tm = midBand(face, size, size);

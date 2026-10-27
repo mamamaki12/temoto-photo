@@ -347,23 +347,27 @@ export async function findAllFaces(img, { minFace = 96, onProgress = () => {} } 
     for (let y = 0; y < H - st * 0.999; y += st) for (let x = 0; x < W - st * 0.999; x += st) wins.push([Math.round(x), Math.round(y), Math.round(Math.min(side, W - x)), Math.round(Math.min(side, H - y))]);
   }
   const found = [];
-  const width = (f) => Math.hypot(f[454][0] - f[234][0], f[454][1] - f[234][1]); // 顔の幅（左右のこめかみ）
-  for (let k = 0; k < wins.length; k++) {
-    const [x0, y0, cw, ch] = wins[k];
-    const sc = Math.min(768, Math.max(384, Math.max(cw, ch))) / Math.max(cw, ch);
-    const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
-    const c2 = new OffscreenCanvas(w, h); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
-    const faces = (await faceMeshes(x2.getImageData(0, 0, w, h))).map((f) => f.map(([x, y]) => [x0 + x / sc, y0 + y / sc]));
-    for (const f of faces) {
-      const fw = width(f); if (fw < minFace) continue;
-      // 区画の端で切れた顔は、もっと広い区画で見つかったものを使う
-      const xs = f.map((q) => q[0]); const ys = f.map((q) => q[1]);
-      const cut = (Math.min(...xs) < x0 + 2 && x0 > 0) || (Math.min(...ys) < y0 + 2 && y0 > 0) || (Math.max(...xs) > x0 + cw - 2 && x0 + cw < W) || (Math.max(...ys) > y0 + ch - 2 && y0 + ch < H);
-      const same = found.find((g) => Math.hypot(g.pts[4][0] - f[4][0], g.pts[4][1] - f[4][1]) < Math.max(fw, g.w) * 0.3);
-      if (same) { if (same.cut && !cut) Object.assign(same, { pts: f, w: fw, cut }); continue; }
-      found.push({ pts: f, w: fw, cut });
+  // 区画を描く Canvas は 1 つを使い回し、終わったら大きさを 0 にして返す（区画は数十あり、iPhone は Canvas のメモリをすぐには返さないため）
+  const c2 = new OffscreenCanvas(1, 1);
+  try {
+    const width = (f) => Math.hypot(f[454][0] - f[234][0], f[454][1] - f[234][1]); // 顔の幅（左右のこめかみ）
+    for (let k = 0; k < wins.length; k++) {
+      const [x0, y0, cw, ch] = wins[k];
+      const sc = Math.min(768, Math.max(384, Math.max(cw, ch))) / Math.max(cw, ch);
+      const w = Math.max(1, Math.round(cw * sc)); const h = Math.max(1, Math.round(ch * sc));
+      c2.width = w; c2.height = h; const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, x0, y0, cw, ch, 0, 0, w, h);
+      const faces = (await faceMeshes(x2.getImageData(0, 0, w, h))).map((f) => f.map(([x, y]) => [x0 + x / sc, y0 + y / sc]));
+      for (const f of faces) {
+        const fw = width(f); if (fw < minFace) continue;
+        // 区画の端で切れた顔は、もっと広い区画で見つかったものを使う
+        const xs = f.map((q) => q[0]); const ys = f.map((q) => q[1]);
+        const cut = (Math.min(...xs) < x0 + 2 && x0 > 0) || (Math.min(...ys) < y0 + 2 && y0 > 0) || (Math.max(...xs) > x0 + cw - 2 && x0 + cw < W) || (Math.max(...ys) > y0 + ch - 2 && y0 + ch < H);
+        const same = found.find((g) => Math.hypot(g.pts[4][0] - f[4][0], g.pts[4][1] - f[4][1]) < Math.max(fw, g.w) * 0.3);
+        if (same) { if (same.cut && !cut) Object.assign(same, { pts: f, w: fw, cut }); continue; }
+        found.push({ pts: f, w: fw, cut });
+      }
+      onProgress((k + 1) / wins.length);
     }
-    onProgress((k + 1) / wins.length);
-  }
+  } finally { c2.width = 0; c2.height = 0; src.width = 0; src.height = 0; }
   return found.sort((a, b) => b.w - a.w).map((f) => f.pts);
 }

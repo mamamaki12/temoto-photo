@@ -23,19 +23,19 @@ import { lowMemory } from './cores.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { planTone } from './restoration-lowlight.js';
 import { TonePreviewGL } from './tone-gl.js';
-import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas } from './deblur-photo.js';
+import { deblurActive, deblurAmount, deblurDenoise, deblurResidualFor, finishCanvas, releaseDeblur } from './deblur-photo.js';
 import { bokehActive } from './bokeh.js';
 import { bokehSource, bokehFromSource, bokehCanvas } from './bokeh-photo.js';
 import { crispActive, crispAmount } from './crisp.js';
 import { crispMapFor, crispCanvas } from './crisp-photo.js';
-import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, loadPeople, matchFace, savePeople, wholeCanvas, wholeResidual } from './face-photo.js';
+import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, guessPerson, loadPeople, loadPending, matchFace, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.6'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.7'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -90,6 +90,7 @@ function itemIcon(it) {
 }
 /** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
 const MAX_REFS = 40;
+let refsBusy = false; // 本人の写真を読み込み中（同時に 2 回は足さない）
 const TOOLS = Object.keys(TOOL_LABEL);
 const groupOf = (tool) => GROUPS.find((g) => g[3].some((it) => itemTool(it) === tool));
 const groupTools = (items) => [...new Set(items.map(itemTool))];
@@ -1438,7 +1439,7 @@ const PANELS = {
           entry(g, true).person = sel.value; commit(); requestRender(); refresh();
         } }, h('option', { value: '' }, '本人の写真なし（AI だけで整える）'), people.map((p) => h('option', { value: p.id }, `${p.name}（${p.refs.length}枚）`)), h('option', { value: '+' }, '＋ 新しい人を登録…'));
         sel.value = f?.person && people.some((p) => p.id === f.person) ? f.person : '';
-        const tog = h('button', { type: 'button', class: 'faceai-tog', 'aria-pressed': String(!!f?.on), 'aria-label': `${i + 1}番の顔に顔 AI を使う`, onclick: () => { const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh(); } },
+        const tog = h('button', { type: 'button', class: 'faceai-tog', 'aria-pressed': String(!!f?.on), 'aria-label': `${i + 1}番の顔に顔 AI を使う`, onclick: () => toggleFace(g) },
           h('span', { class: 'faceai-thumb' }, faceThumb(src, E.W, E.H, g), h('b', {}, String(i + 1))),
           h('span', { class: 'faceai-face-txt' }, h('strong', {}, `${i + 1}番の顔`), st),
           h('span', { class: 'faceai-sw', 'aria-hidden': 'true' }));
@@ -1451,38 +1452,84 @@ const PANELS = {
       for (const [g, st] of stats) { const f = entry(g, false); st.textContent = status(f, people); const card = st.closest('.faceai-face'); card.dataset.on = String(!!f?.on); card.querySelector('.faceai-tog').setAttribute('aria-pressed', String(!!f?.on)); }
       drawHandles();
     };
-    E.onHq = refresh; E.onFaceTap = (g) => { const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh(); };
-    /** 本人の写真（ファイル）を人 p に足す。何人も写っていれば本人を自動で選ぶ */
+    /**
+     * 顔のオン・オフ。はじめてオンにした顔は、登録した人（ほかの写真で登録した人も。端末に保存してある）のだれかを顔の特徴で見分けて、
+     * その人の本人の写真を参考にする（はっきりしなければ「本人の写真なし」のまま。下の「参考にする写真」で変えられる）
+     */
+    const toggleFace = async (g) => {
+      const first = !entry(g, false); const e = entry(g, true); e.on = !e.on; commit(); requestRender(); refresh();
+      if (!first || !e.on || e.person) return;
+      const id = await guessPerson(baseImageData(), g);
+      const cur = id && E?.tool === 'faceai' ? entry(g, false) : null; if (!cur?.on || cur.person) return; // 見分けている間に、オフにした・人を選んだ
+      const p = (await loadPeople()).find((q) => q.id === id); if (!p) return;
+      cur.person = id; commit(); requestRender(); drawFaces(); drawPeople();
+      toast(`${p.name}の写真を参考にします（違うときは「参考にする写真」で変えられます）`, 4000);
+    };
+    E.onHq = refresh; E.onFaceTap = toggleFace;
+    /**
+     * 本人の写真（ファイル）を人 p に足す。何人も写っていれば本人を自動で選ぶ。
+     * iPhone で何枚も入れてもメモリが足りなくならないよう 1 枚ずつ読み、読み終えた写真の顔はその都度「途中の記録」に保存する
+     * （途中でアプリが落ちても、次にこの画面を開いたとき続きから足す。finishRefs）
+     */
     const addRefs = async (p, files) => {
-      E.stageEl.classList.add('busy');
+      if (refsBusy) { toast('いま本人の写真を読み込んでいます。終わってから足してください'); return; }
+      refsBusy = true; E.stageEl.classList.add('busy');
+      try {
+        releaseDeblur(); // 大きな AI を同時に抱えないように
+        const pend = { person: p.id, total: files.length, tried: 0, tries: 0, photos: [] };
+        for (let i = 0; i < files.length; i++) {
+          const fl = files[i];
+          E.stageEl.dataset.busy = `本人の写真を読み込み中（${i + 1} / ${files.length} 枚目）`;
+          let cands = [];
+          try { cands = await facesFromPhoto(fl); if (!cands.length) toast(`${fl.name} に顔が見つかりませんでした`); } catch (e) { console.warn(e); toast(`${fl.name} を読み込めませんでした`); }
+          pend.tried = i + 1;
+          if (cands.length) pend.photos.push({ name: fl.name, cands });
+          await savePending(pend);
+        }
+        E.stageEl.dataset.busy = '本人の顔を選んでいます…';
+        await finishRefs(p, pend);
+      } finally { refsBusy = false; E?.stageEl.classList.remove('busy'); if (E) delete E.stageEl.dataset.busy; }
+    };
+    /** 読み終えた写真（途中の記録 pend）から本人の顔を選んで、人 p に足す。終わったら途中の記録を消す */
+    const finishRefs = async (p, pend) => {
+      const got = pend.photos.map((ph) => ({ name: ph.name, cands: ph.cands.map((c) => ({ ...c, url: c.url || URL.createObjectURL(c.crop) })) }));
       const add = []; const notMe = []; let auto = 0;
       try {
-        const got = [];
-        for (const fl of files) {
-          let cands; try { cands = await facesFromPhoto(fl); } catch (e) { console.warn(e); toast(`${fl.name} を読み込めませんでした`); continue; }
-          if (!cands.length) { toast(`${fl.name} に顔が見つかりませんでした`); continue; }
-          got.push({ fl, cands });
-        }
         // 本人の顔を自動で選ぶ（この人の本人の写真と、この写真でこの人を選んだ顔に似ている顔。何人写っていても）。見分けられない写真だけ選んでもらう
         const img = E ? baseImageData() : null;
         const dets = img ? await detectFaces(img).catch(() => []) : [];
         const res = got.length ? await autoPick(got.map((g) => g.cands), p.id, { img, faces: E?.state.faceai.faces || [], dets }) : null;
         for (let i = 0; i < got.length; i++) {
-          const { fl, cands } = got[i]; const r = res?.[i];
+          const { name, cands } = got[i]; const r = res?.[i];
           let pick; let byAI = false;
           if (r && r.pick >= 0) { pick = [cands[r.pick]]; byAI = true; if (cands.length > 1) auto++; } else if (cands.length === 1 && !res) pick = cands;
           else {
             const guess = r ? r.guess : -1;
-            pick = await pickFaces(cands, fl.name, { guess: cands.length === 1 ? -1 : guess, unsure: !!r });
+            pick = await pickFaces(cands, name, { guess: cands.length === 1 ? -1 : guess, unsure: !!r });
             // いちばん似ていた顔ではなく別の顔を選ばれたら、その顔はよく似た別人として覚える（次からその人を選ばない）
             if (guess >= 0 && pick.length && !pick.includes(cands[guess]) && cands[guess].emb) notMe.push(cands[guess].emb);
           }
           for (const c of pick) add.push({ id: uid(), crop: c.crop, pts: c.pts, emb: c.emb, auto: byAI });
-          for (const c of cands) URL.revokeObjectURL(c.url);
         }
-      } finally { E?.stageEl.classList.remove('busy'); }
+      } finally { for (const g of got) for (const c of g.cands) URL.revokeObjectURL(c.url); }
       // 読み込み中に別の写真を足したときも消えないよう、保存の直前の一覧に足す
-      if (add.length) { await save((await loadPeople()).map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS), notMe: [...(q.notMe || []), ...notMe].slice(-MAX_REFS) } : q))); toast(`${add.length}枚の顔を追加しました${auto ? `（うち${auto}枚は、何人も写った写真から本人を自動で選びました）` : ''}`); }
+      const list = await loadPeople();
+      if (add.length && list.some((q) => q.id === p.id)) await save(list.map((q) => (q.id === p.id ? { ...q, refs: [...q.refs, ...add].slice(-MAX_REFS), notMe: [...(q.notMe || []), ...notMe].slice(-MAX_REFS) } : q)));
+      await savePending(null);
+      const missed = pend.total - pend.tried;
+      const msg = [add.length ? `${add.length}枚の顔を追加しました${auto ? `（うち${auto}枚は、何人も写った写真から本人を自動で選びました）` : ''}` : '', missed > 0 ? `${missed}枚は読み込めなかったので、もう一度足してください` : ''].filter(Boolean).join('。');
+      if (msg) toast(msg, 5000);
+    };
+    /** 前に本人の写真を足している途中でアプリが落ちていたら、読み終えていた写真の顔を足す */
+    const resumeRefs = async () => {
+      const pend = await loadPending(); if (!pend || refsBusy || !E || E.tool !== 'faceai') return;
+      const p = (await loadPeople()).find((q) => q.id === pend.person);
+      // 続きを足している間にまた落ちたら、もう続けない（何度も落ちないように）
+      if (!p || (pend.tries || 0) >= 2 || !pend.photos?.length) { await savePending(null); if (p && pend.photos?.length) toast('前回の本人の写真の追加を続けられませんでした。もう一度、少ない枚数ずつ足してください', 5000); return; }
+      await savePending({ ...pend, tries: (pend.tries || 0) + 1 });
+      toast(`前回、途中で止まった本人の写真の追加を続けます（${p.name}）`, 4000);
+      refsBusy = true; E.stageEl.classList.add('busy');
+      try { await finishRefs(p, pend); } catch (e) { console.warn(e); } finally { refsBusy = false; E?.stageEl.classList.remove('busy'); }
     };
     const save = async (next) => { await savePeople(next); commit(); requestRender(); drawPeople(); drawFaces(); };
     const drawPeople = async () => {
@@ -1510,7 +1557,7 @@ const PANELS = {
           h('label', { for: `fa-file-${p.id}`, class: 'btn small primary' }, '＋ 写真を追加'), file);
       }), btn('＋ 新しい人を登録', async () => { const l = await loadPeople(); const p = { id: uid(), name: `人${l.length + 1}`, refs: [] }; await save([...l, p]); }, 'small')]);
     };
-    drawFaces(); drawPeople();
+    drawFaces(); drawPeople(); resumeRefs();
     return [
       h('h3', {}, '顔 AI'),
       hint('暗い写真・ブレた写真の顔を、明るい所で撮ったようにくっきり。初回は AI（約 90MB）を読み込みます。'),
@@ -1518,7 +1565,7 @@ const PANELS = {
       hint('写真の上の番号か、下の顔をタップするとオンになります。'),
       facesBox,
       h('h4', { class: 'faceai-step' }, h('span', {}, '2'), '本人の写真（任意）'),
-      hint(`登録すると、その人らしい顔に仕上がります（${MAX_REFS} 枚まで）。何人も写った写真でも、本人の顔を自動で選びます。`),
+      hint(`登録すると、その人らしい顔に仕上がります（${MAX_REFS} 枚まで）。何人も写った写真でも、本人の顔を自動で選びます。登録した人はこの端末に保存され、ほかの写真の顔 AI でもそのまま使えます（顔をオンにすると、だれかを自動で見分けます）。`),
       peopleBox,
       h('h4', { class: 'faceai-step' }, h('span', {}, '3'), '仕上がり'),
       slider({ label: '顔 AI の強さ', min: 0, max: 100, value: fa.amount, def: 100, unit: '%', onInput: live((v) => { fa.amount = v; }), onChange: commit }).el,
