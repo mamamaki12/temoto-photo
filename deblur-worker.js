@@ -8,6 +8,7 @@ import { workerCount, lowMemory, limitOrtMemory } from './cores.js';
 limitOrtMemory(512); // GPU で動かすときだけ使う（CPU では deblur-infer-worker.js）
 
 const MODEL = new URL('./vendor/deblur/nafnet-gopro-w32.onnx', import.meta.url);
+const MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 /** モデルを読み込む（はじめての 1 回は 36MB をダウンロード。以後はキャッシュ） */
 async function download(onProgress) {
@@ -91,7 +92,9 @@ async function init(onProgress) {
   ort.env.wasm.numThreads = 1;
   const model = await download(onProgress);
   let gpu = false;
-  try {
+  // スマホ（iPhone・iPad・Android）は GPU を使わない（顔 AI・全体 AI と同じ）。iPhone の Safari では GPU の準備（シェーダーの組み立て）で
+  // Worker が固まり、45 秒の見切りも効かずに「AI を準備しています」のまま 4 分以上止まった（1.35.3 でユーザーが確認）
+  if (!MOBILE) try {
     const a = navigator.gpu && await navigator.gpu.requestAdapter();
     // ソフトウェアで GPU のふりをするもの（SwiftShader など）は、CPU で動かすより遅い
     const info = a?.info || {};
