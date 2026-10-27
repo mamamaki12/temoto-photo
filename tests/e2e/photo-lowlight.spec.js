@@ -25,7 +25,7 @@ test('写真全体の明るさ: 操作・Undo・再読み込み・PNG書き出�
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
   await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
 });
@@ -147,7 +147,7 @@ test('暗い写真の補正: ノイズを取ってから明るくする処理を
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
   await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
 });
@@ -247,7 +247,7 @@ test('暗い写真の補正は、明暗ブラシ・露光量と重ねて使え�
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   const file = await (await pending).path();
   const buf = (await import('node:fs')).readFileSync(file).toString('base64');
   const out = await page.evaluate(async ({ buf, R, other }) => {

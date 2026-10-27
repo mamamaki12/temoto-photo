@@ -66,7 +66,7 @@ test('被写体ブレの補正: AI で輪郭をくっきりさせ、平らな所
   const dlg = page.getByRole('dialog');
   await dlg.getByRole('button', { name: 'PNG（劣化なし）', exact: true }).click();
   const pending = page.waitForEvent('download');
-  await dlg.getByRole('button', { name: '書き出す', exact: true }).click();
+  await dlg.getByRole('button', { name: 'ダウンロード', exact: true }).click();
   expect((await pending).suggestedFilename()).toMatch(/\.png$/);
   await expect(dlg.getByRole('progressbar')).toHaveAttribute('value', '100');
 });
