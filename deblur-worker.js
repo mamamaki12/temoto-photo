@@ -29,9 +29,9 @@ async function download(onProgress) {
 function cpuPool(model) {
   const n = workerCount(self.navigator, { max: 6 }); // iPhone・iPad はメモリが少ないので 2 つまで、パソコンは CPU の数に合わせる
   const idle = []; const waiting = []; const jobs = new Map(); let seq = 0; let failed = null;
-  const ready = [];
+  const ready = []; const all = [];
   for (let i = 0; i < n; i++) {
-    const wk = new Worker(new URL('./deblur-infer-worker.js', import.meta.url), { type: 'module' });
+    const wk = new Worker(new URL('./deblur-infer-worker.js', import.meta.url), { type: 'module' }); all.push(wk);
     ready.push(new Promise((resolve, reject) => {
       wk.onmessage = ({ data: m }) => {
         if (m.type === 'ready') { idle.push(wk); resolve(); pump(); }
@@ -43,7 +43,7 @@ function cpuPool(model) {
       };
       wk.onerror = () => { failed = new Error('ブレ補正の AI を開始・実行できませんでした（端末のメモリが足りない可能性があります）'); reject(failed); for (const j of jobs.values()) j.reject(failed); };
     }));
-    wk.postMessage({ type: 'init', model: model.slice() });
+    const copy = model.slice(); wk.postMessage({ type: 'init', model: copy }, [copy.buffer]);
   }
   function pump() {
     while (idle.length && waiting.length) {
@@ -51,11 +51,25 @@ function cpuPool(model) {
       jobs.set(id, job); wk.postMessage({ type: 'run', id, input: job.input, n: job.n, size: TILE }, [job.input.buffer]);
     }
   }
+  const one = (input, n) => (failed ? Promise.reject(failed) : new Promise((resolve, reject) => { waiting.push({ input, n, resolve, reject }); pump(); }));
   return {
     size: n,
     ready: Promise.all(ready),
-    run: (input, n) => (failed ? Promise.reject(failed) : new Promise((resolve, reject) => { waiting.push({ input: input.slice(), n, resolve, reject }); pump(); })),
+    run: lowMemory(self.navigator) ? (input, n) => splitBatch(input, n, one) : (input, n) => one(input.slice(), n),
+    dispose: () => { for (const wk of all) wk.terminate(); },
   };
+}
+
+/**
+ * iPhone・iPad では、AI に一度に 1 枚ずつ渡す（2 枚まとめて渡すと、AI の中の計算用のメモリが増える。
+ * 1 つの AI が約 270MB → 約 190MB（deblur-infer-worker.js の設定と合わせて約 130MB）。結果は同じ）
+ */
+async function splitBatch(input, n, run1) {
+  if (n <= 1) return run1(input.slice(), 1);
+  const k = input.length / n; const out = new Float32Array(input.length);
+  const outs = await Promise.all(Array.from({ length: n }, (_, i) => run1(input.slice(i * k, (i + 1) * k), 1)));
+  outs.forEach((o, i) => out.set(o, i * k));
+  return out;
 }
 
 /** 逆畳み込み（deconvResidual）を別の Worker で */
@@ -91,7 +105,8 @@ async function init(onProgress) {
       const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, TILE, TILE]) })).output.data;
       let bad = false; for (let i = 0; i < y.length; i += 101) if (!Number.isFinite(y[i]) || Math.abs(y[i] - x[i]) > 0.6) { bad = true; break; }
       if (!bad) {
-        backend = { size: 1, run: async (input, n) => (await s.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) })).output.data };
+        const run1 = async (input, n) => (await s.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) })).output.data;
+        backend = { size: 1, run: lowMemory(self.navigator) ? (input, n) => splitBatch(input, n, run1) : run1, dispose: () => s.release() };
         return backend;
       }
       await s.release();
@@ -108,10 +123,13 @@ self.onmessage = async ({ data }) => {
   try {
     const be = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
     const input = data.denoise ? denoiseSmall(data.small, (t) => self.postMessage({ type: 'progress', phase: 'denoise', t })) : data.small;
+    data.small = null; // ノイズを取る前の絵は、もう使わない
     // 逆畳み込み（下）は AI の結果を使わないので、パソコン・Android では別の Worker で AI と同時に計算する（iPhone・iPad はメモリが少ないので後で）
     const dc = lowMemory(self.navigator) ? null : deconvInWorker(input);
     dc?.catch(() => {});
     const res = await deblurResidual2(input, be.run, { concurrency: be.size, onProgress: (t) => self.postMessage({ type: 'progress', phase: 'run', t: 0.95 * t }) });
+    // iPhone・iPad は、AI を片付けてから逆畳み込みをする（AI を抱えたままだと、計算用の配列と合わせてメモリが足りなくなる）
+    if (lowMemory(self.navigator)) { backend.dispose(); backend = null; }
     // AI が直せない、なだらかなにじみ（ぼけ・小さなブレ）は、ぼけの形を仮定して戻す。AI がもう直した所には足さない
     addDeconv(res, dc ? await dc : deconvResidual(input), input);
     self.postMessage({ type: 'progress', phase: 'run', t: 1 });

@@ -12,7 +12,7 @@ import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, co
 import { applyRetouch } from './retouch.js';
 import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, WARP_SHAPE, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg, personSeg, faceSeg, segFailedSince } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg, personSeg, faceSeg, segFailedSince, releaseSkinSeg } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -28,14 +28,14 @@ import { bokehActive } from './bokeh.js';
 import { bokehSource, bokehFromSource, bokehCanvas } from './bokeh-photo.js';
 import { crispActive, crispAmount } from './crisp.js';
 import { crispMapFor, crispCanvas } from './crisp-photo.js';
-import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, guessPerson, loadPeople, loadPending, matchFace, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
+import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, guessPerson, loadPeople, loadPending, matchFace, releaseFaceRec, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
 
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.34.11'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.34.12'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -530,6 +530,8 @@ async function openEditor(id) {
   const hqc = key ? await loadHq(await savedHq) : null;
   if (E !== e0) return; // 読み込む間に別の写真・一覧に移った（closeEditor が片付け済み）
   if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; seedHqCache(await savedHq, hqc); }
+  // 仕上げの途中で閉じた・落ちたときは、済んだ段（保存しておいたもの）から続ける
+  else if (key) { const st = await db.getStage(id).catch(() => null); if (E !== e0) return; seedStage(st); }
   buildEditor();
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
@@ -675,7 +677,7 @@ function dropCanvas(c, ...keep) { if (c instanceof HTMLCanvasElement && !keep.in
  * @returns {Promise<{canvas, res, faces, whole, bokeh, partial, pre}>} res: ブレ補正の差分（なければ null）、faces: 顔 AI の結果（なければ null）、whole: 全体 AI { res, map, amount }（なければ null。map は髪・服をくっきりの重み、全体に足すときは null）、bokeh: 背景のぼかし（なければ null）。
  *   partial: 保存しておいた途中の結果から作ったので、書き出しに要る res・whole が欠けている（書き出しで計算し直す）。pre: 顔 AI の前の写真（今回作ったときだけ。保存用。顔 AI もぼかしも使わないときは canvas と同じなので null）
  */
-async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, state = null } = {}) {
+async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps = () => {}, onStage = async () => {}, state = null } = {}) {
   const K = stageKeys(adj, state); const { db, fa, bk, cr, wh } = K;
   const ll = K.ll ? lowlightOptions(adj) : null;
   const cache = src.cache || {};
@@ -698,8 +700,9 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
   const wantBs = bk || (wh && !!src.cache);
   const fresh = fresh0;
   // 各段の重さ（進捗の割合）と、計算する項目の名前。済んでいて使い回すものは 0
-  const llMiss = needA && !pfHit && !a0Use && !!ll && !fresh(cache, 'll', K.llKey);
-  const dbMiss = needA && !pfHit && !a0Use && db && !fresh(cache, 'db', K.dbKey);
+  // 前に途中で止まったとき保存しておいた段（cache.lls・cache.dbs）があれば、計算し直さずに読み込む
+  const llMiss = needA && !pfHit && !a0Use && !!ll && !fresh(cache, 'll', K.llKey) && cache.lls?.key !== K.llKey;
+  const dbMiss = needA && !pfHit && !a0Use && db && !fresh(cache, 'db', K.dbKey) && cache.dbs?.key !== K.dbKey;
   const whMiss = needA && !pfHit && wh && !fresh(cache, 'wh', K.whKey) && cache.whs?.key !== K.whKey;
   const last = cache.lastA || {};
   const dbRedo = needA && !pfHit && !a0Use && db && (dbMiss || llMiss || last.db !== adj.deblur); // ブレ補正の強さを変えた（差分を当て直す）
@@ -723,19 +726,24 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
   let A = null; let res = db ? (fresh(cache, 'db', K.dbKey) ? cache.db.res : null) : null; let whole = wholeOf(); let pre = null; let pre0 = null;
   if (needA && pfHit) {
     A = await cache.pf.load(); onProgress(w[5] / tot);
-    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, state }); } // 読めなかった: 一から
+    if (!A) { cache.pf = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); } // 読めなかった: 一から
     if (!bsHit) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(A, src.W, src.H, { signal, onProgress: (t) => at0(4, t * 0.3) }) }; }
   } else if (needA) {
     let canvas = src.base;
     if (a0Use) {
       canvas = await cache.a0.load(); onProgress(w[5] / tot);
-      if (!canvas) { cache.a0 = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, state }); } // 読めなかった: 一から
+      if (!canvas) { cache.a0 = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); } // 読めなかった: 一から
     } else if (ll) {
       if (llMiss) {
         cache.ll = null;
         let grain = 0;
         const c = await enhanceCanvas(src.base, src.W, src.H, { ...ll, grain: !db, fine: !db }, { signal, cache: den, onProgress: (t) => at0(0, t), onGrain: (g) => { grain = g; } });
         cache.ll = { key: K.llKey, canvas: c, grain };
+        if (db || wh) await onStage('ll', cache.ll); // この後に重い段があるときだけ（途中で落ちても、次はここから）
+      } else if (!fresh(cache, 'll', K.llKey)) { // 前に途中で止まったときに保存しておいた、ノイズ除去と明るさ補正の結果
+        const c = await cache.lls.load(); at0(0, 1);
+        if (!c) { cache.lls = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
+        cache.ll = { key: K.llKey, canvas: c, grain: cache.lls.grain };
       }
       canvas = cache.ll.canvas;
     }
@@ -743,6 +751,11 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
       if (dbMiss) {
         cache.db = null;
         const r = await deblurResidualFor(canvas, src.W, src.H, src.origW, src.origH, { denoise: deblurDenoise(adj), signal, onProgress: (t) => at0(1, t) });
+        cache.db = { key: K.dbKey, res: r };
+        await onStage('db', cache.db);
+      } else if (!fresh(cache, 'db', K.dbKey)) { // 前に途中で止まったときに保存しておいた、ブレ補正の差分
+        const r = await cache.dbs.load();
+        if (!r) { cache.dbs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
         cache.db = { key: K.dbKey, res: r };
       }
       res = cache.db.res;
@@ -755,9 +768,10 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
       if (whMiss) {
         cache.wh = null;
         cache.wh = { key: K.whKey, res: await wholeResidual(canvas, src.W, src.H, { signal, onProgress: (t) => at0(2, t * 0.9) }) };
+        await onStage('wh', cache.wh);
       } else if (!fresh(cache, 'wh', K.whKey)) {
         const r = await cache.whs.load(); // 保存しておいた全体 AI の差分
-        if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, state }); }
+        if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, state }); }
         cache.wh = { key: K.whKey, res: r };
       }
       if (cr && !fresh(cache, 'cm', K.cmKey)) { cache.cm = null; cache.cm = { key: K.cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
@@ -808,18 +822,25 @@ async function runLowlight() {
   if ((E.hq?.key ?? null) === key) return;
   E.hq?.ctrl?.abort();
   if (!key) { E.hq = null; E.hqLast = null; hqBar(null); db.deleteHq(E.id).catch(() => {}); if (E.srcHQ) { rebuildSource(); requestRender(); } return; }
+  // 前に同じ計算の途中で 2 回落ちていたら、自動では始めない（開く → 落ちる をくり返さないように）
+  if (crashedTwice(E.id, key) && !E.hqForce) { E.hq?.ctrl?.abort(); E.hq = { key, canvas: null, ctrl: null }; hqBar(null); showPaused(); return; }
+  E.hqForce = false; E.pausedEl?.remove();
   const e0 = E; const ctrl = new AbortController();
   if (E.pre && E.pre.key !== preKey(E.state)) { E.pre.ctrl.abort(); E.pre = null; }
   E.hq = { key, canvas: null, ctrl };
   E.hqCache ||= {};
   E.hqSteps = null; E.onHq?.();
   const t0 = performance.now(); const K = stageKeys(E.state.adj, E.state);
+  if (lowMemory()) freeForHeavy();
+  const mark = markHeavy(E.id, key);
   try {
     const { canvas, res, faces, whole, bokeh, partial, pre, pre0 } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal,
+      onStage: (name, v) => saveStage(e0, name, v),
       onSteps: (names) => { if (E === e0 && E.hq?.ctrl === ctrl) { E.hqSteps = names.length ? names : changedItems(E.hqLast?.key, key); hqBar(0); } },
       onProgress: (t) => { if (E === e0 && E.hq?.ctrl === ctrl) hqBar(t); },
     });
+    clearHeavy(mark);
     if (E !== e0 || E.hq?.ctrl !== ctrl) { dropPre(e0, pre); dropPre(e0, pre0); return; }
     const old = E.hqLast?.canvas;
     // partial: 保存しておいた途中の結果から作った（書き出しに要るブレ補正の差分などがないので、書き出しでは計算し直す）
@@ -830,6 +851,7 @@ async function runLowlight() {
     // 人物・顔の AI を使えなかったとき（通信が止まっていたなど）の結果は保存しない（次に開いたとき、AI を使って計算し直す）
     startPrecompute(); if (!segFailedSince(t0)) saveHq(e0, key, canvas, { pre, pre0, K, faces, bokeh, bs: E.hqCache.bs, wh: E.hqCache.wh, cm: E.hqCache.cm }); else { dropPre(e0, pre); dropPre(e0, pre0); }
   } catch (err) {
+    clearHeavy(mark);
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.();
     if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : lowlightActive(E.state.adj) ? 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています' : crispActive(E.state.adj) ? `髪・服をくっきりできませんでした（${err.message}）` : '背景をぼかせませんでした'); }
@@ -900,6 +922,7 @@ async function saveHq(e0, key, canvas, { pre = null, pre0 = null, K = null, face
           cm: K?.cr && cm?.key === K.cmKey ? cm : null };
         await put(K && (K.fa || K.bk || K.wh) ? await db.getHq(e0.id).catch(() => null) : null);
         await db.pruneHq(HQ_KEEP);
+        await db.deleteStage(e0.id); // 仕上げの結果を保存したので、途中の結果はいらない
       }
     } catch (err) { console.warn('補正の結果を保存できませんでした', err); rec = null; }
   }
@@ -914,6 +937,81 @@ async function saveHq(e0, key, canvas, { pre = null, pre0 = null, K = null, face
     if (K?.wh && wh?.key === K.whKey && e0.whPack?.key !== K.whKey) { e0.whPack = { key: K.whKey, width: wh.res.width, height: wh.res.height, data: await packBytes(wh.res.data) }; added = true; }
     if (added && rec && e0.hq?.key === key) await put(rec);
   } catch (err) { dropPre(e0, pre); dropPre(e0, pre0); console.warn('補正の途中の結果を保存できませんでした', err); }
+}
+// ── 仕上げの途中の結果を、段ごとに保存する ──
+// 仕上げ（ノイズ除去と明るさ補正 → ブレ補正 → 全体 AI…）の途中で閉じた・アプリが落ちたとき、前は次に開くと全部を一から計算し直し、
+// 重い計算が一度に走って iPhone ではまた落ちることがあった。段が済むたびに保存して、次に開いたら済んだ段から続ける
+const RES_SCALE = 8192; // ブレ補正の差分（0〜1 の単位で ±0.5 くらい）を 16bit の整数で保存する（1/8192 刻み。8bit の写真では差が出ない）
+/** 段の結果を保存する（iPhone では保存し終えてから次の段へ。保存と次の段の計算でメモリを取り合わないように） */
+async function saveStage(e0, name, v) {
+  if (!e0.hqCache) return;
+  try {
+    let part;
+    if (name === 'll') part = { key: v.key, grain: v.grain, data: await packPixels(v.canvas, e0.W, e0.H) };
+    else if (name === 'db') {
+      const { width, height, data } = v.res; const q = new Int16Array(data.length);
+      for (let i = 0; i < data.length; i++) q[i] = Math.max(-32767, Math.min(32767, Math.round(data[i] * RES_SCALE)));
+      part = { key: v.key, width, height, data: await packBytes(q) };
+    } else if (name === 'wh') part = { key: v.key, width: v.res.width, height: v.res.height, data: await packBytes(v.res.data) };
+    else return;
+    const old = await db.getStage(e0.id).catch(() => null);
+    const same = old && old.ver === VERSION && (old.raw ?? null) === (e0.rawKey ?? null) && old.W === e0.W && old.H === e0.H && old.space === COLOR_SPACE && old.z === canZip;
+    await db.putStage(e0.id, { ...(same ? old : {}), ver: VERSION, raw: e0.rawKey ?? null, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, at: Date.now(), [name]: part });
+    await db.pruneHq(3, 'stage:'); // 大きいので、最近の 3 枚分だけ
+  } catch (err) { console.warn('仕上げの途中の結果を保存できませんでした', err); }
+}
+/** 保存しておいた途中の段を、計算の取っておき（E.hqCache）に入れる（読み込むのは使うとき） */
+function seedStage(rec) {
+  if (!rec || rec.ver !== VERSION || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
+  const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {}); const z = rec.z;
+  if (rec.ll && rec.ll.key === K.llKey && !c.ll) { const { data, grain } = rec.ll; c.lls = { key: K.llKey, grain, load: () => unpackPixels(data, z, E.W, E.H) }; }
+  if (rec.db && rec.db.key === K.dbKey && !c.db) {
+    const { data, width, height } = rec.db;
+    c.dbs = { key: K.dbKey, load: async () => {
+      const b = await unpack16(data, z, width * height * 3); if (!b) return null;
+      const f = new Float32Array(b.length); for (let i = 0; i < b.length; i++) f[i] = b[i] / RES_SCALE;
+      return { width, height, data: f };
+    } };
+  }
+  if (rec.wh && rec.wh.key === K.whKey && !c.wh && c.whs?.key !== K.whKey) { const { data, width, height } = rec.wh; c.whs = { key: K.whKey, load: async () => { const d = await unpackBytes(data, z, width * height * 3); return d && { width, height, data: d }; } }; }
+}
+async function unpack16(data, z, n) {
+  if (!(data instanceof Blob) || (z && !canZip)) return null;
+  try {
+    const buf = z ? await new Response(data.stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer() : await data.arrayBuffer();
+    return buf.byteLength === n * 2 ? new Int16Array(buf) : null;
+  } catch (err) { console.warn('保存したブレ補正の差分を読めませんでした', err); return null; }
+}
+/**
+ * 仕上げの計算をしている写真を覚えておく（計算の途中でアプリが落ちたかを、次に開いたとき知るため）。null で消す。
+ * 同じ写真・同じ値で続けて落ちたら、回数を数える（2 回落ちたら、次は自動では計算しない）
+ */
+function markHeavy(id, key) {
+  const m = prefs.get('heavy', null);
+  const mark = { id, key, n: m && m.id === id && m.key === key ? (m.n || 1) + 1 : 1, t: Date.now() };
+  prefs.set('heavy', mark);
+  return mark;
+}
+/** 計算が終わった・止めた（前の計算を止めてすぐ次を始めたときは、次の計算の印を消さない） */
+function clearHeavy(mark) { if (prefs.get('heavy', null)?.t === mark.t) prefs.set('heavy', null); }
+/** この写真・この値の計算の途中で、2 回続けてアプリが落ちたか */
+function crashedTwice(id, key) { const m = prefs.get('heavy', null); return !!m && m.id === id && m.key === key && m.n >= 2; }
+/** 2 回続けて落ちたときは、自動では計算せず、続けるかを聞く（写真は補正前のまま。編集の値は残っている） */
+function showPaused() {
+  if (E.pausedEl?.isConnected) return;
+  const close = () => box.remove();
+  const box = h('div', { class: 'suggest', role: 'region', 'aria-label': 'お知らせ' },
+    h('p', {}, h('b', {}, '仕上げの途中で、アプリが 2 回止まりました。'), '端末のメモリが足りなかったようです。ほかのアプリやタブを閉じてから「続ける」を押してください。編集した内容は残っています。'),
+    h('div', { class: 'suggest-actions' },
+      btn('続ける', () => { close(); E.hqForce = true; E.hq = null; scheduleLowlight(); }, 'primary small'),
+      btn('あとで', close, 'ghost small')));
+  for (const ev of ['pointerdown', 'dblclick', 'wheel']) box.addEventListener(ev, (e) => e.stopPropagation()); // 写真の上の操作にしない
+  E.pausedEl = box; E.stageEl?.append(box);
+}
+/** iPhone・iPad: 重い計算の前に、作り直せるもの（画素の写し・使っていない AI）を片付ける */
+function freeForHeavy() {
+  E.baseData = null; E.faceData = null;
+  releaseFaceRec(); releaseSkinSeg();
 }
 /** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
 async function loadHq(rec) {
@@ -2996,7 +3094,7 @@ document.addEventListener('paste', (e) => {
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => { if (e.dataTransfer?.files?.length && !e.target.closest?.('#drop')) { e.preventDefault(); importFiles(e.dataTransfer.files); } });
 // ふつうに閉じた・読み込み直した（pagehide が来た）ときは、次に開いたとき写真一覧から。ページが落ちたとき（iPhone でメモリが足りないときなど）は pagehide が来ないので、編集していた写真に戻る
-addEventListener('pagehide', () => { flushSave(); prefs.set('editing', null); });
+addEventListener('pagehide', () => { flushSave(); prefs.set('editing', null); prefs.set('heavy', null); }); // 自分で閉じたのは、落ちたのではない
 addEventListener('pageshow', (e) => { if (e.persisted && E) prefs.set('editing', E.id); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
 // ホーム画面のアプリとして「ファイルを開く」から起動されたとき
