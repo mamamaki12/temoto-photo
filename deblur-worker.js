@@ -97,25 +97,42 @@ async function init(onProgress) {
     const info = a?.info || {};
     gpu = !!a && !(info.isFallbackAdapter || a.isFallbackAdapter || /swiftshader|llvmpipe|software/i.test(`${info.vendor} ${info.architecture} ${info.description}`));
   } catch { gpu = false; }
+  onProgress(1); self.postMessage({ type: 'progress', phase: 'init', t: 0 });
   if (gpu) {
     try {
-      const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'] });
-      // GPU の計算が正しく動くか、小さな絵で確かめる（おかしければ CPU で）
-      const x = new Float32Array(3 * TILE * TILE).map((_, i) => 0.3 + 0.4 * ((i * 7919) % 97) / 97);
-      const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, TILE, TILE]) })).output.data;
-      let bad = false; for (let i = 0; i < y.length; i += 101) if (!Number.isFinite(y[i]) || Math.abs(y[i] - x[i]) > 0.6) { bad = true; break; }
-      if (!bad) {
+      // GPU の準備（シェーダーの組み立て）が終わらない端末がある（iPhone の Safari で、何分たっても進まなかった）。
+      // GPU_WAIT を過ぎたら、待たずに CPU で動かす
+      const s = await withTimeout(gpuSession(model), GPU_WAIT, 'GPU の準備に時間がかかりすぎました');
+      if (s) {
         const run1 = async (input, n) => (await s.run({ input: new ort.Tensor('float32', input, [n, 3, TILE, TILE]) })).output.data;
         backend = { size: 1, run: lowMemory(self.navigator) ? (input, n) => splitBatch(input, n, run1) : run1, dispose: () => s.release() };
         return backend;
       }
-      await s.release();
     } catch (e) { console.warn('WebGPU でブレ補正を動かせないので CPU で動かします', e); }
   }
   const pool = cpuPool(model);
-  await pool.ready;
+  await withTimeout(pool.ready, CPU_WAIT, 'ブレ補正の AI を開始できませんでした（端末のメモリが足りない可能性があります）');
   backend = pool;
   return backend;
+}
+const GPU_WAIT = 45_000; // GPU の準備を待つ上限
+const CPU_WAIT = 120_000; // CPU の AI の読み込みを待つ上限（26MB の WebAssembly の読み込みを含む）
+/** 待っても終わらなければ失敗にする（終わらない方の処理は放っておく。終わったときに片付ける） */
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+/** GPU の AI。計算が正しく動くか、小さな絵で確かめる（おかしければ null = CPU で） */
+async function gpuSession(model) {
+  const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'] });
+  const x = new Float32Array(3 * TILE * TILE).map((_, i) => 0.3 + 0.4 * ((i * 7919) % 97) / 97);
+  const y = (await s.run({ input: new ort.Tensor('float32', x, [1, 3, TILE, TILE]) })).output.data;
+  let bad = false; for (let i = 0; i < y.length; i += 101) if (!Number.isFinite(y[i]) || Math.abs(y[i] - x[i]) > 0.6) { bad = true; break; }
+  if (!bad) return s;
+  await s.release();
+  return null;
 }
 
 self.onmessage = async ({ data }) => {
