@@ -327,7 +327,7 @@ test('顔 AI の鍵は、開き直しても同じ（本人の写真を登録し�
   await page.goto('/');
   const key = (save) => page.evaluate(async (save) => {
     const m = await import('/face-photo.js'); const { defaultState } = await import('/state.js');
-    if (save) { await m.savePeople([{ id: 'p1', name: '人1', refs: [] }]); await m.savePeople([{ id: 'p1', name: '人1', refs: [{ id: 'r1' }] }]); } else await m.loadPeople();
+    if (save) { await m.savePeople([{ id: 'p1', name: '人1', refs: [] }]); await m.savePeople([{ id: 'p1', name: '人1', refs: [{ id: 'r1', crop: new Blob(['x'], { type: 'image/png' }) }] }]); } else await m.loadPeople(); // 本人の写真には顔の写真（crop）を入れる（ないものは読み込むとき外す）
     const s = defaultState(); s.faceai.faces = [{ x: 0.5, y: 0.4, on: true, person: 'p1' }];
     return m.faceaiKey(s);
   }, save);
