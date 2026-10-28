@@ -853,6 +853,7 @@ async function runLowlight() {
     // partial: 保存しておいた途中の結果から作った（書き出しに要るブレ補正の差分などがないので、書き出しでは計算し直す）
     E.hq = { key, canvas, res, faces, whole, bokeh, ctrl: null, saved: partial || undefined }; E.hqLast = { key, canvas }; hqBar(null);
     rebuildSource(); requestRender(); E.onHq?.();
+    if (E.autoPending) runAuto(); // 計算中に押した自動補正を、補正した写真で当てる
     // 前の結果の Canvas は、もう使わないので片付ける（iPhone は Canvas のメモリが少なく、使い切ると写真一覧に戻されることがある）
     if (old && old !== canvas) dropCanvas(old, E.base, E.hqCache.ll?.canvas, E.hqCache.fa?.canvas);
     // 人物・顔の AI を使えなかったとき（通信が止まっていたなど）の結果は保存しない（次に開いたとき、AI を使って計算し直す）
@@ -860,7 +861,7 @@ async function runLowlight() {
   } catch (err) {
     clearHeavy(mark);
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
-    E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.();
+    E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.(); E.autoPending = false;
     if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : lowlightActive(E.state.adj) ? 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています' : crispActive(E.state.adj) ? `髪・服をくっきりできませんでした（${err.message}）` : '背景をぼかせませんでした'); }
   }
 }
@@ -1172,6 +1173,33 @@ function smallSource() {
     E.small = c;
   }
   return E.small;
+}
+/**
+ * 自動補正が見る写真（長い辺 320）。暗所補正・ブレ補正をしているときは、補正したもの（画面に見えているもの）。
+ * 前は暗いままの元の写真で決めていたので、暗所補正で明るくした上にさらに露光・白レベルを足し、顔が白く絵のようになっていた。
+ * 暗所補正の計算中で、見本もまだないときは null（できてから当てる）
+ */
+function autoSource() {
+  const src = hqView() || toneView();
+  if (!src) return lowlightActive(E.state.adj) ? null : smallSource();
+  const s = Math.min(1, 320 / Math.max(src.width, src.height));
+  const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(src.width * s)); c.height = Math.max(1, Math.round(src.height * s));
+  ctx2d(c, { willReadFrequently: true }).drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+/** 自動補正の値（露光・白黒レベル・ホワイトバランスなど）を決める。暗所補正の計算中なら null */
+function autoValues() {
+  const c = autoSource(); if (!c) return null;
+  const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+  return autoAdjust(histogram(d), d);
+}
+/** ✦ 自動補正。暗所補正の計算中なら、できてから当てる（計算が終わった所で呼び直す） */
+function runAuto() {
+  const v = autoValues();
+  if (!v) { if (!E.autoPending) toast('明るさ補正ができてから、自動補正します'); E.autoPending = true; return; }
+  E.autoPending = false;
+  Object.assign(E.state.adj, v); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
+  if (E.tool === 'auto') buildPanel();
 }
 function sampleSource(s, t, rad = 2) {
   const c = smallSource(); const ctx = ctx2d(c, { willReadFrequently: true });
@@ -1586,10 +1614,7 @@ const PANELS = {
       h('h3', {}, '背景をぼかす'),
       toggle('背景をぼかす', bokehActive(E.state.adj), live((v) => { E.state.adj.bokeh = v ? 50 : 0; commit(); })).el,
       hint('AI が人物と写真の奥行きを見分けて、背景だけをやわらかくぼかします（髪・輪郭、透けたフリル・足元はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。初回は奥行きの AI（約 50MB）を読み込みます。'),
-      row(btn('✦ 自動補正', () => {
-        const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
-        Object.assign(E.state.adj, autoAdjust(histogram(d), d)); commit(); requestRender(); toast('自動補正しました（各スライダーで調整できます）');
-      }, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); buildPanel(); requestRender(); })),
+      row(btn('✦ 自動補正', runAuto, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); buildPanel(); requestRender(); })),
     ];
   },
   faceai() {
@@ -2047,8 +2072,8 @@ function skinPanel() {
     n ? hint('背景が赤いときは「色の幅」を下げる') : null,
     row(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
-      const c = smallSource(); const d = ctx2d(c, { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
-      Object.assign(E.state.adj, autoAdjust(histogram(d), d));
+      const v = autoValues(); if (!v) { toast('明るさ補正ができてから、もう一度押してください'); return; }
+      Object.assign(E.state.adj, v);
       E.state.look = { id: 'studio-clear', amount: 60 };
       if (n || !E.segFailed) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
       else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }
