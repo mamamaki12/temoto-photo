@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.8'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.35.9'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -531,7 +531,8 @@ async function openEditor(id) {
   if (E !== e0) return; // 読み込む間に別の写真・一覧に移った（closeEditor が片付け済み）
   if (hqc) { E.hq = { key, canvas: hqc, res: null, faces: null, whole: null, ctrl: null, saved: true }; E.hqLast = { key, canvas: hqc }; seedHqCache(await savedHq, hqc); }
   // 仕上げの途中で閉じた・落ちたときは、済んだ段（保存しておいたもの）から続ける
-  else if (key) { const st = await db.getStage(id).catch(() => null); if (E !== e0) return; seedStage(st); }
+  // 仕上がりの鍵が違うとき（本人の写真を外した直後に落ちた など）も、鍵の合う途中の結果は使う
+  else if (key) { seedHqCache(await savedHq, null); const st = await db.getStage(id).catch(() => null); if (E !== e0) return; seedStage(st); }
   buildEditor();
   rebuildSource(); rebuildMask();
   addEventListener('keydown', onKey); addEventListener('keyup', onKeyUp); addEventListener('resize', requestRender);
@@ -1025,23 +1026,26 @@ async function loadHq(rec) {
   return unpackPixels(rec.data, rec.z, rec.W, rec.H);
 }
 /**
- * 保存しておいた途中の結果を、計算の取っておき（E.hqCache）に入れる。canvas は読み込んだ補正の結果。
+ * 保存しておいた途中の結果を、計算の取っておき（E.hqCache）に入れる。canvas は読み込んだ補正の結果（仕上がりの鍵が今の編集と違うときは null）。
+ * 仕上がりが違っても、途中の結果はそれぞれの鍵が合えば使う（本人の写真を外した・顔 AI を変えた直後にアプリが落ちても、開き直したとき
+ * ノイズ除去・ブレ補正からやり直さず、変えた所だけ計算し直す）。
  * 顔 AI の前の写真は、使うときに読み込む（いつもメモリに置いておくと、iPhone で足りなくなる）
  */
 function seedHqCache(rec, canvas) {
   const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {});
-  if ((rec.raw ?? null) !== (E.rawKey ?? null) || rec.pfKey !== K.pfKey) return;
+  if (!rec || rec.ver !== VERSION || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
+  const z = rec.z;
   if (rec.pf?.key === K.pfKey) E.pfPack = rec.pf;
-  if (!K.fa && !K.bk) { const z = rec.z; const data = rec.data; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; } else if (rec.pf?.key === K.pfKey) { const { data } = rec.pf; const z = rec.z; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; }
-  if (K.fa && rec.fa?.key === K.faKey && Array.isArray(rec.fa.faces)) c.fa = { key: K.faKey, faces: rec.fa.faces, canvas: K.bk ? null : canvas, amount: E.state.faceai.amount };
+  // 顔 AI もぼかしも使わないときは、仕上がりが顔 AI の前の写真と同じ
+  if (canvas && !K.fa && !K.bk && rec.pfKey === K.pfKey) { const { data } = rec; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; } else if (rec.pf?.key === K.pfKey) { const { data } = rec.pf; c.pf = { key: K.pfKey, load: () => unpackPixels(data, z, E.W, E.H) }; }
+  if (K.fa && rec.fa?.key === K.faKey && Array.isArray(rec.fa.faces)) c.fa = { key: K.faKey, faces: rec.fa.faces, canvas: canvas && !K.bk ? canvas : null, amount: E.state.faceai.amount };
   if (K.bk && rec.bk?.key === K.bkKey) c.bk = { key: K.bkKey, res: rec.bk.res };
   if (rec.bs?.key === K.bsKey) c.bs = { key: K.bsKey, src: rec.bs.src };
   // 暗所補正・ブレ補正の後の写真（全体 AI を使っていなければ、顔 AI の前の写真と同じ）・全体 AI の差分・くっきりの重み
-  const z = rec.z;
   if (rec.a0?.key === K.bsKey) { E.a0Pack = rec.a0; const { data } = rec.a0; c.a0 = { key: K.bsKey, load: () => unpackPixels(data, z, E.W, E.H) }; } else if (!K.wh && c.pf) c.a0 = { key: K.bsKey, load: c.pf.load };
   if (rec.whs?.key === K.whKey) { E.whPack = rec.whs; const { data, width, height } = rec.whs; c.whs = { key: K.whKey, load: async () => { const d = await unpackBytes(data, z, width * height * 3); return d && { width, height, data: d }; } }; }
   if (rec.cm?.key === K.cmKey) c.cm = rec.cm;
-  c.lastA = { db: K.db ? E.state.adj.deblur : null, cr: K.cr ? E.state.adj.crisp : null };
+  if (rec.pfKey === K.pfKey) c.lastA = { db: K.db ? E.state.adj.deblur : null, cr: K.cr ? E.state.adj.crisp : null };
 }
 /** 書き出しの暗所補正の先読みの鍵（暗所補正を使わないときは null）。書き出しの補正の結果を決める値だけ */
 const preKey = (st) => (lowlightActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, deblurActive(st.adj)]) : null);
