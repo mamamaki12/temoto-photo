@@ -12,7 +12,7 @@ import { LAYOUTS, GRID_ASPECTS, MAX_GRID, defaultGrid, layoutById, cellRects, co
 import { applyRetouch } from './retouch.js';
 import { warpStroke, warpProtect, warpProtectBox, WARP_MAP_N, WARP_SHAPE, LIP_COLORS, NOSE_POINTS } from './brushfx.js';
 import { applyPortrait, portraitActive, tintSkin, PORTRAIT } from './portrait.js';
-import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg, personSeg, faceSeg, segFailedSince, releaseSkinSeg } from './skinseg.js';
+import { ensureSkinSeg, skinSegFor, findMouth, findEyes, findFaceAt, personMap, warmPersonSeg, personSeg, faceSeg, skinSeg, segFailedSince, releaseSkinSeg } from './skinseg.js';
 import { compose, layout } from './compose.js';
 import { monotoneSpline } from './curves.js';
 import * as db from './db.js';
@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.9'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.35.10'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -605,7 +605,7 @@ async function runTone(t) {
   try {
     while (E?.tone === t && t.want !== t.light) {
       const light = t.want;
-      const tone = light > 0 ? planTone(t.small, light, { person: await personSeg(t.small), face: await faceSeg(t.small) }) : null;
+      const tone = light > 0 ? planTone(t.small, light, { person: await personSeg(t.small), face: await faceSeg(t.small), skin: await skinSeg(t.small) }) : null;
       if (E?.tone !== t) return;
       // ふつうは GPU で（1 回数ミリ秒）。使えない端末では Worker で（1 回 0.5 秒くらい）
       let gpu = null;

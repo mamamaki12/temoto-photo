@@ -144,6 +144,14 @@ export async function segParts(img) {
   try { const r = await call({ kind: 'parts', w: img.width, h: img.height, data: new Uint8ClampedArray(img.data) }); return { w: r.w, h: r.h, parts: r.parts }; }
   catch (e) { console.warn('部位を見分ける AI を使えませんでした', e); return null; }
 }
+/** 部位分けの結果（同じ写真なら 1 回だけ AI を使う。顔の肌・肌の地図で共通） */
+const partsStore = new Map();
+async function partsOf(img) {
+  const key = fingerprint(img); if (partsStore.has(key)) return partsStore.get(key);
+  const r = await segParts(img);
+  if (r) { partsStore.set(key, r); if (partsStore.size > 8) partsStore.delete(partsStore.keys().next().value); }
+  return r;
+}
 /**
  * 顔の肌の地図（segParts の「顔の肌」）。暗い写真の自動の明るさで、顔の明るさを測るのに使う。
  * img: 小さく縮めた写真の画素（長い辺 512 くらい）。使えない端末では null
@@ -152,9 +160,27 @@ export async function segParts(img) {
 const faceSkinStore = new Map();
 export async function faceSeg(img) {
   const key = fingerprint(img); if (faceSkinStore.has(key)) return faceSkinStore.get(key);
-  const r = await segParts(img);
+  const r = await partsOf(img);
   const v = r && { m: r.parts.slice(3 * r.w * r.h, 4 * r.w * r.h), w: r.w, h: r.h };
   if (v) { faceSkinStore.set(key, v); if (faceSkinStore.size > 8) faceSkinStore.delete(faceSkinStore.keys().next().value); }
+  return v;
+}
+/**
+ * 肌の地図（segParts の「顔の肌」と「体の肌」の大きいほう）。暗い写真の補正で、足す粒を弱める所（首・胸元・腕・手も）。
+ * AI は、ブレた手・暗い腕を「体の肌」と言い切らない（0.4 くらい。IMG_9348 のこぶし）ので、2 倍して 1 までにする。使えない端末では null
+ * @returns {Promise<{m:Float32Array,w:number,h:number}|null>}
+ */
+const skinStore = new Map();
+export async function skinSeg(img) {
+  const key = fingerprint(img); if (skinStore.has(key)) return skinStore.get(key);
+  const r = await partsOf(img);
+  let v = null;
+  if (r) {
+    const n = r.w * r.h; const m = new Float32Array(n);
+    for (let i = 0; i < n; i++) m[i] = Math.min(1, 2 * Math.max(r.parts[2 * n + i], r.parts[3 * n + i]));
+    v = { m, w: r.w, h: r.h };
+    skinStore.set(key, v); if (skinStore.size > 8) skinStore.delete(skinStore.keys().next().value);
+  }
   return v;
 }
 /** 人物を見分ける AI を先に読み込んでおく（形を整えるブラシを開いたとき。なぞり始めで待たないように） */

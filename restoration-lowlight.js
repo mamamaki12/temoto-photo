@@ -40,9 +40,10 @@ export const fineScale = (tone) => (tone ? Math.min(1, FINE_GAIN / tone.gain) : 
 const FILM_GRAIN = 1.5;
 const GRAIN_REL = 0.45;
 const GRAIN_MAX = 4;
-// 顔の肌に足す粒の割合（ほかを 1 として）。顔を拡大したとき砂のようにザラザラ見えた（2026-10-27 ユーザーの声）。
+// 肌に足す粒の割合（ほかを 1 として）。顔を拡大したとき砂のようにザラザラ見えた（2026-10-27 ユーザーの声）。
+// 首・胸元・手も、顔と同じに弱める（顔だけ弱めると、胸元・こぶしが砂のように見えた。IMG_9321・9348、2026-10-28）。
 // 0 にすると肌がのっぺり塗ったように見える（2026-10-25「イラストっぽい」）ので、半分だけ
-const FACE_GRAIN = 0.5;
+const SKIN_GRAIN = 0.5;
 const binOf = (y) => Math.min(NOISE_BINS - 1, Math.max(0, Math.floor(y * NOISE_BINS * 1.6))); // 暗い側を細かく（0〜0.625）
 
 /** 平均化（端は、範囲に入る画素だけで平均する） */
@@ -436,8 +437,10 @@ const logLum = (r, g, b) => Math.log(0.2126 * toLinear(r) + 0.7152 * toLinear(g)
 /**
  * @param {{m:Float32Array,w:number,h:number}|null} [o.person] 人物の地図（0〜1。skinseg.js の personSeg）。
  *   人物（肌・衣装・髪）と背景で、照明の色の直し方を変える。ないときは、その間
+ * @param {{m:Float32Array,w:number,h:number}|null} [o.face] 顔の肌の地図（skinseg.js の faceSeg）。顔の明るさで明るくする量を決める
+ * @param {{m:Float32Array,w:number,h:number}|null} [o.skin] 肌の地図（skinseg.js の skinSeg。顔・首・腕・手）。足す粒を弱める（ないときは顔の肌）
  */
-export function planTone(small, light, { person = null, face = null, faceTarget = FACE_TARGET, sat = SAT_EXP, target = TARGET, wbPerson = WB_PERSON, wbBack = WB_BACK } = {}) {
+export function planTone(small, light, { person = null, face = null, skin = null, faceTarget = FACE_TARGET, sat = SAT_EXP, target = TARGET, wbPerson = WB_PERSON, wbBack = WB_BACK } = {}) {
   const tb = toneBase(small, person, wbPerson, wbBack, sat);
   const { mean, p999, base } = tb;
   // 自動の倍率: ベースの平均の明るさが TARGET くらい（明るい場所で撮った写真の肌に近い明るさ）になるように。12 倍まで
@@ -456,9 +459,10 @@ export function planTone(small, light, { person = null, face = null, faceTarget 
     else { fa = faceAuto(small, face, auto, withGain, faceTarget); tb.fa = { face, faceTarget, auto, v: fa }; }
   }
   if (fa) auto = Math.min(12, Math.max(1, auto ** (1 - FACE_WEIGHT) * fa ** FACE_WEIGHT));
-  // 顔の肌の地図（粒を弱める。grainScale）
-  if (face && tb.fm?.face !== face) tb.fm = { face, m: smoothMask(face) };
-  return { ...withGain(gainAt(auto)), auto, byFace: !!fa, face: face ? tb.fm.m : null };
+  // 粒を弱める肌の地図（grainScale）。肌の地図（顔・首・腕・手）がなければ顔の肌だけ
+  const sk = skin || face;
+  if (sk && tb.fm?.face !== sk) tb.fm = { face: sk, m: smoothMask(sk) };
+  return { ...withGain(gainAt(auto)), auto, byFace: !!fa, face: sk ? tb.fm.m : null };
 }
 /**
  * 明るさの曲線のうち、明るさ補正の値によらない部分（ベースの係数・明るい所・照明の色・人物の地図）。
@@ -898,19 +902,19 @@ const NR_FULL_GAIN = 6;
 export const autoNr = (tone) => NR_MIN + (1 - NR_MIN) * Math.min(1, Math.log(Math.max(1, tone ? tone.gain : 1)) / Math.log(NR_FULL_GAIN));
 
 /**
- * 粒の強さの割合（顔の肌は FACE_GRAIN、ほかは 1）
- * @param {{m:Float32Array,w:number,h:number}|null} face planTone の face（顔の肌の地図）
+ * 粒の強さの割合（肌は SKIN_GRAIN、ほかは 1）
+ * @param {{m:Float32Array,w:number,h:number}|null} face planTone の face（粒を弱める肌の地図）
  */
 export function grainScale(face, x, y, W, H) {
   if (!face) return 1;
   const f = sampleGrid(face.m, face.w, face.h, (x + 0.5) * face.w / W - 0.5, (y + 0.5) * face.h / H - 0.5);
-  return 1 - (1 - FACE_GRAIN) * Math.min(1, Math.max(0, f));
+  return 1 - (1 - SKIN_GRAIN) * Math.min(1, Math.max(0, f));
 }
 
 /**
  * 8bit の RGBA に、applyTone と同じ細かい粒を足す（ブレ補正のあとに足すとき。粒の後にブレ補正を当てると粒が筋になる）
  * @param {{y0:number,fullW:number,fullH?:number}} at data の 1 行目が写真全体の何行目か
- * @param {{m:Float32Array,w:number,h:number}|null} [face] 顔の肌の地図（planTone の face。粒を弱める）
+ * @param {{m:Float32Array,w:number,h:number}|null} [face] 肌の地図（planTone の face。粒を弱める）
  */
 export function addGrain(data, w, rows, at, grain, face = null) {
   if (!(grain > 0)) return data;
