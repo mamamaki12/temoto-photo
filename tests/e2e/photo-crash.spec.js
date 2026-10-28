@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { openTool, blurredPhoto } from './photo-helpers.js';
 
 // 仕上げ（ノイズ除去と明るさ補正・ブレ補正）の途中でアプリが落ちたとき（iPhone でメモリが足りないとき）
@@ -70,4 +71,39 @@ test('同じ計算の途中で 2 回落ちたら、自動では計算せず「�
   await note.getByRole('button', { name: '続ける' }).click();
   await expect(note).toBeHidden();
   await p2.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 180_000 });
+});
+
+test('本人の写真を外した直後に落ちても、開き直したとき顔 AI の前の写真（保存しておいたもの）から顔 AI だけやり直す', async ({ page }) => {
+  test.slow(); // 顔 AI を 2 回動かす
+  const PORTRAIT = { name: 'portrait.jpg', mimeType: 'image/jpeg', buffer: await readFile(new URL('../fixtures/portrait.jpg', import.meta.url)) };
+  await page.goto('/');
+  await page.evaluate(async (b64) => {
+    const m = await import('/face-photo.js');
+    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const [c] = await m.facesFromPhoto(new Blob([bin], { type: 'image/jpeg' }));
+    await m.savePeople([{ id: 'p1', name: 'まき', refs: ['r1', 'r2'].map((id) => ({ id, crop: c.crop, pts: c.pts, emb: c.emb })) }]);
+  }, PORTRAIT.buffer.toString('base64'));
+  await page.locator('#open-file').setInputFiles(PORTRAIT);
+  await page.waitForFunction(() => window.__temoto?.editor?.L, null, { timeout: 30_000 });
+  const id = await page.evaluate(() => window.__temoto.editor.id);
+  await openTool(page, '自動補正');
+  await set(page, '写真全体の明るさ補正', 60);
+  await openTool(page, '顔 AI');
+  await page.getByRole('button', { name: '1番の顔に顔 AI を使う' }).click();
+  await expect(page.getByText('まきの写真を参考にします')).toBeVisible({ timeout: 60_000 });
+  // 仕上げが済み、顔 AI の前の写真まで保存されたら
+  await expect.poll(() => page.evaluate(async (id) => { const r = await (await import('/db.js')).getHq(id); return !!r?.pf && r.key === window.__temoto.editor.hq?.key; }, id), { timeout: 180_000 }).toBe(true);
+  // 本人の写真を 1 枚外して（顔 AI を計算し直す）、すぐ落ちる
+  await page.locator('.faceai-ref').nth(1).getByRole('button', { name: 'この写真を外す' }).click();
+  await expect(page.locator('.faceai-ref')).toHaveCount(1);
+  const p2 = await crashAndReload(page);
+  await p2.waitForFunction((id) => window.__temoto?.editor?.id === id && window.__temoto.editor.L, id, { timeout: 30_000 });
+  expect(await p2.evaluate(() => window.__temoto.editor.hqCache?.pf?.key != null)).toBe(true);
+  const steps = [];
+  await p2.exposeFunction('__step', (t) => steps.push(t));
+  await p2.evaluate(() => new MutationObserver(() => { const e = document.querySelector('.hq-status'); if (e && !e.hidden) window.__step(e.textContent); })
+    .observe(document.querySelector('.hq-status'), { attributes: true, childList: true, subtree: true, characterData: true }));
+  await p2.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 180_000 });
+  expect(steps.some((t) => /ノイズ除去/.test(t))).toBe(false);
+  expect(steps.some((t) => /顔 AI/.test(t))).toBe(true);
 });
