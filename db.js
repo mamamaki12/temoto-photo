@@ -63,9 +63,54 @@ export async function persist() { try { return await navigator.storage?.persist?
 /**
  * 顔専用 AI に使う「本人の写真」（人ごとに、明るい所で撮った写真から切り出した顔）。写真をまたいで使う
  * [{ id, name, refs: [{ id, crop: Blob（512×512 の PNG）, pts: number[]（顔の 478 点。x, y の順。512 の座標） }] }]
+ * 顔の写真（crop）は 1 枚ずつ別の記録 faceai:ref:<id> に入れ、一覧（faceai:people）には入れない。
+ * iPhone（WebKit）は、IndexedDB から読んだ Blob を同じ記録に書き直すと、元の記録の Blob が消えて読めなくなる
+ * （1 枚外しただけで、ほかの写真が「?」になり、壊れた写真を読もうとして落ちていた）。顔の写真の記録は書き直さず、足す・消すだけにする
  */
-export const getPeople = () => tx(['blobs'], 'readonly', (b) => req(b.get('faceai:people'))).then((v) => (Array.isArray(v) ? v : []));
-export const putPeople = (list) => tx(['blobs'], 'readwrite', (b) => { b.put(list, 'faceai:people'); });
+const REF = 'faceai:ref:';
+const refRange = () => IDBKeyRange.bound(REF, `${REF}\uffff`);
+const stored = new WeakSet(); // 記録に入っている顔の写真（書き直さない）
+/** Blob を、IndexedDB の記録と関係ないメモリの Blob にする。読めなければ null */
+const detach = async (b) => { try { return new Blob([await b.arrayBuffer()], { type: b.type }); } catch { return null; } };
+export async function getPeople() {
+  const [list, keys, vals] = await tx(['blobs'], 'readonly', (b) => Promise.all([req(b.get('faceai:people')), req(b.getAllKeys(refRange())), req(b.getAll(refRange()))]));
+  const crops = new Map(keys.map((k, i) => [k, vals[i]])); // getAll と getAllKeys は同じ鍵の順
+  if (!Array.isArray(list)) return [];
+  let old = false; // 前のバージョンの形（顔の写真が一覧の中）。読めた写真だけ、今の形で書き直す
+  const out = [];
+  for (const p of list) {
+    const refs = [];
+    for (const r of p.refs || []) {
+      let crop = crops.get(REF + r.id);
+      if (crop) stored.add(crop);
+      else if (r.crop instanceof Blob) { old = true; crop = await detach(r.crop); }
+      if (crop) refs.push({ ...r, crop });
+    }
+    out.push({ ...p, refs });
+  }
+  if (old) await putPeople(out);
+  return out;
+}
+export async function putPeople(list) {
+  const keep = new Set(); const added = [];
+  const meta = list.map((p) => ({ ...p, refs: p.refs.map(({ crop, ...r }) => {
+    keep.add(REF + r.id);
+    if (crop && !stored.has(crop)) added.push([REF + r.id, crop]);
+    return r;
+  }) }));
+  await tx(['blobs'], 'readwrite', async (b) => {
+    for (const [k, crop] of added) b.put(crop, k);
+    b.put(meta, 'faceai:people');
+    for (const k of await req(b.getAllKeys(refRange()))) if (!keep.has(k)) b.delete(k); // 外した写真
+  });
+  for (const [, crop] of added) stored.add(crop);
+}
 /** 本人の写真を足している途中の記録（読み終えた写真の顔。途中でアプリが落ちても、次に開いたとき続きから足す）。null で消す */
-export const getPending = () => tx(['blobs'], 'readonly', (b) => req(b.get('faceai:pending'))).then((v) => v || null);
+export async function getPending() {
+  const v = await tx(['blobs'], 'readonly', (b) => req(b.get('faceai:pending')));
+  if (!v) return null;
+  // 続きを足す前に「何回目か」を書き直すので、顔の写真は記録と切り離しておく（上と同じ WebKit の理由）
+  for (const ph of v.photos || []) ph.cands = (await Promise.all(ph.cands.map(async (c) => ({ ...c, crop: await detach(c.crop) })))).filter((c) => c.crop);
+  return v;
+}
 export const putPending = (v) => tx(['blobs'], 'readwrite', (b) => { if (v) b.put(v, 'faceai:pending'); else b.delete('faceai:pending'); });

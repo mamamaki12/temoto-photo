@@ -35,7 +35,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.6'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.35.7'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -1730,7 +1730,7 @@ const PANELS = {
             }, 'small ghost')),
           p.refs.length ? h('div', { class: 'faceai-refs' }, p.refs.map((r) => {
             const url = URL.createObjectURL(r.crop);
-            return h('span', { class: 'faceai-ref' }, h('img', { src: url, alt: '本人の写真', width: 64, height: 64, onload: () => URL.revokeObjectURL(url) }),
+            return h('span', { class: 'faceai-ref' }, h('img', { src: url, alt: '本人の写真', width: 64, height: 64, onload: () => URL.revokeObjectURL(url), onerror: () => URL.revokeObjectURL(url) }),
               h('button', { type: 'button', class: 'x', 'aria-label': 'この写真を外す', onclick: () => save(list.map((q) => (q.id === p.id ? { ...q, refs: q.refs.filter((x) => x.id !== r.id),
                 // 自動で選んだ顔を外したら、よく似た別人として覚える（次から何人も写った写真で、その人を選ばない）
                 notMe: r.auto && r.emb ? [...(q.notMe || []), r.emb].slice(-MAX_REFS) : q.notMe } : q))) }, '×'));
