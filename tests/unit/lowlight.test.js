@@ -351,3 +351,16 @@ test('lowlight: 顔の肌の粒は半分（顔を拡大したときザラザラ�
   assert.ok(sd(a, 0, 24) < sd(b, 0, 24) * 0.65, `${sd(a, 0, 24)} / ${sd(b, 0, 24)}`);
   assert.ok(Math.abs(sd(a, 40, 64) - sd(b, 40, 64)) < 1e-9);
 });
+
+test('lowlight: 粒を弱める地図は、肌の地図（顔・首・胸元・手）があればそれ、なければ顔の肌（胸元・こぶしが砂のように見えないように）', () => {
+  const w = 120; const h = 80;
+  const dark = { width: w, height: h, data: rgba(w, h, () => [20, 16, 12]) };
+  const box = (x0, x1) => { const m = new Float32Array(w * h); for (let y = 20; y < 60; y++) for (let x = x0; x < x1; x++) m[y * w + x] = 1; return { m, w, h }; };
+  const face = box(20, 50); const skin = box(20, 100); // 肌の地図は顔のほかに右の手（70〜100）も入る
+  const f = planTone(dark, 50, { face }); const s = planTone(dark, 50, { face, skin });
+  assert.equal(f.gain, s.gain); // 明るくする量は顔の肌だけで決める（肌の地図で変えない）
+  assert.ok(grainScale(f.face, 85, 40, w, h) > 0.95); // 顔の地図だけ: 手の粒はそのまま
+  assert.ok(Math.abs(grainScale(s.face, 85, 40, w, h) - 0.5) < 0.05); // 肌の地図: 手も半分
+  assert.ok(Math.abs(grainScale(s.face, 35, 40, w, h) - 0.5) < 0.05);
+  assert.ok(grainScale(s.face, 110, 5, w, h) > 0.95); // 肌でない所はそのまま
+});

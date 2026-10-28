@@ -1,7 +1,7 @@
 import { restoreInWorker } from './restoration-client.js';
 import { measureNoise, planTone, grainFor, autoNr, BAND_MARGIN } from './restoration-lowlight.js';
 import { COLOR_SPACE, ctx2d, imageData } from './color.js';
-import { personSeg, faceSeg } from './skinseg.js';
+import { personSeg, faceSeg, skinSeg } from './skinseg.js';
 import { workerCount } from './cores.js';
 
 // 一度にWorkerへ送る範囲を限定する。3画素の探索+1画素のパッチ分を重ねて継ぎ目を防ぐ。
@@ -120,8 +120,9 @@ export async function enhancePhoto({ width, height, read, small }, { nr, light, 
   // 顔が写っていれば、顔の肌の明るさで明るくする量を決める（planTone）
   const person = light > 0 ? await personSeg(small) : null;
   const face = light > 0 ? await faceSeg(small) : null;
+  const skin = light > 0 ? await skinSeg(small) : null; // 足す粒を弱める所（顔・首・胸元・手）
   check();
-  const tone = light > 0 ? planTone(small, light, { person, face }) : null;
+  const tone = light > 0 ? planTone(small, light, { person, face, skin }) : null;
   // ノイズ軽減の強さも、明るくする量に合わせる（スライダー 50 で自動の強さ）。
   // 明るくする量は、明るさ補正 50 のとき（写真ごとの自動の量）で決める。明るさのスライダーを動かしただけでノイズの取り方まで変わると、
   // 取っておいたノイズ除去の結果（cache.bands）が使えず、毎回最初からやり直しになる
