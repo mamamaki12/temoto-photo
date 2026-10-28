@@ -289,3 +289,41 @@ test('顔 AI: 登録した人（名前・写真・顔の特徴）は端末に保
   expect(await page.evaluate(() => window.__temoto.state.faceai.faces.map((f) => [f.on, f.person]))).toEqual([[true, 'p1']]);
   await expect(page.locator('#fa-p-0')).toHaveValue('p1');
 });
+
+test('顔 AI: 本人の写真を 1 枚外しても、ほかの写真は消えない（顔の写真は 1 枚ずつ別の記録。一覧を書き直しても写真の記録は書き直さない）', async ({ page }) => {
+  await open(page);
+  // 前のバージョンの形（顔の写真が一覧の中）で 3 枚保存しておく → 開いたとき今の形に移す
+  await page.evaluate(async (b64) => {
+    const m = await import('/face-photo.js');
+    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)); const blob = new Blob([bin], { type: 'image/jpeg' });
+    const [c] = await m.facesFromPhoto(blob);
+    const refs = ['r1', 'r2', 'r3'].map((id) => ({ id, crop: c.crop, pts: c.pts, emb: c.emb }));
+    const d = await new Promise((res) => { const r = indexedDB.open('temoto-photo', 1); r.onsuccess = () => res(r.result); });
+    await new Promise((res) => { const t = d.transaction(['blobs'], 'readwrite'); t.objectStore('blobs').put([{ id: 'p1', name: 'まき', refs }], 'faceai:people'); t.oncomplete = res; });
+  }, PORTRAIT.buffer.toString('base64'));
+  await page.reload();
+  await page.locator('#open-file').setInputFiles({ ...PORTRAIT, name: 'other.jpg' });
+  await page.waitForFunction(() => window.__temoto.editor?.proj?.name?.startsWith('other'), null, { timeout: 30000 });
+  await openTool(page, '顔 AI');
+  const imgs = page.locator('.faceai-ref img');
+  await expect(imgs).toHaveCount(3, { timeout: 30000 });
+  const stored = () => page.evaluate(async () => {
+    const d = await new Promise((res) => { const r = indexedDB.open('temoto-photo', 1); r.onsuccess = () => res(r.result); });
+    return new Promise((res) => {
+      const s = d.transaction(['blobs']).objectStore('blobs'); const out = {};
+      s.get('faceai:people').onsuccess = (e) => { out.inList = e.target.result.flatMap((p) => p.refs.filter((r) => r.crop).map((r) => r.id)); };
+      s.getAllKeys(IDBKeyRange.bound('faceai:ref:', 'faceai:ref:￿')).onsuccess = (e) => { out.keys = e.target.result; res(out); };
+    });
+  });
+  expect(await stored()).toEqual({ inList: [], keys: ['faceai:ref:r1', 'faceai:ref:r2', 'faceai:ref:r3'] });
+  await page.locator('.faceai-ref').nth(1).getByRole('button', { name: 'この写真を外す' }).click();
+  await expect(imgs).toHaveCount(2);
+  await expect.poll(() => imgs.evaluateAll((a) => a.map((i) => i.complete && i.naturalWidth > 0))).toEqual([true, true]);
+  expect(await stored()).toEqual({ inList: [], keys: ['faceai:ref:r1', 'faceai:ref:r3'] });
+  // 開き直しても 2 枚とも読める
+  const people = await page.evaluate(async () => {
+    const db = await import('/db.js');
+    return Promise.all((await db.getPeople()).flatMap((p) => p.refs.map(async (r) => [r.id, (await createImageBitmap(r.crop)).width])));
+  });
+  expect(people).toEqual([['r1', 512], ['r3', 512]]);
+});

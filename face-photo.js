@@ -309,7 +309,7 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
     const p = await prepare(img, g.pts);
     p.seg = await segParts(toImageData(p.crop)); // 切り出した顔の髪（AI の髪も当てる。hairMask）
     const refs = [];
-    for (const r of list.find((q) => q.id === f.person)?.refs || []) refs.push(await loadRef(r));
+    for (const r of list.find((q) => q.id === f.person)?.refs || []) { try { refs.push(await loadRef(r)); } catch (e) { console.warn('本人の写真を読めませんでした', e); } }
     prepared.push(p); jobs.push({ crop: Float32Array.from(p.crop), pts: p.pts, refs });
     // 髪だけ、顔を小さく（1.5 倍広く）切り出してもう一度 AI に通す（顔のすぐまわりより外の髪も、一本一本が出る。顔は上の切り出しの結果を使う）
     const Mw = widenMatrix(p.M, WIDE); const wcrop = cropFace(img, Mw);
