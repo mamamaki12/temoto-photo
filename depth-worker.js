@@ -4,7 +4,7 @@
 // 受け取る: { rgba: Uint8ClampedArray（RGBA、w×h。長い辺 512 くらいに縮めた写真）, w, h }
 // 返す: { type: 'progress', t } … { type: 'result', depth: { m: Float32Array（SIDE×SIDE。0〜1、大きいほど手前）, w, h } } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
-import { limitOrtMemory, outOfMemory } from './cores.js';
+import { limitOrtMemory, lowMemory, outOfMemory } from './cores.js';
 import { DEPTH_SIDE as SIDE } from './bokeh.js';
 
 limitOrtMemory(512); // 動かすと約 300MB
@@ -56,8 +56,11 @@ self.onmessage = async ({ data }) => {
   try {
     ort.env.wasm.wasmPaths = new URL('./vendor/ort/', import.meta.url).href;
     ort.env.wasm.numThreads = 1;
-    const model = await download((t) => self.postMessage({ type: 'progress', t: 0.6 * t }));
-    session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });
+    let model = await download((t) => self.postMessage({ type: 'progress', t: 0.6 * t }));
+    // iPhone・iPad では、メモリを少なく使う設定で（計算の結果は丸めの差だけ。ブレ補正の AI と同じ）
+    const lean = lowMemory(self.navigator) ? { graphOptimizationLevel: 'disabled', enableCpuMemArena: false, enableMemPattern: false } : {};
+    session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], ...lean });
+    model = null; // AI の中に写し終えたので、読み込んだデータは手放す
     self.postMessage({ type: 'progress', t: 0.7 });
     const input = toInput(data.rgba, data.w, data.h);
     const out = await session.run({ [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, SIDE, SIDE]) });
