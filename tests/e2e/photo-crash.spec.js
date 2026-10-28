@@ -74,7 +74,7 @@ test('同じ計算の途中で 2 回落ちたら、自動では計算せず「�
 });
 
 test('本人の写真を外した直後に落ちても、開き直したとき顔 AI の前の写真（保存しておいたもの）から顔 AI だけやり直す', async ({ page }) => {
-  test.slow(); // 顔 AI を 2 回動かす
+  test.slow(); // 顔 AI を 2 回動かす（CI でほかの重いテストと同時に走ると、1 回に 3 分ほどかかる）
   const PORTRAIT = { name: 'portrait.jpg', mimeType: 'image/jpeg', buffer: await readFile(new URL('../fixtures/portrait.jpg', import.meta.url)) };
   await page.goto('/');
   await page.evaluate(async (b64) => {
@@ -92,7 +92,7 @@ test('本人の写真を外した直後に落ちても、開き直したとき�
   await page.getByRole('button', { name: '1番の顔に顔 AI を使う' }).click();
   await expect(page.getByText('まきの写真を参考にします')).toBeVisible({ timeout: 60_000 });
   // 仕上げが済み、顔 AI の前の写真まで保存されたら
-  await expect.poll(() => page.evaluate(async (id) => { const r = await (await import('/db.js')).getHq(id); return !!r?.pf && r.key === window.__temoto.editor.hq?.key; }, id), { timeout: 180_000 }).toBe(true);
+  await expect.poll(() => page.evaluate(async (id) => { const r = await (await import('/db.js')).getHq(id); return !!r?.pf && r.key === window.__temoto.editor.hq?.key; }, id), { timeout: 400_000 }).toBe(true);
   // 本人の写真を 1 枚外して（顔 AI を計算し直す）、すぐ落ちる
   await page.locator('.faceai-ref').nth(1).getByRole('button', { name: 'この写真を外す' }).click();
   await expect(page.locator('.faceai-ref')).toHaveCount(1);
@@ -103,7 +103,7 @@ test('本人の写真を外した直後に落ちても、開き直したとき�
   await p2.exposeFunction('__step', (t) => steps.push(t));
   await p2.evaluate(() => new MutationObserver(() => { const e = document.querySelector('.hq-status'); if (e && !e.hidden) window.__step(e.textContent); })
     .observe(document.querySelector('.hq-status'), { attributes: true, childList: true, subtree: true, characterData: true }));
-  await p2.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 180_000 });
+  await p2.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 280_000 });
   expect(steps.some((t) => /ノイズ除去/.test(t))).toBe(false);
   expect(steps.some((t) => /顔 AI/.test(t))).toBe(true);
 });
