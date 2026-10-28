@@ -45,19 +45,19 @@ export async function depthMap(small, { signal, onProgress = () => {} } = {}) {
  */
 export async function bokehSource(image, W, H, { signal, onProgress = () => {} } = {}) {
   if (signal?.aborted) throw abortError();
-  const c = document.createElement('canvas'); c.width = W; c.height = H;
-  const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
-  const small = smallPixels(c, W, H); const person = await personSeg(small);
-  const face = person && await faceSeg(small); onProgress(0.3);
-  const depth = person && await depthMap(small, { signal, onProgress: (t) => onProgress(0.3 + 0.7 * t) }); onProgress(1);
-  if (signal?.aborted) { c.width = 0; c.height = 0; throw abortError(); }
-  if (!person) { c.width = 0; c.height = 0; return null; }
+  // 元の大きさの写しは作らない（iPhone では Canvas 1 枚で 70MB ほど。この後に奥行きの AI が動くので、メモリを空けておく）。
+  // 縮めるのは AI を待つ前に（待つ間に元の写真が片付けられても困らないように）
+  const small = smallPixels(image, W, H);
   // 4 分の 1 に縮める（なめらかに）
   const w = Math.max(1, Math.round(W / SCALE)); const h = Math.max(1, Math.round(H / SCALE));
   const s = document.createElement('canvas'); s.width = w; s.height = h;
-  const sx = ctx2d(s, { willReadFrequently: true }); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, w, h);
-  c.width = 0; c.height = 0;
+  const sx = ctx2d(s, { willReadFrequently: true }); sx.imageSmoothingQuality = 'high'; sx.drawImage(image, 0, 0, w, h);
   const img = sx.getImageData(0, 0, w, h, { colorSpace: COLOR_SPACE }); s.width = 0; s.height = 0;
+  const person = await personSeg(small);
+  const face = person && await faceSeg(small); onProgress(0.3);
+  const depth = person && await depthMap(small, { signal, onProgress: (t) => onProgress(0.3 + 0.7 * t) }); onProgress(1);
+  if (signal?.aborted) throw abortError();
+  if (!person) return null;
   return { w, h, rgba: img.data, person: { m: person.m, w: person.w, h: person.h }, face: face && { m: face.m, w: face.w, h: face.h }, depth };
 }
 
