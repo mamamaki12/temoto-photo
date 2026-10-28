@@ -336,3 +336,54 @@ test('顔 AI の鍵は、開き直しても同じ（本人の写真を登録し�
   await page.reload();
   expect(await key(false)).toBe(before);
 });
+
+test('暗い写真の補正の上の ✦ 自動補正は、補正した写真を見て値を決める（暗いままの写真で決めて、明るくしすぎない）。計算中に押したら、できてから当てる', async ({ page }) => {
+  await page.goto('/');
+  const b64 = await page.evaluate(async () => {
+    const w = 480; const h = 360; const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+    const img = x.createImageData(w, h); let seed = 7;
+    const rnd = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647 - 0.5; };
+    for (let i = 0; i < w * h; i++) {
+      const base = (i % w) < w / 2 ? [34, 22, 14] : [70, 46, 28]; const n = rnd() * 16;
+      img.data.set([base[0] + n, base[1] + n, base[2] + n, 255], i * 4);
+    }
+    x.putImageData(img, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  await page.locator('#open-file').setInputFiles({ name: 'dark.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') });
+  await page.waitForFunction(() => window.__temoto?.editor?.L);
+  await openTool(page, '自動補正');
+  // 暗いままの写真で決めた値（前の動き）。露光を大きく足す
+  const darkAuto = await page.evaluate(async () => {
+    const { autoAdjust, histogram } = await import('/auto.js');
+    const c = document.createElement('canvas'); const E = window.__temoto.editor; c.width = E.W; c.height = E.H; const x = c.getContext('2d'); x.drawImage(E.base, 0, 0);
+    const d = x.getImageData(0, 0, c.width, c.height).data; return autoAdjust(histogram(d), d);
+  });
+  expect(darkAuto.exposure).toBeGreaterThan(10);
+  for (const label of ['ノイズ軽減', '写真全体の明るさ補正']) {
+    const control = page.getByLabel(label, { exact: true }); await control.fill('50'); await control.dispatchEvent('change');
+  }
+  // 計算中に押す → まだ当たらず、できてから当たる
+  await page.getByRole('button', { name: '✦ 自動補正' }).click();
+  expect((await page.evaluate(() => window.__temoto.state.adj)).vibrance).toBe(0);
+  await page.waitForFunction(() => !!window.__temoto.editor.hq?.canvas, null, { timeout: 30_000 });
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.adj.vibrance)).toBe(8);
+  const adj = await page.evaluate(() => window.__temoto.state.adj);
+  // 明るくした写真で決めるので、露光・白レベルは暗いままの写真で決めた値よりずっと小さい（暗所補正の値はそのまま）
+  expect(adj.exposure).toBeLessThan(darkAuto.exposure / 2);
+  expect(adj.whites).toBeLessThanOrEqual(darkAuto.whites);
+  expect(adj.lowlight).toBe(50); expect(adj.noise).toBe(50);
+  // できてから押しても同じ値
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click();
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.adj.vibrance)).toBe(0);
+  await page.getByRole('button', { name: '✦ 自動補正' }).click();
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(adj.exposure);
+  // 暗所補正をしていない写真では、今までどおり（元の写真で決める）
+  for (const label of ['ノイズ軽減', '写真全体の明るさ補正']) {
+    const control = page.getByLabel(label, { exact: true }); await control.fill('0'); await control.dispatchEvent('change');
+  }
+  await page.getByRole('button', { name: '✦ 自動補正' }).click();
+  await expect.poll(async () => Math.abs((await page.evaluate(() => window.__temoto.state.adj.exposure)) - darkAuto.exposure)).toBeLessThanOrEqual(2); // 縮めた写真で決める分の差
+});
