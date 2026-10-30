@@ -1187,7 +1187,7 @@ export function gazePlan(img, op, at) {
       const yaw = e.pose?.[0] || 0; const sb = scleraBalance(img, lid, c, R);
       const good = sb && sb.contrast >= 1.4 && sb.wl + sb.wr >= 0.15;
       // AI の黒目の位置が実際の黒目からずれているとき（目線をそらした写真で多い）は、写真から探し直した位置で動かす
-      if (good) { const dc = sb.xc - c[0]; for (const q of ir) q[0] += dc; }
+      if (good) { const dcx = sb.xc - c[0]; const dcy = sb.yc - c[1]; for (const q of ir) { q[0] += dcx; q[1] += dcy; } }
       // カメラを見ている人は、顔が横を向いているぶん、黒目は白目の真ん中からカメラ側へ寄る（顔が右を向けば黒目は左へ）。
       // 白目を左右同じにすると、かえって顔の向きの方を見ているように見えるので、その寄りを残す（テスト写真でカメラを見ている 27 人で合わせた値: 1.8R × sin(yaw)）
       const ex = good ? (sb.b - GAZE_YAW * Math.sin(yaw)) * R : (lid[0][0] + lid[8][0]) / 2 - 0.55 * R * Math.sin(yaw) + 0.08 * R - c[0];
@@ -1195,7 +1195,7 @@ export function gazePlan(img, op, at) {
       const ey = (lid[4][1] + lid[12][1]) / 2 - 0.03 * R - c[1];
       // 動かす先は、白目の真ん中から顔の向きのぶんを少しだけ寄せた所（全部寄せると、写真ではかえって反対へ目をそらしたように見える。顔の向きの推定もぶれる）
       const mv = good ? (sb.b - GAZE_YAW_MOVE * Math.sin(yaw)) * R : ex;
-      eyes.push({ lid, iris: ir, R, open, ex, ey, mv });
+      eyes.push({ lid, iris: ir, R, open, ex, ey, mv, axis: sb?.axis || [1, 0] });
     }
     if (!eyes.length || skip) continue;
     // 両目の動かす量は、それぞれの目で測った量と 2 つの平均の半々（片方の測り間違いで寄り目・離れ目にならないように）。縦は平均
@@ -1212,7 +1212,9 @@ export function gazePlan(img, op, at) {
       // 自動で動かす量は黒目の半径の 1.5 倍まで（それより大きいのは測り間違い。もっと動かしたいときは矢印で）
       if (al > 1.5 * e.R) { ax *= 1.5 * e.R / al; ay *= 1.5 * e.R / al; }
       e.auto = [ax * k / e.R, ay * k / e.R];
-      e.delta = [ax * k * op.amt + (op.tune?.[0] || 0) * Rm, ay * k * op.amt + (op.tune?.[1] || 0) * Rm];
+      // 動かす向きは目の軸（目頭→目尻）に沿って（顔が傾いた写真で、横にまっすぐ動かすと黒目がまぶたに食い込む）。矢印の左右も軸に沿い、上下はそれと直角
+      const [ca, sa] = e.axis; const mx1 = ax * k * op.amt + (op.tune?.[0] || 0) * Rm; const my1 = ay * k * op.amt + (op.tune?.[1] || 0) * Rm;
+      e.delta = [mx1 * ca - my1 * sa, mx1 * sa + my1 * ca];
     }
     plan.push(eyes);
   }
@@ -1629,33 +1631,39 @@ export function mouthMasks(img, polys, at = { W: img.width, H: img.height, ox: 0
 export function scleraBalance(img, lid, c, R) {
   const d = img.data; const W = img.width; const H = img.height;
   const ex = (lid[0][0] + lid[8][0]) / 2; const ey = (lid[4][1] + lid[12][1]) / 2;
-  let x0 = Infinity; let x1 = -Infinity; for (const [x] of lid) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); }
-  const X0 = Math.max(0, Math.floor(x0)); const X1 = Math.min(W - 1, Math.ceil(x1)); const nx = X1 - X0 + 1; if (nx < 4) return null;
+  // 目の軸（目頭→目尻）に沿って測る（顔が傾いた写真では、横の行で数えると帯がまぶたの外へ出て、白目の左右が正しく数えられない）
+  const ang = Math.atan2(lid[8][1] - lid[0][1], lid[8][0] - lid[0][0]); const ca = Math.cos(ang); const sa = Math.sin(ang);
+  let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity; for (const [x, y] of lid) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const X0 = Math.max(0, Math.floor(x0)); const X1 = Math.min(W - 1, Math.ceil(x1)); const Y0 = Math.max(0, Math.floor(y0)); const Y1 = Math.min(H - 1, Math.ceil(y1));
+  let u0 = Infinity; let u1 = -Infinity; for (const [x, y] of lid) { const u = (x - c[0]) * ca + (y - c[1]) * sa; u0 = Math.min(u0, u); u1 = Math.max(u1, u); }
+  const U0 = Math.floor(u0); const nx = Math.ceil(u1) - U0 + 1; if (nx < 4) return null;
   const px = []; let si = 0; let ni = 0;
-  for (let y = Math.max(0, Math.round(c[1] - 0.4 * R)); y <= Math.min(H - 1, Math.round(c[1] + 0.4 * R)); y++) for (let x = X0; x <= X1; x++) {
+  for (let y = Y0; y <= Y1; y++) for (let x = X0; x <= X1; x++) {
+    const u = (x + 0.5 - c[0]) * ca + (y + 0.5 - c[1]) * sa; const v = -(x + 0.5 - c[0]) * sa + (y + 0.5 - c[1]) * ca;
+    if (Math.abs(v) > 0.4 * R) continue;
     if (!inPoly(ex + (x + 0.5 - ex) * 1.1, ey + (y + 0.5 - ey) * 1.1, lid)) continue;
     const k = (y * W + x) * 4; const L = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
-    if (Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1]) < 0.6 * R) { si += L; ni++; }
-    px.push([x - X0, L]);
+    if (Math.hypot(u, v) < 0.6 * R) { si += L; ni++; }
+    const i = Math.floor(u) - U0; if (i >= 0 && i < nx) px.push([i, L]);
   }
   if (!ni || px.length < 6) return null;
   const iris = si / ni; const Ls = px.map((p) => p[1]).sort((a, b) => a - b); const hi = Ls[Math.floor(Ls.length * 0.9)];
   const th = iris + 0.45 * (hi - iris);
-  // 列ごとの白目の量（帯の中の白い画素の数）と、まぶたの内側の画素の数
+  // 列（軸に沿った位置）ごとの白目の量（帯の中の白い画素の数）と、まぶたの内側の画素の数
   const wc = new Float32Array(nx); const nc = new Float32Array(nx);
   for (const [i, L] of px) { wc[i] += smooth((L - th) / Math.max(1, 0.3 * (hi - iris))); nc[i]++; }
   // 黒目の位置を探し直す: 幅 1.8R の窓の中に白目がいちばん少ない所（同じくらいなら AI の黒目の位置に近い所）
-  const hw = Math.round(0.9 * R); let best = Infinity; let xc = c[0];
+  const hw = Math.round(0.9 * R); let best = Infinity; let uc = 0;
   for (let i = 0; i < nx; i++) {
     let w = 0; let n = 0; for (let j = Math.max(0, i - hw); j <= Math.min(nx - 1, i + hw); j++) { w += wc[j]; n += nc[j]; }
     if (n < 0.5 * (2 * hw + 1)) continue;
-    const cost = w / Math.max(1, n) + 0.04 * Math.abs(X0 + i + 0.5 - c[0]) / R;
-    if (cost < best) { best = cost; xc = X0 + i + 0.5; }
+    const u = U0 + i + 0.5; const cost = w / Math.max(1, n) + 0.04 * Math.abs(u) / R;
+    if (cost < best) { best = cost; uc = u; }
   }
-  if (Math.abs(xc - c[0]) > 1.2 * R) xc = c[0];
-  // 白目の幅: 黒目の外で、白い画素が多い列の数（目尻・目頭へ向かって目が細くなっても、横の幅として数える）
+  if (Math.abs(uc) > 1.2 * R) uc = 0;
+  // 白目の幅: 黒目の外で、白い画素が多い列の数（目尻・目頭へ向かって目が細くなっても、軸に沿った幅として数える）
   let wl = 0; let wr = 0;
-  for (let i = 0; i < nx; i++) { if (!nc[i]) continue; const dx = X0 + i + 0.5 - xc; const w = smooth((wc[i] / nc[i] - 0.25) / 0.3); if (dx < -0.9 * R) wl += w; else if (dx > 0.9 * R) wr += w; }
+  for (let i = 0; i < nx; i++) { if (!nc[i]) continue; const du = U0 + i + 0.5 - uc; const w = smooth((wc[i] / nc[i] - 0.25) / 0.3); if (du < -0.9 * R) wl += w; else if (du > 0.9 * R) wr += w; }
   wl /= R; wr /= R;
-  return { b: (wr - wl) / 2, wl, wr, xc, contrast: hi / Math.max(1, iris) };
+  return { b: (wr - wl) / 2, wl, wr, xc: c[0] + uc * ca, yc: c[1] + uc * sa, axis: [ca, sa], contrast: hi / Math.max(1, iris) };
 }
