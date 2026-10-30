@@ -1068,8 +1068,10 @@ function moveIris(img, eye, delta) {
     // 上まぶたのすぐ下（0.25R）・下まぶたのすぐ上（0.1R）は、伸び縮みでなく黒目といっしょにすべらせる:
     // 本物の黒目は測った円よりまぶたの下まで続いているので、円の外の上下の弧（まぶたの影の中の黒目）も黒目について動く。
     // 伸ばすと、その弧が動かした黒目の左上・左下から、まぶたに沿った黒いとげ（鉤）になって残る。すべらせれば動かした黒目の上下につながる
+    // （離れる側だけ。向かう側は縮めた白目がそのまま黒目のふちにつながる。向かう側まですべらせると、測った円より下に広い本物の黒目が、新しい黒目の右下から下まぶたに沿った鉤になって出る）
     const rUp = up[x] === up[x] ? smooth((Y - up[x]) / (0.25 * R)) : 1; const rLo = lo[x] === lo[x] ? smooth((lo[x] - Y) / Math.max(1, 0.1 * R)) : 1;
-    sx = X - dx + (sx - (X - dx)) * rUp * rLo;
+    const beh = smooth((sg * (nc[0] - X)) / (0.5 * R)); // 離れる側 1 → 向かう側 0（黒目の中心をまたいで 0.5R でなだらかに。中心の列では左右の写像がつながっている）
+    sx = X - dx + (sx - (X - dx)) * (1 - (1 - rUp * rLo) * beh);
     sx = Math.max(xl + 0.5, Math.min(xr - 0.5, sx)); // まぶたの外（肌）は読まない（黒目のふちのそばで、ずらした先が目の外になる行）
     px3(src, bw, bh, sx - 0.5, Y - 0.5, tmp); let s0 = tmp[0]; let s1 = tmp[1]; let s2 = tmp[2];
     let wf = 0;
@@ -1137,6 +1139,11 @@ function moveIris(img, eye, delta) {
       if (qx >= 0 && qy >= 0 && qx < bw && qy < bh && P[qi]) {
         const qc0 = Math.floor(qx); const opn = ((lo[qc0] - up[qc0]) || 0) / R; // その列のまぶたの間（広い所の角のそばは本物の黒目のふち。細い所だけ隠れていたとみなす）
         vis = smooth((D[qi] / R - 0.08) / 0.14) * Math.max(smooth((Math.min(Math.hypot(qx - cornerL[0], qy - cornerL[1]), Math.hypot(qx - cornerR[0], qy - cornerR[1])) / R - 0.15) / 0.15), smooth((opn - 0.4) / 0.3));
+        // ただし、読みに行った先が黒目の暗さ（白目の明るさでなく、肌でもない）なら、まぶたのそばでもそのまま使う。
+        // 隠れていたとみなして距離ごとの平均色に置き換えるのは、下まぶたの明るい線・目頭の肌のため。
+        // 細い目では黒目のふち全体がまぶたから 0.2R 以内なので、ふちのにじみ（2〜3 画素の明るさの変わり目）まで平均色の暗さに置き換わり、ふちが 1 画素の段々になっていた
+        // （向かう側のふちだけ。離れる側のふちは元から目頭・目尻の影やまぶたのきわに食い込んでいて、そのまま使うとアイラインの茶色い線が黒目のふちに入る）
+        if (vis < 1 && th < Infinity) { const Lq = src[qi * 3] + src[qi * 3 + 1] + src[qi * 3 + 2]; vis = Math.max(vis, smooth((th - Lq) / thw) * (1 - skinness(src[qi * 3], src[qi * 3 + 1], src[qi * 3 + 2], irisL, th)) * smooth((sg * (qx - oc[0])) / (0.3 * R))); }
       }
       const rc = ringC[Math.min(NRING - 1, Math.round(rn))];
       if (globalThis.GAZE_DEBUG_VIS) { o0 = 255 * vis; o1 = 255 * wi; o2 = rc[0]; out[o] = o0; out[o + 1] = o1; out[o + 2] = o2; continue; }
