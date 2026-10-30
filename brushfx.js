@@ -885,6 +885,12 @@ function px3(src, W, H, x, y, out) {
   for (let i = 0; i < 3; i++) { const t = src[a + i] + (src[b + i] - src[a + i]) * tx; const u = src[c + i] + (src[e + i] - src[c + i]) * tx; out[i] = t + (u - t) * ty; }
   return out;
 }
+/** 双一次補間で 1 チャンネルの値を読む */
+function px1(src, W, H, x, y) {
+  x = x < 0 ? 0 : x > W - 1 ? W - 1 : x; y = y < 0 ? 0 : y > H - 1 ? H - 1 : y;
+  const x0 = x | 0; const y0 = y | 0; const x1 = x0 + 1 < W ? x0 + 1 : x0; const y1 = y0 + 1 < H ? y0 + 1 : y0; const tx = x - x0; const ty = y - y0;
+  const t = src[y0 * W + x0] + (src[y0 * W + x1] - src[y0 * W + x0]) * tx; const u = src[y1 * W + x0] + (src[y1 * W + x1] - src[y1 * W + x0]) * tx; return t + (u - t) * ty;
+}
 const hash = (x, y) => { let h = (x * 374761393 + y * 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 /** 肌らしさ 0〜1（目の中の判定用）: 赤みが強く（R−B が明るさの 1 割以上）、黒目より明るい画素。白目は赤みがほぼなく、黒目は暗い。irisL: 黒目の明るさ（R+G+B）、th: 白目とみなす明るさ */
@@ -930,7 +936,7 @@ function moveIris(img, eye, delta) {
     }
     D[y * bw + x] = m;
   }
-  const nc = [c[0] + dx - bx, c[1] + dy - by]; const out = new Float32Array(src); const tmp = [0, 0, 0];
+  const nc = [c[0] + dx - bx, c[1] + dy - by]; const out = new Float32Array(src); const tmp = [0, 0, 0]; // nc, oc は下で写真の黒目に合わせて置き直す
   // 列ごとの、まぶたの内側の上端と下端
   // （画素の升目ではなく、まぶたの線との交点で小数まで。升目で数えると列ごとに段がついて、埋めた白目の上下のふちがギザギザになる）
   const up = new Float32Array(bw).fill(NaN); const lo = new Float32Array(bw).fill(NaN);
@@ -949,6 +955,8 @@ function moveIris(img, eye, delta) {
     if (ro < 0.6 * R) { si += L; ni++; } else if (ro > 1.2 * R) smp.push([L, i, (y + 0.5 - up[x]) / Math.max(1, lo[x] - up[x])]);
   }
   let scl = null; let sclN = 0; let th = Infinity; let thw = 1; // 白目とみなす明るさ（R+G+B）と、その境のなめらかさ
+  let mid = 0; let wmid = 1; // 黒目の色と白目の明るさの中間と、その境のなめらかさ（R+G+B）
+  const dk = new Float32Array(bw * bh); // 画素の暗さ（黒目と白目の中間より暗ければ +、明るければ −、±0.5。まぶたのきわ・まぶたの外は 0）
   if (ni && smp.length >= 8) {
     const Ls = smp.map((q) => q[0]).sort((p, q) => p - q); const hi = Ls[Math.floor(Ls.length * 0.9)]; th = si / ni + 0.6 * (hi - si / ni); thw = Math.max(3, 0.25 * (hi - si / ni));
     const acc = Array.from({ length: NB }, () => [0, 0, 0, 0]); const all = [0, 0, 0, 0]; let s2 = 0;
@@ -967,7 +975,20 @@ function moveIris(img, eye, delta) {
       for (; e < 1.6 * R; e += 1) { const q = y * bw + Math.floor(oc[0] + sg * e); if (!(q >= 0 && q < P.length) || !P[q] || D[q] < 0.1 * R) break; if (src[q * 3] + src[q * 3 + 1] + src[q * 3 + 2] >= th) { ok = true; break; } }
       if (ok && e >= 0.8 * R) ext.push(e);
     }
-    if (ext.length >= 3) { ext.sort((a, b) => a - b); Ri = Math.max(Ri, Math.min(1.5 * R, ext[ext.length >> 1] + 0.05 * R)); }
+    if (ext.length >= 3) { ext.sort((a, b) => a - b); Ri = Math.max(Ri, Math.min(1.25 * R, ext[ext.length >> 1] + 0.05 * R)); } // 1.25R まで（影の白目は黒目より少し明るいだけなので、黒目として測ってしまう）
+    // 黒目の円を写真に合わせる: AI の中心・半径のまわりで、円の中に暗い画素が多く・明るい画素が少ない円を探す（横の中心 ±0.6R、半径 0.9R〜1.25R、1 画素刻み。縦は細い目では上まぶたの影に引かれて決まらないので AI のまま）。
+    // 細い目（笑った目）では AI の黒目が実際より小さく・ずれて出て、円の外に本物の黒目のふちが残って暗い三日月に見えた。
+    // まぶたのきわ（0.1R）はまつげ・アイラインで暗いので数えない。目頭・目尻の影に引かれないよう、黒目の色と白目の明るさの中間より暗いかで見る
+    mid = (si / ni + th) / 2; wmid = Math.max(3, (th - si / ni) / 4);
+    for (let i = 0; i < dk.length; i++) dk[i] = P[i] && D[i] >= 0.1 * R ? smooth((mid - (src[i * 3] + src[i * 3 + 1] + src[i * 3 + 2])) / wmid + 0.5) - 0.5 : 0;
+    const score = (cx, cy, r) => { let s = 0; const r2 = r * r; for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(bh - 1, Math.ceil(cy + r)); y++) { const dy2 = (y + 0.5 - cy) ** 2; for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(bw - 1, Math.ceil(cx + r)); x++) if ((x + 0.5 - cx) ** 2 + dy2 < r2) s += dk[y * bw + x]; } return s; };
+    let best = [oc[0], oc[1], Ri]; let bs = score(oc[0], oc[1], Ri); const s0 = bs;
+    for (let r = Math.max(0.9 * R, Ri - 0.2 * R); r <= 1.25 * R; r += 1) for (const cy of [oc[1]]) for (let cx = oc[0] - 0.6 * R; cx <= oc[0] + 0.6 * R; cx += 1) {
+      const v = score(cx, cy, r) - 0.2 * Math.max(0, r - Ri); if (v > bs) { bs = v; best = [cx, cy, r]; } // 点が並ぶときは小さい方の円（大きいと角の影まで黒目として動く）
+    }
+    // 円が大きくなるほど暗い画素を拾いやすいので、AI の円より 5% 以上よくなったときだけ置き換える
+    if (globalThis.GAZE_DBG) globalThis.GAZE_DBG.push({ fit: { s0, bs, best, dk: Array.from(dk), bw, bh, bx, by } });
+    if (bs > s0 + 0.05 * Math.abs(s0) + 1) { oc[0] = best[0]; oc[1] = best[1]; Ri = Math.max(Ri, Math.min(1.25 * R, best[2])); nc[0] = oc[0] + dx; nc[1] = oc[1] + dy; }
   }
   // 埋める白目の明るさ: 反対側（黒目が向かう側）の白目は光の当たり方が違うことがある（目頭側は明るく、目尻側は影で灰色、など）。
   // 黒目が離れる側に元から見えていた白目（影でなく、白目の明るさのもの）があれば、その明るさに合わせる（暗くする方だけ、0.8 まで。影の側は白目で埋めるのが目的なので合わせない）
@@ -981,95 +1002,173 @@ function moveIris(img, eye, delta) {
     const med = (a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; };
     if (acc[0].length >= 6 && acc[1].length >= 6) fillGain = Math.max(0.8, Math.min(1, med(acc[1]) / med(acc[0])));
   }
-  if (globalThis.GAZE_DBG) globalThis.GAZE_DBG.push({ R, Ri, oc: [oc[0] + bx, oc[1] + by], nc: [nc[0] + bx, nc[1] + by], th, fillGain });
+  if (globalThis.GAZE_DBG) globalThis.GAZE_DBG.push({ R, Ri, c: [c[0], c[1]], oc: [oc[0] + bx, oc[1] + by], nc: [nc[0] + bx, nc[1] + by], th, fillGain });
+  // 動かし方（1.36）: 行ごとに横へ「伸び縮み」させる。
+  // 行の中は [離れる側の白目 | 黒目 | 向かう側の白目] なので、黒目（円。半径 Rm = 測った半径 + 1 割、ふちのにじみまで）はそのまま (dx, dy) ずらし、
+  // 向かう側の白目は黒目のふちとまぶたのきわの間で縮め、離れる側の白目は伸ばす（つなぎ目ができない。目頭目尻の影・まつげの影はその場所に残る）。
+  // 黒目の読みに行った先がまぶたの下に隠れていた所は、黒目の中心から同じ距離の画素の平均色（黒目は中心から同じ距離ならほぼ同じ色）。
+  // 離れる側で、伸ばした元の画素が暗いとき（黒目が目頭・目尻まで届いていて白目が元からない、黒目が実際より大きい、角の影）は白目で埋める:
+  // 向かう側の元の白目を幅を合わせて読む（伸び縮み）。向かう側に白目がなければ、この目の白目の色（まぶたの間の高さごと）で。角のそば・上まぶたの下は暗く。
+  // 以前の「向かう側の白目を黒目といっしょにまぶたの下へすべり込ませる」方式は、細い目（笑った目）で元の黒目の暗さが残って黒目が二重・横長に見え、
+  // 角の手前で埋めが止まって黒いくさびが残った（白目で埋める所を「まぶたの間が広い所」に限っていたため）
+  const Rm = Ri + 0.1 * R; const soft = Math.max(1, 0.15 * R); const NRING = Math.ceil(Rm + soft) + 2;
+  const ring = Array.from({ length: NRING }, () => [0, 0, 0, 0]);
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
-    if (!P[y * bw + x] && E[y * bw + x] <= 0) continue;
-    const X = x + 0.5; const Y = y + 0.5; const rx = X - nc[0]; const ry = Y - nc[1]; const r = Math.hypot(rx, ry);
-    let f = 1; let wm = 0; let wf = 0; let t = 0; let mx = 0; let my = 0; let ge = 6 * R;
-    if (r > Ri) {
-      // 進む側の白目は、押しつぶさず、黒目といっしょにまぶたの下へすべり込む（実際の目もそう動く。まぶたのふちで切れる）。
-      // 反対側（黒目が離れた所）の白目は、ふちまでの間で伸ばして埋める
-      const ux = rx / r; const uy = ry / r; const dl = Math.hypot(dx, dy); let ahead = smooth(((ux * dx + uy * dy) / dl + 0.3) / 0.6);
-      // ただし目頭・目尻の角のそば（まぶたの間が狭い所）は、すべり込ませると白目が角まで白くとがって見えるので、ふちまでの間で縮める
-      ahead *= smooth((((lo[x] - up[x]) || 0) / R - 0.3) / 0.4) * smooth((Math.min(Math.hypot(X - cornerL[0], Y - cornerL[1]), Math.hypot(X - cornerR[0], Y - cornerR[1])) / R - 0.2) / 0.3);
-      if (ahead < 1) {
-        let g = 0; // この画素からまぶたのふちまでの距離（黒目の中心から見た向きに）
-        while (g < 6 * R && inside(X + ux * g, Y + uy * g)) g += 0.5;
-        f = ahead + (1 - ahead) * g / (r - Ri + g); ge = g;
-        // 黒目が離れた側は、まぶたのきわの影を伸ばすだけだと白目に見えない（黒目がまだそちらにあるように見える）ので、白目で埋める:
-        // 反対側（黒目が向かう側）の元の白目を、黒目の中心で左右に折り返して持ってくる（黒目のふちからの横の距離はそのまま。
-        // 縦は、上まぶたと下まぶたの間の同じ割合の所から。まぶたのきわの影・まつげが白目の真ん中に来ないように）。
-        // 折り返した先が黒目・まぶたのきわで使えないときは、この目の白目の色（まぶたの間の高さごとの平均）で
-        t = (Y - up[x]) / Math.max(1, lo[x] - up[x]);
-        wf = (1 - ahead) * Math.min(1, Math.abs(dx) / (0.4 * R)) * smooth(D[y * bw + x] / (0.12 * R)) * smooth((ry / R + 0.8) / 0.3) * smooth(t / 0.35) * smooth((1 - t) / 0.15);
-        wf *= smooth((Math.min(Math.hypot(X - cornerL[0], Y - cornerL[1]), Math.hypot(X - cornerR[0], Y - cornerR[1])) / R - 0.2) / 0.3);
-        wf *= smooth((((lo[x] - up[x]) || 0) / R - 0.3) / 0.4); // まぶたの間が狭い所（角へ向かって細くなる所）も元のまま
-        // ここの元の画素が肌（目尻・目頭の下まぶたのふち・目頭の肉）なら白目で塗らない（AI のまぶたの線の内側にも肌が入る）
-        { const o0 = (y * bw + x) * 3; wf *= 1 - skinness(src[o0], src[o0 + 1], src[o0 + 2], si / Math.max(1, ni), th); }
-        // 黒目のすぐ外（0.6R まで）は、白目で埋める行では黒目といっしょにずらした画素にする（伸ばした元の画素だと、元の黒目の暗さが残って見える）。
-        // 埋める白目は黒目のきわから 0.4R かけてなだらかに
-        f += (1 - f) * wf * smooth((Ri + 0.6 * R - r) / (0.3 * R));
-        wf *= smooth((r - Ri) / (0.4 * R));
-        // 折り返しは、そのまま裏返すのではなく「伸び縮み」させる: 黒目が離れた側（新しい黒目のふちから目尻・目頭まで）の幅に、
-        // 反対側の元の白目（元の黒目のふちから目尻・目頭まで）の幅を合わせて読む。そのまま裏返すと、細い目（笑った目・目尻の長い目）では
-        // 読みに行った先が黒目やまぶたの外に当たって白目の色のべた塗りになり、灰色のくさび形・ざらつきが目立った。
-        // 伸び縮みなら、反対側に白目が少しでもあれば実際の白目の画素（きわの影・質感ごと）で埋まる
-        if (wf > 0) {
-          // 黒目のふちは円なので、この行での黒目の半幅から測る（黒目の半径で測ると、埋めた白目と黒目の境がまっすぐな縦線になる）
-          const sg = dx > 0 ? 1 : -1; const hw = Math.sqrt(Math.max(0, Ri * Ri - ry * ry)); const bxs = Math.abs(rx) - hw; // 新しい黒目のふちから、この画素までの横の距離
-          let xb = X; while (Math.abs(xb - X) < 6 * R && inside(xb - sg, Y)) xb -= sg; // 離れた側のまぶたのきわ
-          const Wb = Math.max(1, Math.abs(xb - (nc[0] - sg * hw)));
-          const sa = Math.floor(oc[0] + sg * Ri);
-          if (sa >= 0 && sa < bw && lo[sa] > up[sa]) {
-            my = up[sa] + t * (lo[sa] - up[sa]); const xa0 = oc[0] + sg * Math.sqrt(Math.max(0, Ri * Ri - (my - oc[1]) ** 2));
-            // 読みに行く先の明るさ（肌の画素は白目でないので、黒目と同じ扱い＝暗いことにする）
-            const lum = (xq) => { const q = Math.floor(my) * bw + Math.floor(xq); if (!(q >= 0 && q < src.length / 3 && P[q])) return -1; px3(src, bw, bh, xq - 0.5, my - 0.5, tmp); const L = tmp[0] + tmp[1] + tmp[2]; return L - (L - si / Math.max(1, ni)) * skinness(tmp[0], tmp[1], tmp[2], si / Math.max(1, ni), th); };
-            let xa1 = xa0; while (Math.abs(xa1 - xa0) < 6 * R && inside(xa1 + sg, my)) xa1 += sg; // 元の白目の、向かう側のきわ
-            const Wa = Math.abs(xa1 - xa0);
-            mx = xa0 + sg * Math.min(1, Math.max(0, bxs / Wb)) * Wa; const mi = Math.floor(my) * bw + Math.floor(mx);
-            // 読みに行った先が白目の明るさでなければ（黒目・まぶたの影）、白目の色で埋める方へ
-            if (my >= 0 && my < bh && mx >= 0 && mx < bw && P[mi]) wm = smooth((Wa - 1.5) / 2) * smooth((lum(mx) - th) / thw + 0.5);
+    const i = y * bw + x; if (!P[i] || D[i] < 0.12 * R) continue; const ro = Math.hypot(x + 0.5 - oc[0], y + 0.5 - oc[1]); if (ro >= NRING - 1) continue;
+    if (src[i * 3] + src[i * 3 + 1] + src[i * 3 + 2] >= th) continue; // 白目の明るさの画素は黒目でない（ふちの外の白目を混ぜると、隠れていた所が明るい弧になる）
+    const k = Math.round(ro); const a = ring[k]; a[0] += src[i * 3]; a[1] += src[i * 3 + 1]; a[2] += src[i * 3 + 2]; a[3]++;
+  }
+  const irisL = si / Math.max(1, ni);
+  const ringC = ring.map((a) => (a[3] >= 2 ? [a[0] / a[3], a[1] / a[3], a[2] / a[3]] : null));
+  for (let k = 0; k < NRING; k++) if (!ringC[k]) { let best = null; for (let j = 1; j < NRING && !best; j++) best = ringC[k - j] || ringC[k + j]; ringC[k] = best || [irisL / 3, irisL / 3, irisL / 3]; }
+  // 行ごとの、まぶたの内側の続き（run）の左端・右端（画素の列）
+  const runL = new Int16Array(bw * bh).fill(-1); const runR = new Int16Array(bw * bh).fill(-1);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    if (!P[y * bw + x]) continue; let r = x; while (r + 1 < bw && P[y * bw + r + 1]) r++;
+    for (let k = x; k <= r; k++) { runL[y * bw + k] = x; runR[y * bw + k] = r; } x = r;
+  }
+  // 行ごとの、まぶたの内側の左端・右端（まぶたの線との交点で小数まで。画素の升目で数えると、傾いた目では行ごとに 1〜2 画素の段がつき、
+  // それを基準に伸び縮みさせた白目と埋めた白目のふちがギザギザになる）
+  const rowL = new Float32Array(bh).fill(NaN); const rowR = new Float32Array(bh).fill(NaN);
+  for (let y = 0; y < bh; y++) {
+    const Y = y + 0.5; let a = Infinity; let b = -Infinity;
+    for (let i = 0; i < lp.length; i++) { const [px, py] = lp[i]; const [qx, qy] = lp[(i + 1) % lp.length]; if ((py > Y) === (qy > Y)) continue; const xx = px + (qx - px) * (Y - py) / (qy - py); a = Math.min(a, xx); b = Math.max(b, xx); }
+    if (b > a) { rowL[y] = a; rowR[y] = b; }
+  }
+  const sg = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+  // 白目で埋めるかどうかの判定に使う明るさは、少しぼかしたもの（画素ごとに判定すると、白目の明るさの境でざらざらの点々になる）
+  const Lb = new Float32Array(bw * bh); for (let i = 0; i < Lb.length; i++) Lb[i] = src[i * 3] + src[i * 3 + 1] + src[i * 3 + 2];
+  const Lbl = blur(Lb, bw, bh, 1, Math.max(1, Math.round(0.1 * R)));
+  // 目頭・目尻の角の色（角のまわり 0.3R の、まぶたの外側の画素の平均 = 目頭の肉・肌の色）。空いた所の埋めは、角に近づくほど暗く・この色に寄せる
+  // （実際の目頭・目尻は影になり、目頭には肉がある。白目の色のまま角まで白いと、白いくさびに見える）
+  const cornerC = [cornerL, cornerR].map(([cx, cy]) => {
+    const a = [0, 0, 0, 0]; const rr = Math.max(2, 0.3 * R);
+    for (let y = Math.max(0, Math.floor(cy - rr)); y <= Math.min(bh - 1, Math.ceil(cy + rr)); y++) for (let x = Math.max(0, Math.floor(cx - rr)); x <= Math.min(bw - 1, Math.ceil(cx + rr)); x++) {
+      const i = y * bw + x; if (P[i] && D[i] > 0.1 * R) continue; if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) > rr) continue; a[0] += src[i * 3]; a[1] += src[i * 3 + 1]; a[2] += src[i * 3 + 2]; a[3]++;
+    }
+    return a[3] ? [a[0] / a[3], a[1] / a[3], a[2] / a[3]] : null;
+  });
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    const i = y * bw + x; const o = i * 3;
+    if (!P[i]) { out[o] = src[o]; out[o + 1] = src[o + 1]; out[o + 2] = src[o + 2]; continue; }
+    const X = x + 0.5; const Y = y + 0.5;
+    const rn = Math.hypot(X - nc[0], Y - nc[1]); const wi = smooth((Rm - rn) / soft); const ro = Math.hypot(X - oc[0], Y - oc[1]);
+    // この行での黒目の左右のふち（動かしたあと nl..nr、元 ol..or）と、まぶたの内側の左右のきわ
+    const hw = Math.sqrt(Math.max(0, Rm * Rm - (Y - nc[1]) ** 2)); const nl = nc[0] - hw; const nr = nc[0] + hw; const ol = oc[0] - hw; const or = oc[0] + hw;
+    const xl = rowL[y] === rowL[y] ? Math.min(rowL[y], runL[i] + 0.5) : runL[i]; const xr = rowR[y] === rowR[y] ? Math.max(rowR[y], runR[i] + 0.5) : runR[i] + 1;
+    // 白目の層: 行の中で伸び縮み（右側 [nr, xr] ← [or, xr]、左側 [xl, nl] ← [xl, ol]）。黒目の中は黒目といっしょ（ふちの外も少し）
+    // 黒目のふちのすぐ外（元からある白目の幅の半分、0.3R まで）は黒目といっしょにすべる（黒目のふちのにじみ・ふちのそばの光は黒目について動く。
+    // 伸ばすと、にじみが太くなって二重のふちに見える）。その外側を伸び縮みさせる。
+    // 元からある白目の幅の半分までなのは、細い目で黒目が目頭に接している（白目が 2〜3 画素）とき、その白目の細い帯と角の影が黒目について動き、
+    // 埋めた白目の中に明るい筋・暗い帯になって残ったため（伸び縮みの幅が 0 になり、残りは元の黒目のまま → 埋めの境がガタガタの線になった）
+    let sx = X - dx; const Wol = Math.max(0, ol - xl); const Wor = Math.max(0, xr - or); const wsl = Math.min(0.3 * R, 0.5 * Wol); const wsr = Math.min(0.3 * R, 0.5 * Wor);
+    // 幅の比は行ごとに連続に変える（「元の白目がなければ元の画素のまま」のような切り替えは、隣の行と写像が急に変わって段になる）。元の幅が 0.5 画素を切ったら、きわの画素を伸ばす
+    if (X >= nr + wsr) { const Wn = xr - nr - wsr; sx = Wn > 0.5 ? or + wsr + (X - nr - wsr) * Math.max(0.5, Wor - wsr) / Wn : X; }
+    else if (X <= nl - wsl) { const Wn = nl - wsl - xl; sx = Wn > 0.5 ? xl + (X - xl) * Math.max(0.5, Wol - wsl) / Wn : X; }
+    // 上まぶたのすぐ下（0.25R）・下まぶたのすぐ上（0.1R）は、伸び縮みでなく黒目といっしょにすべらせる:
+    // 本物の黒目は測った円よりまぶたの下まで続いているので、円の外の上下の弧（まぶたの影の中の黒目）も黒目について動く。
+    // 伸ばすと、その弧が動かした黒目の左上・左下から、まぶたに沿った黒いとげ（鉤）になって残る。すべらせれば動かした黒目の上下につながる
+    // （離れる側だけ。向かう側は縮めた白目がそのまま黒目のふちにつながる。向かう側まですべらせると、測った円より下に広い本物の黒目が、新しい黒目の右下から下まぶたに沿った鉤になって出る）
+    const rUp = up[x] === up[x] ? smooth((Y - up[x]) / (0.25 * R)) : 1; const rLo = lo[x] === lo[x] ? smooth((lo[x] - Y) / Math.max(1, 0.1 * R)) : 1;
+    const beh = smooth((sg * (nc[0] - X)) / (0.5 * R)); // 離れる側 1 → 向かう側 0（黒目の中心をまたいで 0.5R でなだらかに。中心の列では左右の写像がつながっている）
+    sx = X - dx + (sx - (X - dx)) * (1 - (1 - rUp * rLo) * beh);
+    sx = Math.max(xl + 0.5, Math.min(xr - 0.5, sx)); // まぶたの外（肌）は読まない（黒目のふちのそばで、ずらした先が目の外になる行）
+    px3(src, bw, bh, sx - 0.5, Y - 0.5, tmp); let s0 = tmp[0]; let s1 = tmp[1]; let s2 = tmp[2];
+    let wf = 0;
+    // 離れる側（黒目の外）で、伸ばした先が白目の明るさでなければ（影・黒目・角の暗い所）白目で埋める（影のまま伸ばすと、まだそちらを見ているように見える）
+    const behind = sg > 0 ? X <= nl + soft : sg < 0 ? X >= nr - soft : false; // 黒目のふちのなめらかな所（soft）まで（切ると、埋めた白目と黒目の間に暗い 1 列が残る）
+    if (behind && th < Infinity) {
+      // （伸ばした先が肌 = AI のまぶたの線の内側に入った目頭の肉・肌 も白目で埋める。肌の色を伸ばすと帯になる。角の色には下で寄せる）
+      // 元からその側にある白目が細い（0.3R 以下。黒目が目頭・目尻に接している）行は、伸ばしても白目にならない（角の影・黒目のふち・2〜3 画素の白目が引き伸ばされて帯や筋になる）ので、明るさによらず埋める
+      const Wos = sg > 0 ? Wol : Wor; const wss = sg > 0 ? wsl : wsr;
+      const L = px1(Lbl, bw, bh, sx - 0.5, Y - 0.5); wf = Math.max(smooth((th - L) / thw), skinness(s0, s1, s2, irisL, th), 1 - smooth((Wos - 0.3 * R) / (0.3 * R)));
+      if (wf > 0) {
+        const t = (Y - up[x]) / Math.max(1, lo[x] - up[x]);
+        // 新しい黒目のふちから離れる側のきわまでの幅に、向かう側の元の白目（元の黒目のふちからきわまで）の幅を合わせて読む
+        const xe = sg > 0 ? nl : nr; const xb = sg > 0 ? xl : xr; const bxs = Math.max(0, sg * (xe - X)); const Wb = Math.max(1, Math.abs(xb - xe));
+        // 黒目のふちから、黒目についてすべる白目の幅（元の白目の半分、0.3R まで）だけなだらかに（元の白目のふちのにじみを残す。いきなり白いと切り貼りに見える）。
+        // 元の白目が細ければすぐ埋める（黒目のふちのにじみ soft だけ）。上まぶたのすぐ下（0.25R）は上まぶたの影のまま（まつげ・アイラインの影が強い）。
+        // 下まぶたはきわの 1 画素ほどだけ（0.1R 残すと、元の黒目が下まぶたに接していた行で、伸ばした黒目の暗さが下まぶたに沿った黒いとげになる。
+        // 埋めの明るさは、向かう側の同じ高さの白目を写す・きわへ向けて暗くするので、下まぶたの影はそれで足りる）
+        // 元の白目が細ければすぐ埋める（黒目のふちのにじみ soft だけ）。上まぶたのすぐ下（0.25R）・下まぶたのすぐ上（0.1R）はまぶたの影のまま埋めない（上は黒目といっしょにすべらせた所）
+        const ramp = smooth((bxs + soft) / Math.max(soft, wss));
+        // ただし、読んだ先が元の黒目の暗さ（黒目のふちの外 0.4R まで。測った円より実際の黒目が少し広い所）なら、なだらかにせず埋める
+        // （残すと、動かした黒目のふちの外に元の黒目の暗さが細い帯になって残る）
+        const roS = Math.hypot(sx - oc[0], Y - oc[1]); const irisDark = smooth((mid - L) / wmid + 0.5) * smooth((Rm + 0.4 * R - roS) / (0.2 * R));
+        wf *= (ramp + (1 - ramp) * irisDark) * rUp * rLo;
+        let wm = 0; let mx = 0; let my = 0;
+        const sa = Math.max(0, Math.min(bw - 1, Math.floor(oc[0] + sg * Rm)));
+        if (lo[sa] > up[sa]) {
+          my = up[sa] + t * (lo[sa] - up[sa]); const ya = Math.max(0, Math.min(bh - 1, Math.floor(my))); const xa0 = oc[0] + sg * Math.sqrt(Math.max(0, Rm * Rm - (my - oc[1]) ** 2));
+          const qa = ya * bw + Math.max(0, Math.min(bw - 1, Math.floor(xa0))); const xa1 = rowR[ya] === rowR[ya] ? (sg > 0 ? rowR[ya] : rowL[ya]) : runL[qa] >= 0 ? (sg > 0 ? runR[qa] + 1 : runL[qa]) : xa0;
+          const Wa = Math.max(0, sg * (xa1 - xa0)); mx = xa0 + sg * Math.min(1, bxs / Wb) * Wa; const q = ya * bw + Math.floor(mx);
+          if (Wa > 0 && mx >= 0 && mx < bw && P[q]) {
+            px3(src, bw, bh, mx - 0.5, my - 0.5, tmp); const La = tmp[0] + tmp[1] + tmp[2]; const Ls = La - (La - irisL) * skinness(tmp[0], tmp[1], tmp[2], irisL, th);
+            // 読んだ先が黒目の暗さでなければ使う（白目の明るさまでは求めない: 上まぶたの下の影になった白目はそのまま写したい。
+            // 白目の明るさを求めると、影の所が白目の色の平らな埋めになって、上まぶたのすぐ下が明るい切れ込みに見える）
+            wm = smooth((Wa - 1.5) / 2) * smooth((Ls - mid) / wmid + 0.5) * smooth(D[q] / (0.12 * R));
           }
         }
         if (!scl) wf *= wm;
+        if (wf > 0) {
+          let f0 = 0; let f1 = 0; let f2 = 0;
+          if (wm > 0) { px3(src, bw, bh, mx - 0.5, my - 0.5, tmp); f0 = tmp[0] * wm; f1 = tmp[1] * wm; f2 = tmp[2] * wm; }
+          if (wm < 1) {
+            // 白目の色で埋めるときは、まぶたのきわへ向かって少し暗く（実際の白目もきわは影になる）。ざらつきは画素ごとに小さく
+            const q = scl[Math.max(0, Math.min(NB - 1, Math.floor(t * NB)))]; const sh = (0.8 + 0.2 * smooth(D[i] / (0.5 * R))) * (0.75 + 0.25 * smooth(Math.abs(X - xb) / (0.6 * R))); const nz = (hash(bx + x, by + y) - 0.5) * Math.min(sclN, 8) * 0.4;
+            f0 += (q[0] * sh + nz) * (1 - wm); f1 += (q[1] * sh + nz) * (1 - wm); f2 += (q[2] * sh + nz) * (1 - wm);
+          }
+          f0 *= fillGain; f1 *= fillGain; f2 *= fillGain;
+          // 角のそば（0.1R〜0.9R）は暗く、角の色に寄せる。上まぶたのすぐ下（まぶたの間の上 3 割）も少し暗く（上まぶたの影）
+          const dL = Math.hypot(X - cornerL[0], Y - cornerL[1]); const dR = Math.hypot(X - cornerR[0], Y - cornerR[1]); const cc = dL < dR ? cornerC[0] : cornerC[1]; const dc = Math.min(dL, dR) / R;
+          // 上まぶたのすぐ下（まぶたの間の上 3 割）は暗く（まつげ・上まぶたの影。写した白目ならその影が入っているので、白目の色で埋めた分だけ）
+          const cs = (0.5 + 0.5 * smooth((dc - 0.1) / 0.8)) * (1 - (0.4 - 0.4 * smooth((t - 0.05) / 0.3)) * (1 - wm)); f0 *= cs; f1 *= cs; f2 *= cs;
+          if (cc) { const wc = 0.8 * (1 - smooth((dc - 0.1) / 0.6)); f0 += (cc[0] - f0) * wc; f1 += (cc[1] - f1) * wc; f2 += (cc[2] - f2) * wc; }
+          if (globalThis.GAZE_DEBUG_FILL) { f0 = 255 * (1 - wm); f1 = 255 * wm; f2 = 0; }
+          s0 += (f0 - s0) * wf; s1 += (f1 - s1) * wf; s2 += (f2 - s2) * wf;
+        }
       }
     }
-    px3(src, bw, bh, X - dx * f - 0.5, Y - dy * f - 0.5, tmp); const o = (y * bw + x) * 3;
-    // 読みに行った所がまぶたの外（まぶたの肌・まつげの線）なら、それを目の中へ持ち込まず、ここの元の画素にする
-    // （黒目の上の端はまぶたに隠れているので、黒目を動かすと上のまぶたの肌が一緒に付いてきて、白い筋に見える）
-    { const qx = Math.floor(X - dx * f); const qy = Math.floor(Y - dy * f); const Ds = qx >= 0 && qy >= 0 && qx < bw && qy < bh && P[qy * bw + qx] ? D[qy * bw + qx] : 0;
-      const ws = smooth(Ds / (0.15 * R)); if (ws < 1) for (let i = 0; i < 3; i++) tmp[i] = src[o + i] + (tmp[i] - src[o + i]) * ws; }
-    if (wf > 0) {
-      const t0 = tmp[0]; const t1 = tmp[1]; const t2 = tmp[2]; let f0 = 0; let f1 = 0; let f2 = 0;
-      if (wm > 0) { px3(src, bw, bh, mx - 0.5, my - 0.5, tmp); f0 = tmp[0] * wm; f1 = tmp[1] * wm; f2 = tmp[2] * wm; }
-      if (wm < 1) {
-        // 白目は、まぶたのきわ（目頭・目尻）へ向かって少し暗くなる
-        // （白目の色で埋めるのは、反対側に白目がないときだけ）目尻・目頭のきわへ向かって暗くする（実際の白目もきわは影になる。
-        // 明るいまま角まで白いと、反対へ目をそらしたように見える）。ざらつきは小さく、画素ごとに（2 画素の升目は 100% で見ると格子に見えた）
-        const q = scl[Math.max(0, Math.min(NB - 1, Math.floor(t * NB)))]; const sh = (0.8 + 0.2 * smooth(D[y * bw + x] / (0.5 * R))) * (0.8 + 0.2 * smooth(ge / (0.5 * R))); const nz = (hash(bx + x, by + y) - 0.5) * Math.min(sclN, 8) * 0.4;
-        f0 += (q[0] * sh + nz) * (1 - wm); f1 += (q[1] * sh + nz) * (1 - wm); f2 += (q[2] * sh + nz) * (1 - wm);
+    // 黒目の層: 元の画素を (dx, dy) ずらして読む。隠れていた所は同じ距離の平均色
+    let o0 = s0; let o1 = s1; let o2 = s2;
+    if (wi > 0) {
+      const qx = X - dx; const qy = Y - dy; const qi = Math.floor(qy) * bw + Math.floor(qx);
+      // 読みに行った先がまぶたのきわ（0.08〜0.22R。まぶたのふちの明るい線（下まぶたの粘膜）が黒目の中に入ってななめの線になる）・目頭目尻の角のそば（0.25〜0.45R。目頭の肉・肌が AI のまぶたの線の内側に入る）なら隠れていたとみなす
+      // （そのまま持ってくると、角の形のとがった影と肌の明るい筋が黒目の中に入る）
+      let vis = 0;
+      if (qx >= 0 && qy >= 0 && qx < bw && qy < bh && P[qi]) {
+        const qc0 = Math.floor(qx); const opn = ((lo[qc0] - up[qc0]) || 0) / R; // その列のまぶたの間（広い所の角のそばは本物の黒目のふち。細い所だけ隠れていたとみなす）
+        vis = smooth((D[qi] / R - 0.08) / 0.14) * Math.max(smooth((Math.min(Math.hypot(qx - cornerL[0], qy - cornerL[1]), Math.hypot(qx - cornerR[0], qy - cornerR[1])) / R - 0.15) / 0.15), smooth((opn - 0.4) / 0.3));
+        // ただし、読みに行った先が黒目の暗さ（白目の明るさでなく、肌でもない）なら、まぶたのそばでもそのまま使う。
+        // 隠れていたとみなして距離ごとの平均色に置き換えるのは、下まぶたの明るい線・目頭の肌のため。
+        // 細い目では黒目のふち全体がまぶたから 0.2R 以内なので、ふちのにじみ（2〜3 画素の明るさの変わり目）まで平均色の暗さに置き換わり、ふちが 1 画素の段々になっていた
+        // （向かう側のふちだけ。離れる側のふちは元から目頭・目尻の影やまぶたのきわに食い込んでいて、そのまま使うとアイラインの茶色い線が黒目のふちに入る）
+        if (vis < 1 && th < Infinity) { const Lq = src[qi * 3] + src[qi * 3 + 1] + src[qi * 3 + 2]; vis = Math.max(vis, smooth((th - Lq) / thw) * (1 - skinness(src[qi * 3], src[qi * 3 + 1], src[qi * 3 + 2], irisL, th)) * smooth((sg * (qx - oc[0])) / (0.3 * R))); }
       }
-      f0 *= fillGain; f1 *= fillGain; f2 *= fillGain;
-      tmp[0] = t0 + (f0 - t0) * wf; tmp[1] = t1 + (f1 - t1) * wf; tmp[2] = t2 + (f2 - t2) * wf;
-    }
-    // 黒目のふちのすぐ外（1.1R〜1.5R）: AI の黒目は実際より小さく出ることが多く、埋めた白目で切ると黒目のふちが円でなくまっすぐな段に見える。
-    // 黒目といっしょにずらした元の画素の方が暗ければ（実際の黒目のふち）そちらを残す。実際の黒目の丸みがそのまま残る
-    const ring = r > Ri && P[y * bw + x] ? smooth((Ri + 0.3 * R - r) / (0.2 * R)) : 0;
-    if (ring > 0) {
-      const qx = Math.floor(X - dx); const qy = Math.floor(Y - dy);
-      if (qx >= 0 && qy >= 0 && qx < bw && qy < bh && P[qy * bw + qx] && D[qy * bw + qx] > 0.15 * R) {
-        const sh = [0, 0, 0]; px3(src, bw, bh, X - dx - 0.5, Y - dy - 0.5, sh); const Ls = sh[0] + sh[1] + sh[2]; const Lf = tmp[0] + tmp[1] + tmp[2];
-        const wk = ring * smooth((Lf - Ls) / (2 * thw)) * smooth((th - Ls) / thw);
-        if (wk > 0) for (let i = 0; i < 3; i++) tmp[i] = tmp[i] + (sh[i] - tmp[i]) * wk;
+      const rc = ringC[Math.min(NRING - 1, Math.round(rn))];
+      if (globalThis.GAZE_DEBUG_VIS) { o0 = 255 * vis; o1 = 255 * wi; o2 = rc[0]; out[o] = o0; out[o + 1] = o1; out[o + 2] = o2; continue; }
+      if (vis > 0) px3(src, bw, bh, qx - 0.5, qy - 0.5, tmp); else { tmp[0] = tmp[1] = tmp[2] = 0; }
+      if (vis < 1) {
+        // 隠れていた所: 同じ列で、まぶたの間に見えている黒目のいちばん近い行（まぶたのきわから 0.25R）の画素。
+        // 中心からの距離の平均色だけだと、見えている所との境が段になる。上下に折り返すのは、下まぶたのきわの明るい線を上へ持ってきて筋になった
+        const qc = Math.max(0, Math.min(bw - 1, Math.floor(qx))); let hy = qy; let hv = 0;
+        const vis2 = (yy) => { const qi2 = Math.floor(yy) * bw + qc; return yy >= 0 && yy < bh && P[qi2] ? smooth((D[qi2] / R - 0.08) / 0.14) : 0; };
+        if (lo[qc] > up[qc]) { hy = Math.max(up[qc] + 0.25 * R, Math.min(lo[qc] - 0.25 * R, qy)); hv = vis2(hy); }
+        const hc = [rc[0], rc[1], rc[2]];
+        if (hv > 0) { const t2 = [0, 0, 0]; px3(src, bw, bh, qx - 0.5, hy - 0.5, t2); for (let k = 0; k < 3; k++) hc[k] = rc[k] + (t2[k] - rc[k]) * 0.5 * hv; } // 半分は距離の平均色（列ごとの画素だけだと縦の筋になる）
+        // この画素がもとの黒目の中なら、ここの元の画素（本物の黒目の模様・明るさ）を優先
+        const wo = smooth((Rm - ro) / soft) * (P[i] ? smooth((D[i] / R - 0.08) / 0.14) : 0);
+        if (wo > 0) for (let k = 0; k < 3; k++) hc[k] += (src[o + k] - hc[k]) * wo;
+        for (let k = 0; k < 3; k++) tmp[k] = hc[k] + (tmp[k] - hc[k]) * vis;
       }
+      o0 += (tmp[0] - s0) * wi; o1 += (tmp[1] - s1) * wi; o2 += (tmp[2] - s2) * wi;
     }
-    // 目頭・目尻の角のそば（まぶたの間が狭い所）: AI のまぶたの線は実際の角より外まで伸びていることが多く（目頭の肉・肌まで含む）、
-    // 白目をそこへすべり込ませる・伸ばすと、角まで白くとがって見える。角のそばは、元の画素の方が暗ければ元のまま（実際の角は影になっている）
-    { const cz = 1 - smooth((((lo[x] - up[x]) || 0) / R - 0.3) / 0.4) * smooth((Math.min(Math.hypot(X - cornerL[0], Y - cornerL[1]), Math.hypot(X - cornerR[0], Y - cornerR[1])) / R - 0.2) / 0.3);
-      if (cz > 0 && src[o] + src[o + 1] + src[o + 2] < tmp[0] + tmp[1] + tmp[2]) for (let i = 0; i < 3; i++) tmp[i] = tmp[i] + (src[o + i] - tmp[i]) * cz; }
-    out[o] = tmp[0]; out[o + 1] = tmp[1]; out[o + 2] = tmp[2];
-    const sb = smooth(D[y * bw + x] / band);
-    if (sb < 1 && src[o] + src[o + 1] + src[o + 2] < tmp[0] + tmp[1] + tmp[2]) for (let i = 0; i < 3; i++) out[o + i] = src[o + i] + (tmp[i] - src[o + i]) * sb;
+    // まぶたのふちのそば: 元の画素の方が暗ければ元のまま（まつげ・アイラインを動かすと二重の線に見える）。
+    // 黒目が離れる側ではしない（元の黒目の暗さが線・帯になって残る。細い目では目の大半がふちのそば。伸ばした白目のまつげの線はほぼその場所に残る）。ふちは E でなめらかにつなぐ
+    const bd = behind ? 0 : band * (1 - wf); const sb = bd > 0 ? smooth(D[i] / bd) : 1;
+    if (sb < 1 && src[o] + src[o + 1] + src[o + 2] < o0 + o1 + o2) { o0 = src[o] + (o0 - src[o]) * sb; o1 = src[o + 1] + (o1 - src[o + 1]) * sb; o2 = src[o + 2] + (o2 - src[o + 2]) * sb; }
+    out[o] = o0; out[o + 1] = o1; out[o + 2] = o2;
+    if (globalThis.GAZE_DEBUG_LAYERS) { out[o] = 255 * wi; out[o + 1] = 255 * wf; out[o + 2] = behind ? 160 : 0; }
   }
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
     const e = E[y * bw + x]; if (e <= 0) continue; const k = ((by + y) * W + bx + x) * 4; const o = (y * bw + x) * 3;
@@ -1125,7 +1224,7 @@ export function gazePlan(img, op, at) {
       const yaw = e.pose?.[0] || 0; const sb = scleraBalance(img, lid, c, R);
       const good = sb && sb.contrast >= 1.4 && sb.wl + sb.wr >= 0.15;
       // AI の黒目の位置が実際の黒目からずれているとき（目線をそらした写真で多い）は、写真から探し直した位置で動かす
-      if (good) { const dc = sb.xc - c[0]; for (const q of ir) q[0] += dc; }
+      if (good) { const dcx = sb.xc - c[0]; const dcy = sb.yc - c[1]; for (const q of ir) { q[0] += dcx; q[1] += dcy; } }
       // カメラを見ている人は、顔が横を向いているぶん、黒目は白目の真ん中からカメラ側へ寄る（顔が右を向けば黒目は左へ）。
       // 白目を左右同じにすると、かえって顔の向きの方を見ているように見えるので、その寄りを残す（テスト写真でカメラを見ている 27 人で合わせた値: 1.8R × sin(yaw)）
       const ex = good ? (sb.b - GAZE_YAW * Math.sin(yaw)) * R : (lid[0][0] + lid[8][0]) / 2 - 0.55 * R * Math.sin(yaw) + 0.08 * R - c[0];
@@ -1133,7 +1232,7 @@ export function gazePlan(img, op, at) {
       const ey = (lid[4][1] + lid[12][1]) / 2 - 0.03 * R - c[1];
       // 動かす先は、白目の真ん中から顔の向きのぶんを少しだけ寄せた所（全部寄せると、写真ではかえって反対へ目をそらしたように見える。顔の向きの推定もぶれる）
       const mv = good ? (sb.b - GAZE_YAW_MOVE * Math.sin(yaw)) * R : ex;
-      eyes.push({ lid, iris: ir, R, open, ex, ey, mv });
+      eyes.push({ lid, iris: ir, R, open, ex, ey, mv, axis: sb?.axis || [1, 0] });
     }
     if (!eyes.length || skip) continue;
     // 両目の動かす量は、それぞれの目で測った量と 2 つの平均の半々（片方の測り間違いで寄り目・離れ目にならないように）。縦は平均
@@ -1150,7 +1249,9 @@ export function gazePlan(img, op, at) {
       // 自動で動かす量は黒目の半径の 1.5 倍まで（それより大きいのは測り間違い。もっと動かしたいときは矢印で）
       if (al > 1.5 * e.R) { ax *= 1.5 * e.R / al; ay *= 1.5 * e.R / al; }
       e.auto = [ax * k / e.R, ay * k / e.R];
-      e.delta = [ax * k * op.amt + (op.tune?.[0] || 0) * Rm, ay * k * op.amt + (op.tune?.[1] || 0) * Rm];
+      // 動かす向きは目の軸（目頭→目尻）に沿って（顔が傾いた写真で、横にまっすぐ動かすと黒目がまぶたに食い込む）。矢印の左右も軸に沿い、上下はそれと直角
+      const [ca, sa] = e.axis; const mx1 = ax * k * op.amt + (op.tune?.[0] || 0) * Rm; const my1 = ay * k * op.amt + (op.tune?.[1] || 0) * Rm;
+      e.delta = [mx1 * ca - my1 * sa, mx1 * sa + my1 * ca];
     }
     plan.push(eyes);
   }
@@ -1567,33 +1668,39 @@ export function mouthMasks(img, polys, at = { W: img.width, H: img.height, ox: 0
 export function scleraBalance(img, lid, c, R) {
   const d = img.data; const W = img.width; const H = img.height;
   const ex = (lid[0][0] + lid[8][0]) / 2; const ey = (lid[4][1] + lid[12][1]) / 2;
-  let x0 = Infinity; let x1 = -Infinity; for (const [x] of lid) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); }
-  const X0 = Math.max(0, Math.floor(x0)); const X1 = Math.min(W - 1, Math.ceil(x1)); const nx = X1 - X0 + 1; if (nx < 4) return null;
+  // 目の軸（目頭→目尻）に沿って測る（顔が傾いた写真では、横の行で数えると帯がまぶたの外へ出て、白目の左右が正しく数えられない）
+  const ang = Math.atan2(lid[8][1] - lid[0][1], lid[8][0] - lid[0][0]); const ca = Math.cos(ang); const sa = Math.sin(ang);
+  let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity; for (const [x, y] of lid) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const X0 = Math.max(0, Math.floor(x0)); const X1 = Math.min(W - 1, Math.ceil(x1)); const Y0 = Math.max(0, Math.floor(y0)); const Y1 = Math.min(H - 1, Math.ceil(y1));
+  let u0 = Infinity; let u1 = -Infinity; for (const [x, y] of lid) { const u = (x - c[0]) * ca + (y - c[1]) * sa; u0 = Math.min(u0, u); u1 = Math.max(u1, u); }
+  const U0 = Math.floor(u0); const nx = Math.ceil(u1) - U0 + 1; if (nx < 4) return null;
   const px = []; let si = 0; let ni = 0;
-  for (let y = Math.max(0, Math.round(c[1] - 0.4 * R)); y <= Math.min(H - 1, Math.round(c[1] + 0.4 * R)); y++) for (let x = X0; x <= X1; x++) {
+  for (let y = Y0; y <= Y1; y++) for (let x = X0; x <= X1; x++) {
+    const u = (x + 0.5 - c[0]) * ca + (y + 0.5 - c[1]) * sa; const v = -(x + 0.5 - c[0]) * sa + (y + 0.5 - c[1]) * ca;
+    if (Math.abs(v) > 0.4 * R) continue;
     if (!inPoly(ex + (x + 0.5 - ex) * 1.1, ey + (y + 0.5 - ey) * 1.1, lid)) continue;
     const k = (y * W + x) * 4; const L = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
-    if (Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1]) < 0.6 * R) { si += L; ni++; }
-    px.push([x - X0, L]);
+    if (Math.hypot(u, v) < 0.6 * R) { si += L; ni++; }
+    const i = Math.floor(u) - U0; if (i >= 0 && i < nx) px.push([i, L]);
   }
   if (!ni || px.length < 6) return null;
   const iris = si / ni; const Ls = px.map((p) => p[1]).sort((a, b) => a - b); const hi = Ls[Math.floor(Ls.length * 0.9)];
   const th = iris + 0.45 * (hi - iris);
-  // 列ごとの白目の量（帯の中の白い画素の数）と、まぶたの内側の画素の数
+  // 列（軸に沿った位置）ごとの白目の量（帯の中の白い画素の数）と、まぶたの内側の画素の数
   const wc = new Float32Array(nx); const nc = new Float32Array(nx);
   for (const [i, L] of px) { wc[i] += smooth((L - th) / Math.max(1, 0.3 * (hi - iris))); nc[i]++; }
   // 黒目の位置を探し直す: 幅 1.8R の窓の中に白目がいちばん少ない所（同じくらいなら AI の黒目の位置に近い所）
-  const hw = Math.round(0.9 * R); let best = Infinity; let xc = c[0];
+  const hw = Math.round(0.9 * R); let best = Infinity; let uc = 0;
   for (let i = 0; i < nx; i++) {
     let w = 0; let n = 0; for (let j = Math.max(0, i - hw); j <= Math.min(nx - 1, i + hw); j++) { w += wc[j]; n += nc[j]; }
     if (n < 0.5 * (2 * hw + 1)) continue;
-    const cost = w / Math.max(1, n) + 0.04 * Math.abs(X0 + i + 0.5 - c[0]) / R;
-    if (cost < best) { best = cost; xc = X0 + i + 0.5; }
+    const u = U0 + i + 0.5; const cost = w / Math.max(1, n) + 0.04 * Math.abs(u) / R;
+    if (cost < best) { best = cost; uc = u; }
   }
-  if (Math.abs(xc - c[0]) > 1.2 * R) xc = c[0];
-  // 白目の幅: 黒目の外で、白い画素が多い列の数（目尻・目頭へ向かって目が細くなっても、横の幅として数える）
+  if (Math.abs(uc) > 1.2 * R) uc = 0;
+  // 白目の幅: 黒目の外で、白い画素が多い列の数（目尻・目頭へ向かって目が細くなっても、軸に沿った幅として数える）
   let wl = 0; let wr = 0;
-  for (let i = 0; i < nx; i++) { if (!nc[i]) continue; const dx = X0 + i + 0.5 - xc; const w = smooth((wc[i] / nc[i] - 0.25) / 0.3); if (dx < -0.9 * R) wl += w; else if (dx > 0.9 * R) wr += w; }
+  for (let i = 0; i < nx; i++) { if (!nc[i]) continue; const du = U0 + i + 0.5 - uc; const w = smooth((wc[i] / nc[i] - 0.25) / 0.3); if (du < -0.9 * R) wl += w; else if (du > 0.9 * R) wr += w; }
   wl /= R; wr /= R;
-  return { b: (wr - wl) / 2, wl, wr, xc, contrast: hi / Math.max(1, iris) };
+  return { b: (wr - wl) / 2, wl, wr, xc: c[0] + uc * ca, yc: c[1] + uc * sa, axis: [ca, sa], contrast: hi / Math.max(1, iris) };
 }
