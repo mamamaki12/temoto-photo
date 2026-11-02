@@ -10,7 +10,12 @@ export function slider({ label, min = -100, max = 100, step = 1, value = 0, def 
   const id = `sl-${++seq}`;
   const out = h('output', { for: id, class: 'sl-val' });
   const input = h('input', { type: 'range', id, min, max, step, value, class: track ? `track-${track}` : null });
-  const show = () => { const v = Number(input.value); out.textContent = format ? format(v) : `${v > 0 && min < 0 ? '+' : ''}${Number.isInteger(step) ? v : v.toFixed(1)}${unit}`; out.classList.toggle('changed', v !== def); };
+  // 溝は、0（両側に動かせるものは真ん中）からつまみまでを差し色で塗る（今どれだけ動かしたかが一目で分かる）
+  const zero = min < 0 && max > 0 ? (0 - min) / (max - min) * 100 : 0;
+  const show = () => {
+    const v = Number(input.value); out.textContent = format ? format(v) : `${v > 0 && min < 0 ? '+' : ''}${Number.isInteger(step) ? v : v.toFixed(1)}${unit}`; out.classList.toggle('changed', v !== def);
+    const p = (v - min) / (max - min) * 100; input.style.setProperty('--a', `${Math.min(p, zero)}%`); input.style.setProperty('--b', `${Math.max(p, zero)}%`);
+  };
   input.addEventListener('input', () => { show(); onInput?.(Number(input.value)); });
   input.addEventListener('change', () => onChange?.(Number(input.value)));
   const reset = () => { input.value = def; show(); onInput?.(def); onChange?.(def); };
