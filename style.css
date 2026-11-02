@@ -600,7 +600,8 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 @media (max-width: 899px) {
   /* 項目を開いている間は、種類と項目の列を隠して、写真を大きく */
   .editor:not(.grid-editor):not(.side-closed) .rail, .editor:not(.grid-editor):not(.side-closed) .items { display: none; }
-  .editor:not(.grid-editor) .side { height: auto; max-height: min(42dvh, 380px); animation: sheet-up .25s var(--ease); }
+  /* シートは中身の高さ（項目を開くと写真を大きく）。小さな中身でも、閉じているときの項目・種類の列と同じ高さは保つ（開いても写真が動かない）。長い中身は 42dvh まで伸びて、残りはシートの中でスクロール */
+  .editor:not(.grid-editor) .side { height: auto; min-height: calc(150px + env(safe-area-inset-bottom, 0px)); max-height: min(42dvh, 380px); animation: sheet-up .25s var(--ease); }
   .editor:not(.grid-editor) .side-bar { padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
   .editor:not(.grid-editor) .rail { border-radius: 0; padding-top: 4px; }
   .editor:not(.grid-editor) .rail .tab-icon { display: none; } /* スマホの種類の札は文字だけ（5 つが 1 行に収まるように） */
@@ -608,8 +609,6 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .fx-count { justify-content: space-between; align-items: center; }
   .fx-count button { min-height: 30px; padding-block: 2px; }
 }
-/* スマホ: 項目のシートは決まった高さ（中身が増減しても写真が動かない。長い中身はシートの中でスクロール） */
-@media (max-width: 599px) { .editor:not(.grid-editor) .side { height: min(36dvh, 330px); max-height: none; } }
 @media (min-width: 900px) {
   .editor:not(.grid-editor) { grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "head head head" "rail items stage" "rail side stage"; }
   .editor:not(.grid-editor).side-closed { grid-template-columns: 88px clamp(320px, 22rem, 40vw) minmax(0, 1fr); } /* 閉じても項目の列は出しておく */

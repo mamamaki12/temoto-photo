@@ -21,9 +21,10 @@ test('美肌: AI で人物の肌だけを見分け、背景・髪・服は変え
   await open(page);
   const bg0 = await srcPixel(page, 0.08, 0.1); const hair0 = await srcPixel(page, 0.3, 0.3); const cheek0 = await srcPixel(page, 0.43, 0.49);
   await openTool(page, '美肌');
+  await page.getByRole('button', { name: 'しっかり', exact: true }).click();
+  await expect(page.getByLabel('なめらかに', { exact: true })).toBeVisible(); // 強さを選ぶとスライダーが出て下のシートが伸びる（写真が小さくなる）ので、ほおの位置はそのあとで測る
   const view = await page.locator('canvas.view').boundingBox();
   const L = await page.evaluate(() => { const E = window.__temoto.editor; return { ix: E.L.ix / E.view.width, iy: E.L.iy / E.view.height, iw: E.L.iw / E.view.width, ih: E.L.ih / E.view.height }; });
-  await page.getByRole('button', { name: 'しっかり', exact: true }).click();
   await page.mouse.click(view.x + view.width * (L.ix + L.iw * 0.43), view.y + view.height * (L.iy + L.ih * 0.49));
   await page.waitForFunction(async () => { const m = await import('/skinseg.js'); const E = window.__temoto.editor; return !!E.baseData && !!m.skinSegFor(E.baseData) && !document.querySelector('.stage.busy'); }, null, { timeout: 60000 });
   await page.waitForTimeout(300);
