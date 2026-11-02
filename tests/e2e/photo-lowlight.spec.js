@@ -57,7 +57,7 @@ test('開き直したとき、前に計算した明るさ補正の結果をす�
   await expect.poll(() => page.evaluate(async () => !!(await (await import('/db.js')).getHq(window.__temoto.editor.id))), { timeout: 10000 }).toBe(false);
 });
 
-test('前の版で保存した補正の結果は使わず、計算し直す（補正の計算を直したら、開き直した写真にも効く）', async ({ page }) => {
+test('前の版で保存した補正の結果も、計算の版が同じなら使う。段の計算の版（CALC）や記録の形が違えば使わず、計算し直す（補正の計算を直したら、開き直した写真にも効く）', async ({ page }) => {
   await page.goto('/');
   await page.locator('#open-file').setInputFiles(await solidPhoto(page, '#34251c', { w: 128, h: 128 }));
   await page.waitForFunction(() => window.__temoto?.editor?.L);
@@ -66,14 +66,34 @@ test('前の版で保存した補正の結果は使わず、計算し直す（�
   await control.fill('70'); await control.dispatchEvent('change');
   await page.waitForFunction(() => window.__temoto.editor.hq?.canvas);
   await expect.poll(() => page.evaluate(async () => !!(await (await import('/db.js')).getHq(window.__temoto.editor.id))), { timeout: 10000 }).toBe(true);
-  // 保存した結果を、前の版で保存したものに書き換える
-  await page.evaluate(async () => { const db = await import('/db.js'); const id = window.__temoto.editor.id; const rec = await db.getHq(id); await db.putHq(id, { ...rec, ver: '1.31.3' }); });
-  await page.getByRole('button', { name: '‹ 写真' }).click();
-  await page.reload();
-  await page.locator('.lib-open').first().click();
-  await page.waitForFunction(() => window.__temoto?.editor?.L);
-  expect(await page.evaluate(() => !!window.__temoto.editor.hq?.saved)).toBe(false);
+  // 保存した結果を書き換えてから開き直す。patch: ver（アプリの版）・fmt（記録の形の版）・calc（鍵の中の、暗所補正の段の計算の版を 1 つ上げる）
+  const reopen = async (patch) => {
+    // 計算し直した結果の保存が終わる（記録の鍵が今の鍵になる）のを待ってから書き換える
+    await expect.poll(() => page.evaluate(async () => { const E = window.__temoto.editor; return (await (await import('/db.js')).getHq(E.id))?.key === E.hq?.key; }), { timeout: 10000 }).toBe(true);
+    await page.evaluate(async (patch) => {
+      const db = await import('/db.js'); const { CALC } = await import('/calc-version.js');
+      const id = window.__temoto.editor.id; const rec = await db.getHq(id);
+      const key = patch.calc ? rec.key.replace(JSON.stringify(CALC), JSON.stringify({ ...CALC, ll: CALC.ll + 1 })) : rec.key;
+      if (patch.calc && key === rec.key) throw new Error('鍵に CALC が入っていない');
+      await db.putHq(id, { ...rec, key, ver: patch.ver ?? rec.ver, fmt: patch.fmt ?? rec.fmt });
+    }, patch);
+    await page.getByRole('button', { name: '‹ 写真' }).click();
+    await page.reload();
+    await page.locator('.lib-open').first().click();
+    await page.waitForFunction(() => window.__temoto?.editor?.L);
+    return page.evaluate(() => !!window.__temoto.editor.hq?.saved);
+  };
+  // アプリの版だけが違う → 保存した結果をそのまま使う（更新のたびに計算し直さない）
+  expect(await reopen({ ver: '1.31.3' })).toBe(true);
+  await page.waitForFunction(() => { const E = window.__temoto.editor; return E.hq?.canvas && !E.hq.ctrl; });
+  expect(await page.evaluate(() => window.__temoto.editor.hq.saved)).toBe(true);
+  // 暗所補正の段の計算の版が違う → 使わず、計算し直す
+  expect(await reopen({ calc: true })).toBe(false);
   await page.waitForFunction(() => { const E = window.__temoto.editor; return E.hq?.canvas && !E.hq.ctrl; }); // 計算し直した
+  expect(await page.evaluate(() => !!window.__temoto.editor.hq.saved)).toBe(false);
+  // 記録の形の版が違う（古い形） → 使わず、計算し直す
+  expect(await reopen({ fmt: 1 })).toBe(false);
+  await page.waitForFunction(() => { const E = window.__temoto.editor; return E.hq?.canvas && !E.hq.ctrl; });
 });
 
 test('暗部を上げ、白と色を保つ。元解像度の書き出しにも適用', async ({ page }) => {

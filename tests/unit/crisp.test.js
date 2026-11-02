@@ -37,3 +37,11 @@ test('crisp: 差分を重みで足す。重み 0 の所は変わらず、引き�
   applyDetailMap(big, 4, { y0: 4, fullW: W * 2, fullH: H * 2 }, res, map, 1);
   assert.equal(big[(1 * W * 2 + 0) * 4], 120); assert.equal(big[(1 * W * 2 + 15) * 4], 100);
 });
+
+test('crisp: 人物の割合が BACK 以下の所（AI の地図が背景に残す 0.03〜0.1）は重み 0。人物の中は 1 のまま', async () => {
+  const { BACK } = await import('../../crisp.js');
+  const alpha = Float32Array.from([0, 0.05, 0.1, BACK, 0.5, 0.9, 1]);
+  const m = crispWeights(alpha, 7, 1, null);
+  assert.deepEqual([...m.slice(0, 4)], [0, 0, 0, 0]);
+  assert.ok(m[4] > 60 && m[4] < 130 && m[5] > 220 && m[6] === 255, [...m].join(','));
+});

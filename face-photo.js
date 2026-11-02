@@ -336,16 +336,19 @@ export async function applyFaceAI(image, W, H, faceai, { signal, onProgress = ()
 }
 let wholeWorker = null;
 /**
- * 写真（Canvas、編集用の大きさ）の全体を全体 AI に通して、足す差分を求める（顔 AI の前に。顔は、そのあと顔 AI で置き換わる）
- * @returns {Promise<{width:number,height:number,data:Int8Array}>} 足す差分（wholeCanvas で当てる。書き出しでも使う）
+ * 写真（Canvas、編集用の大きさ）を全体 AI に通して、足す差分を求める（顔 AI の前に。顔は、そのあと顔 AI で置き換わる）。
+ * need（wholeai.js の tilesNeeded）があれば、その区画だけ動かす（髪・服をくっきりだけのときは人物の区画だけ。全体 AI はいちばん時間がかかるので）。
+ * prev（前に求めた差分と計算した区画）があれば、足りない区画だけ計算して足す（あとで顔 AI で全体に当てるとき、人物の区画はやり直さない）
+ * @returns {Promise<{width:number,height:number,data:Int8Array,done:Uint8Array}>} 足す差分と、計算した区画（wholeCanvas・crispCanvas で当てる。書き出しでも使う）
  */
-export async function wholeResidual(image, W, H, { signal, onProgress = () => {} } = {}) {
+export async function wholeResidual(image, W, H, { signal, onProgress = () => {}, need = null, prev = null } = {}) {
   if (signal?.aborted) throw abortError();
   // 大きな AI を同時に抱えないよう、ブレ補正の AI は片付けておく（全体 AI は 5MB と小さく、終わったら片付ける）
   releaseDeblur();
-  return retryOnMemory(() => wholeOnce(image, W, H, { signal, onProgress }), signal);
+  // prev（前に計算した差分と区画）は Worker に渡して（写さずに）続きを足す。やり直すとき（メモリ不足）は渡し終えて空なので、一から
+  return retryOnMemory(() => wholeOnce(image, W, H, { signal, onProgress, need, prev: prev?.data?.byteLength ? prev : null }), signal);
 }
-async function wholeOnce(image, W, H, { signal, onProgress }) {
+async function wholeOnce(image, W, H, { signal, onProgress, need, prev }) {
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = ctx2d(c, { willReadFrequently: true }); x.drawImage(image, 0, 0, W, H);
   const img = x.getImageData(0, 0, W, H, { colorSpace: COLOR_SPACE }); c.width = 0; c.height = 0;
@@ -360,10 +363,10 @@ async function wholeOnce(image, W, H, { signal, onProgress }) {
         else if (m.type === 'result') { signal?.removeEventListener('abort', onAbort); resolve(m); } else if (m.type === 'error') reject(friendly(m.message));
       };
       wk.onerror = () => reject(friendly('MEMORY'));
-      wk.postMessage({ type: 'run', img: img.data, W, H }, [img.data.buffer]);
+      wk.postMessage({ type: 'run', img: img.data, W, H, need, res: prev?.data, done: prev?.done }, [img.data.buffer, ...(prev ? [prev.data.buffer, ...(prev.done ? [prev.done.buffer] : [])] : [])]);
     });
     onProgress(1);
-    return { width: W, height: H, data: r.res };
+    return { width: W, height: H, data: r.res, done: r.done };
   } finally { wk.terminate(); if (wholeWorker === wk) wholeWorker = null; }
 }
 /** 写真（編集用の大きさ）に全体 AI の差分を足して、新しい Canvas を返す（帯ごとに。差分だけを取っておき、Canvas は取っておかない） */

@@ -1,6 +1,6 @@
 // 全体 AI（Real-ESRGAN realesr-general-x4v3）を動かす Worker（ONNX Runtime Web。WebGPU があれば GPU で、なければ CPU で。端末の中だけで動く）
-// 受け取る: { type: 'run', img: Uint8ClampedArray（RGBA、W×H。編集用の大きさの写真）, W, H }
-// 返す: { type: 'progress', phase: 'load' | 'run', t } … { type: 'result', res: Int8Array（W×H×3。写真に足す差分、1 = 1/255）, img（受け取った写真を返す） } / { type: 'error', message }
+// 受け取る: { type: 'run', img: Uint8ClampedArray（RGBA、W×H。編集用の大きさの写真）, W, H, need?: Uint8Array（動かす区画。tilesNeeded。なければ全部）, res?, done?（前に計算した差分と区画。続きだけ計算する） }
+// 返す: { type: 'progress', phase: 'load' | 'run', t } … { type: 'result', res: Int8Array（W×H×3。写真に足す差分、1 = 1/255）, done: Uint8Array（計算した区画）, img（受け取った写真を返す） } / { type: 'error', message }
 import * as ort from './vendor/ort/ort.webgpu.min.mjs';
 import { SCALE, TILE_IN, putResidual, regionOf, smallFrom, tileInput, tileRect, tiles } from './wholeai.js';
 import { limitOrtMemory, outOfMemory, workerCount } from './cores.js';
@@ -99,22 +99,26 @@ self.onmessage = async ({ data }) => {
   if (data.type !== 'run') return;
   let be = null;
   try {
-    const { img, W, H } = data;
-    be = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
+    const { img, W, H, need } = data;
     const small = smallFrom(img, W, H);
-    const list = tiles(small.width, small.height); const res = new Int8Array(W * H * 3);
+    const all = tiles(small.width, small.height);
+    const res = data.res?.length === W * H * 3 ? data.res : new Int8Array(W * H * 3); const done = data.done?.length === all.length ? data.done : new Uint8Array(all.length);
+    // いる区画のうち、まだ計算していないものだけ（くっきりだけのときは人物の区画だけ。あとで顔 AI で全体に当てるときは、残りを足す）
+    const list = all.map((t, i) => [t, i]).filter(([, i]) => (!need || need[i]) && !done[i]);
+    if (!list.length) { self.postMessage({ type: 'result', res, done, img }, [res.buffer, done.buffer, img.buffer]); return; }
+    be = await init((t) => self.postMessage({ type: 'progress', phase: 'load', t }));
     const per = 3 * TILE_IN * TILE_IN; const outPer = per * SCALE * SCALE;
-    let done = 0; const step = () => { done++; self.postMessage({ type: 'progress', phase: 'run', t: done / list.length }); };
-    const job = async ([x, y], src) => {
+    let n = 0; const step = () => { n++; self.postMessage({ type: 'progress', phase: 'run', t: n / list.length }); };
+    const job = async ([[x, y], i], src) => {
       const rect = tileRect(W, H, x, y);
-      putResidual(res, W, rect, await be.cpu.run({ ...src, reg: regionOf(img, W, rect), rect })); step();
+      putResidual(res, W, rect, await be.cpu.run({ ...src, reg: regionOf(img, W, rect), rect })); done[i] = 1; step();
     };
     if (be.gpu) {
       // GPU: 区画を何枚かまとめて AI に通し、差分は CPU の Worker で（GPU は次の区画に進む）
       const pending = []; const B = 4;
       for (let k = 0; k < list.length; k += B) {
         const group = list.slice(k, k + B); const input = new Float32Array(per * group.length);
-        group.forEach(([x, y], j) => tileInput(small, x, y, input, j * per));
+        group.forEach(([[x, y]], j) => tileInput(small, x, y, input, j * per));
         const out = await be.gpu(input, group.length);
         group.forEach((t, j) => pending.push(job(t, { out: out.slice(j * outPer, (j + 1) * outPer) })));
         while (pending.length > be.cpu.size * 2) await pending.shift();
@@ -123,10 +127,10 @@ self.onmessage = async ({ data }) => {
     } else {
       // CPU: Worker の数だけ同時に（区画ごとに、AI と差分の計算をまとめて）
       let next = 0;
-      const lane = async () => { while (next < list.length) { const t = list[next++]; await job(t, { input: tileInput(small, t[0], t[1]) }); } };
+      const lane = async () => { while (next < list.length) { const t = list[next++]; await job(t, { input: tileInput(small, t[0][0], t[0][1]) }); } };
       await Promise.all(Array.from({ length: be.cpu.size }, lane));
     }
-    self.postMessage({ type: 'result', res, img }, [res.buffer, img.buffer]);
+    self.postMessage({ type: 'result', res, done, img }, [res.buffer, done.buffer, img.buffer]);
   } catch (error) {
     self.postMessage({ type: 'error', message: outOfMemory(error) ? 'MEMORY' : error?.message || String(error) });
   } finally { be?.close?.(); }

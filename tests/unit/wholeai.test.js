@@ -2,7 +2,7 @@
 // 仕上がりの良し悪しは、ここでは決めない（実際の写真を 100% で見て確かめる。docs/faceai-handoff.md）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SCALE, TILE, TILE_IN, PAD, smallFrom, tiles, tileInput, tileRect, regionOf, tileResidual, putResidual, addDetail, applyDetail, edgeProtect } from '../../wholeai.js';
+import { SCALE, TILE, TILE_IN, PAD, smallFrom, tiles, tileInput, tileRect, regionOf, tileResidual, putResidual, addDetail, applyDetail, edgeProtect, tilesNeeded, wholeCovers } from '../../wholeai.js';
 import { SIZE, hairMask, widenMatrix, applyMatrix, invertMatrix } from '../../faceai.js';
 import { validateState } from '../../state.js';
 
@@ -121,4 +121,27 @@ test('髪の広い切り出し: 真ん中はそのまま、顔は 1/k の大き�
   assert.ok(Math.hypot(cw[0] - SIZE / 2, cw[1] - SIZE / 2) < 1e-9);
   const p = applyMatrix(invertMatrix(M), 400, 100); const pw = applyMatrix(Mw, ...p);
   assert.ok(Math.abs(pw[0] - (SIZE / 2 + (400 - SIZE / 2) / 1.5)) < 1e-9 && Math.abs(pw[1] - (SIZE / 2 + (100 - SIZE / 2) / 1.5)) < 1e-9);
+});
+
+test('wholeai: 動かす区画は、くっきりの重みが 0 でない所にかかる区画だけ（まわり 1 画素も入れる）。地図がなければ全部', () => {
+  const W = 1024; const H = 768; // 縮めた絵 256×192 → 区画 2×2
+  assert.deepEqual([...tilesNeeded(null, W, H)], [1, 1, 1, 1]);
+  const mw = Math.round(W / SCALE); const mh = Math.round(H / SCALE); const M = new Uint8ClampedArray(mw * mh);
+  assert.deepEqual([...tilesNeeded({ width: mw, height: mh, data: M }, W, H)], [0, 0, 0, 0]); // 重みが全部 0 なら動かさない
+  M[10 * mw + 10] = 255; // 左上の区画の中
+  assert.deepEqual([...tilesNeeded({ width: mw, height: mh, data: M }, W, H)], [1, 0, 0, 0]);
+  M.fill(0); M[10 * mw + TILE] = 40; // 右上の区画の、境目のすぐ右の画素（隣とまぜて使うので、左上の区画の端にもかかる）
+  assert.deepEqual([...tilesNeeded({ width: mw, height: mh, data: M }, W, H)], [1, 1, 0, 0]);
+  M.fill(0); M[(TILE + 20) * mw + (TILE + 20)] = 1; // 右下だけ
+  assert.deepEqual([...tilesNeeded({ width: mw, height: mh, data: M }, W, H)], [0, 0, 0, 1]);
+});
+
+test('wholeai: 差分がいる区画の分まで計算してあるか', () => {
+  const need = Uint8Array.from([1, 0, 1, 0]);
+  assert.equal(wholeCovers(null, need), false);
+  assert.equal(wholeCovers({ done: null }, need), true); // 計算した区画の記録がなければ全部済み
+  assert.equal(wholeCovers({ done: Uint8Array.from([1, 0, 1, 0]) }, need), true);
+  assert.equal(wholeCovers({ done: Uint8Array.from([1, 0, 0, 0]) }, need), false);
+  assert.equal(wholeCovers({ done: Uint8Array.from([1, 0, 1, 0]) }, null), false); // 全部いる
+  assert.equal(wholeCovers({ done: Uint8Array.from([1, 1, 1, 1]) }, null), true);
 });
