@@ -35,19 +35,20 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.12'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.0'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
 // 項目は「道具」か「道具:種類」（顔の道具のリップなど）。項目を選ぶと、写真を大きく出して、下にその項目のスライダーだけを出す
+// [種類の id, アイコン（UI_ICON の名前）, 名前, 項目]
 const GROUPS = [
-  ['raw', '◈', 'RAW', ['raw']], // RAW を開いたときだけ
-  ['quick', '✦', 'おまかせ', ['looks', 'auto', 'faceai']],
-  ['face', '☺', '顔', ['skin', 'eyes:eyes', 'eyes:lip', 'eyes:nose', 'eyes:teeth', 'eyes:gaze', 'shape', 'wrinkle']],
-  ['adjust', '☀', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
-  ['part', '◎', '部分', ['local', 'dodge:dodge', 'dodge:burn', 'heal', 'hide']],
-  ['frame', '▢', 'フレーム', ['frame']],
-  ['info', 'ⓘ', '情報', ['info']],
+  ['raw', 'raw', 'RAW', ['raw']], // RAW を開いたときだけ
+  ['quick', 'quick', 'おまかせ', ['looks', 'auto', 'faceai']],
+  ['face', 'face', '顔', ['skin', 'eyes:eyes', 'eyes:lip', 'eyes:nose', 'eyes:teeth', 'eyes:gaze', 'shape', 'wrinkle']],
+  ['adjust', 'adjust', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
+  ['part', 'part', '部分', ['local', 'dodge:dodge', 'dodge:burn', 'heal', 'hide']],
+  ['frame', 'frame', 'フレーム', ['frame']],
+  ['info', 'info', '情報', ['info']],
 ];
 const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
 const ITEM_LABEL = { 'eyes:eyes': '目元', 'eyes:lip': 'リップ', 'eyes:nose': '鼻筋', 'eyes:teeth': '歯', 'eyes:gaze': '目線', 'dodge:dodge': '明るく', 'dodge:burn': '暗く', shape: '輪郭' };
@@ -82,12 +83,38 @@ const ITEM_ICON = {
   frame: '<rect x="3" y="3" width="18" height="18" rx="1.5"/><rect x="7" y="7" width="10" height="10"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/>',
 };
+/** 種類（おまかせ・顔…）と見出し・下のバーのボタンのアイコン（線の絵。24×24。文字の記号は端末によって絵文字になったり小さかったりするので使わない） */
+const UI_ICON = {
+  quick: '<path d="M11 4l1.9 4.9 4.9 1.9-4.9 1.9L11 17.6l-1.9-4.9L4.2 10.8l4.9-1.9z"/><path d="M18.5 14.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"/>',
+  face: '<circle cx="12" cy="12" r="8.5"/><path d="M8.5 14.5c1 1.3 2.2 1.9 3.5 1.9s2.5-.6 3.5-1.9"/><circle cx="9" cy="10.3" r=".8" fill="currentColor" stroke="none"/><circle cx="15" cy="10.3" r=".8" fill="currentColor" stroke="none"/>',
+  adjust: '<path d="M4 7h8M18 7h2M4 12h3M13 12h7M4 17h10M20 17h0"/><circle cx="15" cy="7" r="2.2"/><circle cx="8" cy="12" r="2.2"/><circle cx="17" cy="17" r="2.2"/>',
+  part: '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/>',
+  frame: '<rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><path d="M3.5 16.5l4.5-4.5 4 4 3-3 5.5 5.5"/><circle cx="15.5" cy="8.5" r="1.5"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle cx="12" cy="7.8" r=".9" fill="currentColor" stroke="none"/>',
+  raw: '<circle cx="12" cy="12" r="8"/><path d="M12 4l3 7M20 12l-7 3M12 20l-3-7M4 12l7-3"/>',
+  back: '<path d="M15 5l-7 7 7 7"/>',
+  undo: '<path d="M8.5 13.5L4 9l4.5-4.5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  redo: '<path d="M15.5 13.5L20 9l-4.5-4.5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+  compare: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/>',
+  more: '<circle cx="5.5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
+  close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  export: '<path d="M12 3.5v12M7.5 11 12 15.5l4.5-4.5M4.5 15.5v2.5A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5v-2.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
+  grid: '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M12 3.5v17M3.5 12h8.5"/>',
+  margin: '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><rect x="7.5" y="7.5" width="9" height="9" rx="1"/>',
+  photo: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 15.5l4.5-4 4 3.5 3-2.5 5.5 4.5"/><circle cx="15.5" cy="9.5" r="1.3"/>',
+};
 const iconCache = new Map();
-/** 項目のアイコンの SVG（アプリの中の決まった絵だけ） */
-function itemIcon(it) {
-  if (!iconCache.has(it)) iconCache.set(it, new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${ITEM_ICON[it] || ''}</svg>`, 'image/svg+xml').documentElement);
-  return document.importNode(iconCache.get(it), true);
+function svgIcon(key, body) {
+  if (!iconCache.has(key)) iconCache.set(key, new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">${body || ''}</svg>`, 'image/svg+xml').documentElement);
+  return document.importNode(iconCache.get(key), true);
 }
+/** 項目のアイコンの SVG（アプリの中の決まった絵だけ） */
+const itemIcon = (it) => svgIcon(`item:${it}`, ITEM_ICON[it]);
+/** 種類・ボタンのアイコンの SVG */
+const uiIcon = (k) => svgIcon(`ui:${k}`, UI_ICON[k]);
 /** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
 const MAX_REFS = 40;
 let refsBusy = false; // 本人の写真を読み込み中（同時に 2 回は足さない）
@@ -119,7 +146,7 @@ function applyTheme() {
   const t = prefs.get('theme', DEFAULT_THEME);
   const dark = t === 'dark' || (t === 'auto' && darkMQ.matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#19191b'); // 見出しはライトでも黒
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#000000'); // 見出しはライトでも黒
 }
 const isDark = () => document.documentElement.dataset.theme === 'dark';
 function setTheme(t) {
@@ -416,26 +443,29 @@ async function showLibrary() {
       themeButton()),
     h('main', { class: 'lib-main' },
       h('label', { class: `drop${projects.length ? ' compact' : ''}`, for: 'open-file', id: 'drop' },
-        h('span', { class: 'drop-icon', 'aria-hidden': 'true' }, '＋'),
+        h('span', { class: 'drop-icon', 'aria-hidden': 'true' }, uiIcon('plus')),
         h('b', {}, '写真を開く'),
-        h('span', { class: 'muted small' }, 'タップ・ドラッグ・貼り付け（複数可）')),
+        h('span', { class: 'muted small drop-sub' }, 'タップ・ドラッグ・貼り付け（複数可）')),
       fileIn,
       h('div', { id: 'install-slot' }, installCard()),
-      projects.length ? h('div', { class: 'lib-bar' }, h('h2', {}, `写真（${projects.length}）`), h('button', { type: 'button', class: 'ghost small', onclick: () => { projects.forEach((p) => selecting.add(p.id)); showLibrary(); } }, 'すべて選択')) : null,
+      projects.length ? h('div', { class: 'lib-bar' }, h('h2', {}, '写真', h('span', { class: 'lib-count' }, String(projects.length))), h('button', { type: 'button', class: 'ghost small', onclick: () => { projects.forEach((p) => selecting.add(p.id)); showLibrary(); } }, 'すべて選択')) : null,
       bar,
       projects.length ? grid : h('div', { class: 'lib-empty' },
-        h('h2', {}, 'できること'),
+        h('h2', {}, 'スマホの中だけで、きれいに仕上げる'),
+        h('p', { class: 'muted' }, 'アップロードもアカウントも要りません。AI もこの端末の中で動きます。'),
         h('ul', { class: 'feature-list' }, [
-          '暗所ノイズ除去・明るさ補正',
-          'AI ブレ補正',
-          '美肌・歯・リップ・鼻筋・目線',
-          'RAW 現像',
-          'フィルター・自動補正',
-          '修復・モザイク',
-          'フレーム・グリッド',
-        ].map((t) => h('li', {}, t))),
+          ['auto', '暗い写真を明るく・ノイズ除去'],
+          ['detail', 'AI ブレ補正・髪と服をくっきり'],
+          ['skin', '美肌・歯・リップ・鼻筋・目線'],
+          ['faceai', '顔 AI（本人の写真で本人らしく）'],
+          ['local', '背景をぼかす'],
+          ['raw', 'RAW 現像'],
+          ['looks', 'フィルター・自動補正'],
+          ['heal', '修復・モザイク'],
+          ['frame', 'フレーム・グリッド'],
+        ].map(([ic, t]) => h('li', {}, h('span', { class: 'feat-icon', 'aria-hidden': 'true' }, itemIcon(ic)), h('span', {}, t)))),
         h('h3', {}, 'スペシャリストモード（「⋯」メニュー）'),
-        h('ul', { class: 'feature-list' }, [
+        h('ul', { class: 'feature-list plain' }, [
           '明るさ・色・トーンカーブ・HSL・カラーグレーディング・ディテール・効果',
           '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
         ].map((t) => h('li', {}, t))))));
@@ -1371,10 +1401,10 @@ function buildEditor() {
   E.hqEl = h('div', { class: 'hq-status prog-card', role: 'status', hidden: true }, E.hqRing.el, h('span', {}));
   E.stageEl = h('div', { class: 'stage', tabindex: '-1' }, E.wrap, E.origBadge, E.hqEl);
   setupPointer(E.stageEl);
-  E.undoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': '元に戻す（Ctrl+Z）', title: '元に戻す（Ctrl+Z）', onclick: undo }, '↶');
-  E.redoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': 'やり直す（Ctrl+Shift+Z）', title: 'やり直す（Ctrl+Shift+Z）', onclick: redo }, '↷');
+  E.undoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': '元に戻す（Ctrl+Z）', title: '元に戻す（Ctrl+Z）', onclick: undo }, uiIcon('undo'));
+  E.redoBtn = h('button', { type: 'button', class: 'icon', 'aria-label': 'やり直す（Ctrl+Shift+Z）', title: 'やり直す（Ctrl+Shift+Z）', onclick: redo }, uiIcon('redo'));
   const CMP_LABEL = '編集前を表示（タップで切り替え・押している間だけでも・\\ キー）';
-  const cmp = h('button', { type: 'button', class: 'icon', 'aria-label': CMP_LABEL, title: CMP_LABEL, 'aria-pressed': 'false' }, '◧');
+  const cmp = h('button', { type: 'button', class: 'icon', 'aria-label': CMP_LABEL, title: CMP_LABEL, 'aria-pressed': 'false' }, uiIcon('compare'));
   const setOrig = (v) => { if (!E || E.showOriginal === v) return; E.showOriginal = v; cmp.setAttribute('aria-pressed', String(v)); requestRender(); };
   // さっとタップしたら、編集前の表示を切り替える（もう一度タップで戻る）。長押しは、押している間だけ編集前
   let press = null;
@@ -1384,7 +1414,7 @@ function buildEditor() {
   cmp.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setOrig(true); } });
   cmp.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') setOrig(false); });
   E.setOrig = setOrig;
-  const menu = h('details', { class: 'menu' }, h('summary', { 'aria-label': 'そのほかの操作', title: 'そのほかの操作' }, '⋯'),
+  const menu = h('details', { class: 'menu' }, h('summary', { 'aria-label': 'そのほかの操作', title: 'そのほかの操作' }, uiIcon('more')),
     h('div', { class: 'menu-list' },
       h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'),
       h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'),
@@ -1406,26 +1436,26 @@ function buildEditor() {
   E.sideTitle = h('h2', { class: 'side-name' });
   E.side = h('aside', { class: 'side', id: 'side', 'aria-label': '道具の設定' }, E.panel,
     h('div', { class: 'side-bar' },
-      h('button', { type: 'button', class: 'side-cancel', 'aria-label': 'キャンセル', title: 'この項目で変えたことを取り消す', onclick: cancelItem }, '✕'),
+      h('button', { type: 'button', class: 'side-cancel', 'aria-label': 'キャンセル', title: 'この項目で変えたことを取り消す', onclick: cancelItem }, uiIcon('close')),
       E.sideTitle,
-      h('button', { type: 'button', class: 'side-done', 'aria-label': '完了', title: '決めて、項目の一覧へ戻る', onclick: () => setSide(false) }, '✓')));
+      h('button', { type: 'button', class: 'side-done', 'aria-label': '完了', title: '決めて、項目の一覧へ戻る', onclick: () => setSide(false) }, uiIcon('check'))));
   E.tabs = h('nav', { class: 'tabs rail', role: 'tablist', 'aria-label': '種類', 'aria-orientation': 'vertical' });
   E.items = h('nav', { class: 'items', role: 'tablist', 'aria-label': '項目' });
   buildRail();
   // 表示の拡大・縮小（Canva の右下のように）
   E.zoomLabel = h('button', { type: 'button', class: 'zoom-val', title: '画面に合わせる（0 キー）', 'aria-label': '表示の大きさ（押すと画面に合わせる）', onclick: () => setZoom(1) }, '100%');
   const zoomBar = h('div', { class: 'zoom', role: 'group', 'aria-label': '表示の大きさ' },
-    h('button', { type: 'button', 'aria-label': '縮小', title: '縮小', onclick: () => setZoom(E.zoom / 1.25) }, '−'), E.zoomLabel,
-    h('button', { type: 'button', 'aria-label': '拡大', title: '拡大', onclick: () => setZoom(E.zoom * 1.25) }, '＋'));
+    h('button', { type: 'button', 'aria-label': '縮小', title: '縮小', onclick: () => setZoom(E.zoom / 1.25) }, uiIcon('minus')), E.zoomLabel,
+    h('button', { type: 'button', 'aria-label': '拡大', title: '拡大', onclick: () => setZoom(E.zoom * 1.25) }, uiIcon('plus')));
   for (const ev of ['pointerdown', 'dblclick', 'wheel']) zoomBar.addEventListener(ev, (e) => e.stopPropagation()); // 写真の上の操作（切り抜き・修復など）にしない
   E.stageEl.append(zoomBar);
   E.root = h('div', { class: 'editor' },
     h('header', { class: 'ed-head' },
-      h('button', { type: 'button', class: 'back', 'aria-label': '‹ 写真', title: '写真の一覧に戻る', onclick: showLibrary }, '‹'),
+      h('button', { type: 'button', class: 'back', 'aria-label': '‹ 写真', title: '写真の一覧に戻る', onclick: showLibrary }, uiIcon('back')),
       h('div', { class: 'ed-hist' }, E.undoBtn, E.redoBtn),
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
-        h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, h('span', { class: 'ico-export', 'aria-hidden': 'true' }), h('span', { class: 'export-label' }, '書き出し')))),
+        h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, uiIcon('export'), h('span', { class: 'export-label' }, '書き出し')))),
     E.tabs, E.items, E.side, E.stageEl);
   // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
   E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
@@ -1449,7 +1479,7 @@ function buildRail() {
   render(E.tabs, groups.map(([g, icon, label]) => h('button', {
     type: 'button', role: 'tab', id: `tab-${g}`, 'aria-controls': 'items', 'aria-selected': String(g === E.cat), tabindex: g === E.cat ? '0' : '-1', title: label,
     onclick: () => pickGroup(g), onkeydown: tabKeys,
-  }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', { class: 'tab-label' }, label))));
+  }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, uiIcon(icon)), h('span', { class: 'tab-label' }, label))));
   buildItems();
 }
 /** 今の項目（顔の道具なら「eyes:lip」のように種類まで） */
@@ -1523,7 +1553,7 @@ function openToolPicker() {
     h('h2', { id: 'tp-h' }, '表示する道具を選ぶ'),
     h('p', { class: 'hint' }, 'チェックを外した道具を隠します。'),
     h('div', { class: 'tp-groups' }, GROUPS.map(([g, icon, label, tools]) => h('fieldset', { class: 'tp-group' },
-      h('legend', {}, h('span', { 'aria-hidden': 'true' }, `${icon} `), label, g === 'raw' ? h('span', { class: 'muted small' }, '（RAW を開いたとき）') : null),
+      h('legend', {}, h('span', { class: 'tp-icon', 'aria-hidden': 'true' }, uiIcon(icon)), label, g === 'raw' ? h('span', { class: 'muted small' }, '（RAW を開いたとき）') : null),
       h('div', { class: 'tp-tools' }, groupTools(tools).map((t) => { const tg = toggle(TOOL_LABEL[t], !hid.has(t), (v) => { if (v) hid.delete(t); else hid.add(t); }); boxes.push(tg); return tg.el; }))))),
     h('div', { class: 'dlg-actions' },
       h('button', { type: 'button', class: 'ghost', onclick: () => { hid.clear(); for (const b of boxes) b.input.checked = true; } }, 'すべて表示'),
@@ -2935,16 +2965,16 @@ function buildGrid() {
   GR.view = h('canvas', { class: 'view grid-view', role: 'img', 'aria-label': `${GR.ps.length}枚の写真のグリッド` });
   GR.stage = h('div', { class: 'stage', 'data-tool': 'grid' }, GR.view);
   GR.panel = h('div', { class: 'panel', role: 'tabpanel', id: 'grid-panel' });
-  const TABS = [['layout', '▦', 'レイアウト'], ['style', '▢', '余白・色'], ['photo', '☐', '写真']];
+  const TABS = [['layout', 'grid', 'レイアウト'], ['style', 'margin', '余白・色'], ['photo', 'photo', '写真']];
   GR.tabs = h('nav', { class: 'tabs rail', role: 'tablist', 'aria-label': 'グリッドの設定', 'aria-orientation': 'vertical' }, TABS.map(([k, icon, label]) => h('button', {
     type: 'button', role: 'tab', id: `gtab-${k}`, 'aria-controls': 'grid-panel', 'aria-selected': String(GR.tab === k), tabindex: GR.tab === k ? '0' : '-1',
     onclick: () => { GR.tab = k; for (const b of GR.tabs.children) { const on = b.id === `gtab-${k}`; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; } gridPanel(); },
-  }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, icon), h('span', {}, label))));
+  }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, uiIcon(icon)), h('span', { class: 'tab-label' }, label))));
   render(app, h('div', { class: 'editor grid-editor' },
     h('header', { class: 'ed-head' },
-      h('button', { type: 'button', class: 'back', 'aria-label': '‹ 写真', title: '写真の一覧に戻る', onclick: () => { GR = null; showLibrary(); } }, '‹'),
+      h('button', { type: 'button', class: 'back', 'aria-label': '‹ 写真', title: '写真の一覧に戻る', onclick: () => { GR = null; showLibrary(); } }, uiIcon('back')),
       h('span', { class: 'ed-title' }, `グリッド（${GR.ps.length}枚）`),
-      h('div', { class: 'ed-tools' }, h('button', { type: 'button', class: 'primary', onclick: openGridExport }, '書き出し'))),
+      h('div', { class: 'ed-tools' }, h('button', { type: 'button', class: 'primary export', onclick: openGridExport }, uiIcon('export'), h('span', { class: 'export-label' }, '書き出し')))),
     GR.tabs, h('aside', { class: 'side' }, GR.panel), GR.stage));
   gridPointer(GR.stage);
   gridPanel(); drawGridView();

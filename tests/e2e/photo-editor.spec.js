@@ -570,14 +570,14 @@ test.describe('はじめて使う端末', () => {
   test('調整・部分補正は最初は隠してあり、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '◎部分', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '部分', 'フレーム', '情報']);
     // 「ライト」を出す
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     const dlg = page.getByRole('dialog', { name: '表示する道具を選ぶ' });
     await dlg.getByLabel('ライト').check();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '☀調整', '◎部分', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '調整', '部分', 'フレーム', '情報']);
     await rail.filter({ hasText: '調整' }).click(); // 中の項目が1つだけなら、すぐ開く
     await expect(page.locator('.side-name')).toHaveText('ライト');
     await setSlider(page, '露光量', 40);
@@ -586,7 +586,7 @@ test.describe('はじめて使う端末', () => {
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     await dlg.getByLabel('ライト').uncheck();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '◎部分', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '部分', 'フレーム', '情報']);
     expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
     // 全部隠そうとすると止める
     await page.locator('.menu summary').click();
@@ -605,7 +605,7 @@ test.describe('はじめて使う端末', () => {
     await expect(rail).toHaveCount(5);
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').check();
-    await expect(rail).toHaveText(['✦おまかせ', '☺顔', '☀調整', '◎部分', '▢フレーム', 'ⓘ情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '調整', '部分', 'フレーム', '情報']);
     await rail.filter({ hasText: '調整' }).click();
     await expect(page.locator('.items [role=tab]')).toHaveCount(7);
     // 再読み込みしても続く
@@ -691,9 +691,10 @@ test('書き出し: 写真アプリに保存できる端末では、1枚でも�
   expect(names).toHaveLength(2); expect(names.every((n) => n.endsWith('_edit.jpg'))).toBe(true);
 });
 
-test('編集の見出し: 戻るボタンは「‹」だけ（「写真」の文字は出さない）', async ({ page }) => {
+test('編集の見出し: 戻るボタンは矢印の絵だけ（「写真」の文字は出さない。名前は読み上げ用）', async ({ page }) => {
   await openWith(page);
-  await expect(page.locator('.ed-head .back')).toHaveText('‹');
+  await expect(page.locator('.ed-head .back')).toHaveText('');
+  await expect(page.locator('.ed-head .back svg')).toBeVisible();
   await expect(page.getByRole('button', { name: '‹ 写真' })).toBeVisible();
 });
 
