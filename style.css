@@ -187,9 +187,10 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .ed-head .menu-list button.danger { color: var(--danger); }
 .menu-mode { padding: 4px 12px; margin: 2px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .ed-head .menu-mode .tg { color: var(--text); font-weight: 600; }
-@keyframes pop-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } to { opacity: 1; transform: none; } }
+/* 出てくる動きは位置・大きさだけで、透明度は動かさない（薄い途中の色で文字のコントラストの検査に落ちないように） */
+@keyframes pop-in { from { transform: translateY(-6px) scale(.98); } to { transform: none; } }
 /* 真ん中にそろえた帯（translateX(-50%) のもの）用。動いている間も中央にそろえたまま */
-@keyframes pop-in-c { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translateX(-50%); } }
+@keyframes pop-in-c { from { transform: translate(-50%, -6px); } to { transform: translateX(-50%); } }
 
 .stage { position: relative; overflow: hidden; background: var(--stage); display: grid; place-items: center; touch-action: none; user-select: none; -webkit-user-select: none; }
 .stage[data-tool="hide"], .stage[data-tool="draw"] { cursor: crosshair; }
@@ -400,7 +401,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 /* トースト（shared/lib.js の toast を使う） */
 .toast-wrap { position: fixed; left: 0; right: 0; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; justify-items: center; gap: 6px; z-index: 100; pointer-events: none; padding: 0 16px; }
 .toast { background: var(--toast-bg); color: var(--toast-text); padding: 10px 18px; border-radius: 14px; /* 2行以上になっても丸くなりすぎない */ font-size: .88rem; font-weight: 500; box-shadow: 0 8px 28px rgb(0 0 0 / 30%); max-width: 100%; animation: toast-in .25s var(--ease); }
-@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes toast-in { from { transform: translateY(8px); } to { transform: none; } }
 .nojs { padding: 16px; }
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 3s; }
@@ -494,7 +495,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .dlg-actions > button { flex: 1 1 auto; }
   .dlg-actions > button.primary { flex: 2 1 auto; }
 }
-@keyframes sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes sheet-up { from { transform: translateY(40px); } to { transform: none; } }
 
 /* 写真一覧: 写真アプリのように小さく敷き詰める（大きさは文字の大きさに関係なく、画面の幅で決める） */
 .lib-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(31%, 150px), 1fr)); gap: 3px; }
