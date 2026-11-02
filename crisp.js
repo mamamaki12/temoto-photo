@@ -11,6 +11,11 @@ export const crispActive = (adj) => (adj.crisp || 0) > 0;
 export const crispAmount = (adj) => (adj.crisp || 0) / 50;
 /** 肌に足す割合（髪・服を 1 として） */
 export const SKIN = 0.35;
+/**
+ * 人物の割合がこれ以下の所は背景（重み 0）。AI の人物の地図は背景でも 0.03〜0.1 ほど残るので、そのままだと背景全体に差分が 1 割ほど足され
+ * （「背景 0」になっていなかった）、全体 AI を背景の区画でも動かすことになっていた（2026-11-02 に IMG_9536 で確認。地図の 45% が 8〜31/255）
+ */
+export const BACK = 0.12;
 
 /**
  * 重みの地図（w×h、0〜255）
@@ -25,7 +30,7 @@ export function crispWeights(alpha, w, h, parts) {
     for (let i = 0; i < n; i++) s[i] = Math.min(1, parts.parts[2 * n + i] + parts.parts[3 * n + i]);
     skin = resizeMap(s, parts.w, parts.h, w, h);
   }
-  for (let i = 0; i < w * h; i++) out[i] = Math.round(255 * alpha[i] * (1 - (skin ? skin[i] : 0) * (1 - SKIN)));
+  for (let i = 0; i < w * h; i++) { const a = Math.min(1, Math.max(0, (alpha[i] - BACK) / (1 - BACK))); out[i] = Math.round(255 * a * (1 - (skin ? skin[i] : 0) * (1 - SKIN))); }
   return out;
 }
 

@@ -122,3 +122,13 @@ test('リップ: 下唇のつやの所も唇として塗り（穴をあけない
   applyBrush(t, { type: 'teeth', pts: [[0.5, 0.5]], r: 0.01, amt: 0.8, whole: true, lips });
   for (let c = 0; c < 3; c++) assert.ok(Math.abs(px(t, 215, 182)[c] - px(org, 215, 182)[c]) <= 3, 'つやは歯ではない');
 });
+
+test('リップ: 照明の色（舞台の橙）に合わせて目標の色を変える。日なたの肌では変えない', async () => {
+  const { lipUnderLight, LIP_COLORS } = await import('../../brushfx.js');
+  const pink = LIP_COLORS[0][2];
+  assert.deepEqual(lipUnderLight(pink, null), pink);
+  assert.deepEqual(lipUnderLight(pink, [160, 112, 109]), pink); // 日なたの頬（IMG_9471）: 色の濃さが明るさの 0.21 倍 → そのまま
+  const stage = lipUnderLight(pink, [209, 119, 77]); // 舞台の橙の照明の頬（IMG_9440 の暗所おまかせ後）
+  assert.ok(stage[0] > pink[0] && stage[2] < pink[2] && Math.abs(stage[1] - pink[1]) < 8, String(stage)); // 赤は増え、青は減る（橙に寄る）
+  assert.ok(stage[0] / stage[2] < 4.5, String(stage)); // 上限（0.75）があるので、照明の比をそのまま掛けた値（約 4.7）までは行かない
+});

@@ -364,3 +364,22 @@ test('lowlight: 粒を弱める地図は、肌の地図（顔・首・胸元・�
   assert.ok(Math.abs(grainScale(s.face, 35, 40, w, h) - 0.5) < 0.05);
   assert.ok(grainScale(s.face, 110, 5, w, h) > 0.95); // 肌でない所はそのまま
 });
+
+test('lowlight: WebAssembly のメモリは 1 組を使い回す（大きい絵の後の小さい絵、小さい絵の後の大きい絵でも、結果は JavaScript と同じ）', async () => {
+  const { useWasm, nlmMemoryPages } = await import('../../restoration-lowlight.js');
+  const make = (w, h) => {
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    let s = 777; const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return s / 4294967296; };
+    for (let i = 0; i < w * h; i++) { const b = 25 + 20 * ((i % w) > w / 2); rgba[4 * i] = b + 16 * rnd(); rgba[4 * i + 1] = b * 0.9 + 16 * rnd(); rgba[4 * i + 2] = b * 0.7 + 16 * rnd(); rgba[4 * i + 3] = 255; }
+    return rgba;
+  };
+  const run = (w, h, rgba) => enhanceBand({ width: w, height: h, data: rgba.slice() }, { top: 0, bottom: h, y0: 0, fullW: w, fullH: h }, { nr: 1, profile: measureNoise(rgba, w, h), tone: null });
+  const small = make(64, 48); const big = make(400, 320);
+  useWasm(true);
+  const s1 = run(64, 48, small); const p1 = nlmMemoryPages(); assert.ok(p1 > 0);
+  const b1 = run(400, 320, big); const p2 = nlmMemoryPages(); assert.ok(p2 > p1, `${p1} → ${p2}`); // 足りなければ広げる
+  const s2 = run(64, 48, small); assert.equal(nlmMemoryPages(), p2); // 小さい絵では広げない（使い回す）
+  useWasm(false);
+  assert.deepEqual(s1, run(64, 48, small)); assert.deepEqual(b1, run(400, 320, big)); assert.deepEqual(s2, s1);
+  useWasm(true);
+});

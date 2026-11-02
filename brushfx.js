@@ -16,6 +16,10 @@ export const NOSE_POINTS = { mid: [168, 6, 197, 195, 5, 4, 1], li: [122, 196, 3,
 // それぞれの系統のまん中に近い実際の色にした（ピンク: ディオール 351、コーラル: ディオール 644、レッド: ジバンシィ 13、
 // ローズ: ジバンシィ 23、ベリー: ディオール 867、ヌード: イヴ・サンローラン 11 の色）
 export const LIP_COLORS = [['pink', 'ピンク', [228, 97, 119]], ['coral', 'コーラル', [234, 83, 49]], ['red', 'レッド', [202, 41, 46]], ['rose', 'ローズ', [198, 46, 84]], ['berry', 'ベリー', [144, 26, 50]], ['nude', 'ヌード', [192, 107, 114]]];
+/** 日なたの肌の色の比（R・G・B の割合。リップの色を照明に合わせるときの目安。10/24 の屋外の写真の頬で測った） */
+export const LIP_SKIN_REF = [0.42, 0.30, 0.28];
+/** 照明に合わせる強さの上限（1 = 照明の色をそのまま掛ける。目は照明に全部は慣れないので、少し残す） */
+export const LIP_ADAPT = 0.75;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const LIN = new Float32Array(256).map((_, i) => { const v = i / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
@@ -584,7 +588,11 @@ function lip(img, mk, amt, col, area) {
   }
   if (!sw) return;
   const mY = sY / sw; const mC = Math.max(4, sC / sw);
-  const [tY, tCb, tCr] = ycc(col[0], col[1], col[2]); const tC = Math.hypot(tCb - 128, tCr - 128);
+  // 照明の色に合わせる（舞台の橙・夕日の下で、目標の色をそのままのせると、まわりの肌より青みがかって紫に見えた。1.35.8 の舞台写真で確認）。
+  // まわりの肌（唇らしさの低い所）の色の比を日なたの肌の目安（LIP_SKIN_REF）と比べて照明の色とみなし、目標の RGB にその比を掛ける
+  // （この照明の下で見える色）。歯（teethWhole）と同じく、肌の色の濃さ（明るさに対する比）が大きい（照明の色が強い）ときだけ。日なたでは変えない
+  const col2 = lipUnderLight(col, lipSkin(d, W, mk, lipOf));
+  const [tY] = ycc(col[0], col[1], col[2]); const [, tCb, tCr] = ycc(col2[0], col2[1], col2[2]); const tC = Math.hypot(tCb - 128, tCr - 128);
   const tdir = tC > 0 ? [(tCb - 128) / tC, (tCr - 128) / tC] : [0, 0];
   // 目標の明るさへの寄せ方（唇全体の明るさを、目標の色の明るさへ。暗い色（ベリー・レッド）は暗くなる。明るくするのは控えめ）
   const yGain = Math.min(1.1, Math.max(0.45, tY / Math.max(mY, 1)));
@@ -607,6 +615,29 @@ function lip(img, mk, amt, col, area) {
     d[k + 1] = Math.max(0, Math.min(255, Y1 - 0.344136 * (cb1 - 128) - 0.714136 * (cr1 - 128)));
     d[k + 2] = Math.max(0, Math.min(255, Y1 + 1.772 * (cb1 - 128)));
   }
+}
+
+/** ブラシの中の、唇でない所（まわりの肌）の平均の色 [r, g, b]（少なすぎれば null） */
+function lipSkin(d, W, mk, lipOf) {
+  const { m, bx, by, w, h } = mk; let n = 0; const s = [0, 0, 0];
+  for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
+    const i = y * w + x; if (m[i] < 0.2) continue; const k = ((by + y) * W + bx + x) * 4; const [Y, , cr] = ycc(d[k], d[k + 1], d[k + 2]);
+    const l = lipOf(i, Y, cr); if (l > 0.2 || Y < 30) continue;
+    const g = m[i] * (1 - l); n += g; s[0] += g * d[k]; s[1] += g * d[k + 1]; s[2] += g * d[k + 2];
+  }
+  return n >= 20 ? s.map((v) => v / n) : null;
+}
+/**
+ * 目標の色（[r, g, b]）を、まわりの肌の色（skin）から分かる照明の色の下で見える色に（白色点の合わせ方: 肌の色の比 ÷ 日なたの肌の比を掛ける）。
+ * 照明の色が強い（肌の色の濃さが明るさの 0.25 倍を超える）ときだけ、強さに応じて。skin がなければそのまま
+ */
+export function lipUnderLight(col, skin, max = LIP_ADAPT) {
+  if (!skin) return col;
+  const [Y, cb, cr] = ycc(skin[0], skin[1], skin[2]);
+  const lit = max * smooth((Math.hypot(cb - 128, cr - 128) / Math.max(1, Y) - 0.25) / 0.2);
+  if (lit <= 0) return col;
+  const s = skin[0] + skin[1] + skin[2]; if (s <= 0) return col;
+  return col.map((v, c) => v * ((skin[c] / s) / LIP_SKIN_REF[c]) ** lit);
 }
 
 /**

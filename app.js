@@ -20,6 +20,9 @@ import { slider, chips, colorPicker, toggle, fmtBytes } from './ui.js';
 import { ctx2d, imageData, COLOR_SPACE } from './color.js';
 import { exportFull, precomputeLowlight } from './fullres.js';
 import { lowMemory } from './cores.js';
+import { CALC, HQ_FMT } from './calc-version.js';
+import { holdScreen } from './wakelock.js';
+import { makeEta, fmtEta } from './eta.js';
 import { lowlightActive, lowlightOptions, withoutLowlight, enhanceCanvas } from './restoration-photo.js';
 import { planTone } from './restoration-lowlight.js';
 import { TonePreviewGL } from './tone-gl.js';
@@ -28,6 +31,7 @@ import { bokehActive } from './bokeh.js';
 import { bokehSource, bokehFromSource, bokehCanvas } from './bokeh-photo.js';
 import { crispActive, crispAmount } from './crisp.js';
 import { crispMapFor, crispCanvas } from './crisp-photo.js';
+import { tilesNeeded, wholeCovers } from './wholeai.js';
 import { applyFaceAI, autoPick, remergeFaces, detectFaces, faceaiActive, faceaiAmount, faceaiKey, faceaiWhole, faceThumb, facesFromPhoto, guessPerson, loadPeople, loadPending, matchFace, releaseFaceRec, savePeople, savePending, wholeCanvas, wholeResidual } from './face-photo.js';
 import { LIBRAW_RE, decodeLibRaw, developToCanvas, pixelSource } from './rawlib.js';
 import { prepareLin } from './rawdev.js';
@@ -35,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.35.12'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.1'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -569,7 +573,7 @@ function rebuildSource() {
 // スライダーを動かしている間は GPU の簡易版で見せ、手を止めたら Worker で計算する（進捗は写真の上のバーに）。
 // できたら、それを修復・美肌・GPU の調整の元にする（GPU の簡易版は二重にかけない）。
 // 順番は「ノイズ除去 → 明るさ → ブレ補正 → 細かい粒」。途中の結果は取っておき、ブレ補正の強さだけを変えたときは AI を動かし直さない
-const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) || bokehActive(st.adj) || crispActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount, faceaiWhole(st), bokehActive(st.adj), st.adj.crisp]) : null);
+const hqKey = (st) => (lowlightActive(st.adj) || deblurActive(st.adj) || faceaiActive(st) || bokehActive(st.adj) || crispActive(st.adj) ? JSON.stringify([st.adj.noise, st.adj.lowlight, st.adj.deblur, E.rawKey, faceaiKey(st), st.faceai.amount, faceaiWhole(st), bokehActive(st.adj), st.adj.crisp, CALC]) : null);
 function hqReady() { return !!E.hq?.canvas && E.hq.key === hqKey(E.state); }
 /**
  * いま見せる、暗所補正・ブレ補正をした写真。ブレ補正の強さだけを変えて計算し直している間は、前にできたものを見せる
@@ -653,22 +657,33 @@ function scheduleLowlight() {
 function stageKeys(adj, state) {
   const ll = lowlightActive(adj); const db = deblurActive(adj); const fa = !!state && faceaiActive(state); const bk = bokehActive(adj); const cr = crispActive(adj);
   // 粒はブレ補正の後に足す（ブレ補正があるときは、暗所補正では足さない）
-  const llKey = ll ? JSON.stringify([adj.noise, adj.lowlight, db]) : null;
-  const dbKey = JSON.stringify([adj.noise, adj.lowlight]);
+  // 段ごとの計算の版（CALC）も鍵に入れる（その段の計算を直したときだけ、保存しておいた結果を捨てる）
+  const llKey = ll ? JSON.stringify([adj.noise, adj.lowlight, db, CALC.ll]) : null;
+  const dbKey = JSON.stringify([adj.noise, adj.lowlight, CALC.ll, CALC.db]);
   // 全体 AI の差分は、顔 AI（髪・服・背景も整える）と、髪・服をくっきりで同じものを使う。くっきりが入っているときは、その重み（髪・服 1、肌 0.35、背景 0）で足す
   const wh = (fa && faceaiWhole(state)) || cr;
-  const whKey = wh ? JSON.stringify([llKey, db && dbKey, db && adj.deblur]) : null;
-  const cmKey = cr ? JSON.stringify([whKey, 'map']) : null;
-  const pfKey = JSON.stringify([llKey, db && dbKey, db && adj.deblur, whKey, cr && adj.crisp]);
+  const whKey = wh ? JSON.stringify([llKey, db && dbKey, db && adj.deblur, CALC.wh]) : null;
+  const cmKey = cr ? JSON.stringify([whKey, 'map', CALC.cm]) : null;
+  const pfKey = JSON.stringify([llKey, db && dbKey, db && adj.deblur, whKey, cr && adj.crisp, CALC.mix]);
   // 顔 AI の強さは、AI の結果を当てる強さだけなので、鍵に入れない（強さだけを変えたときは、当て直すだけ）
-  const faKey = fa ? JSON.stringify([pfKey, faceaiKey(state)]) : null;
+  const faKey = fa ? JSON.stringify([pfKey, faceaiKey(state), CALC.fa]) : null;
   // 背景のぼかしは、全体 AI・顔 AI の前の写真（暗所補正・ブレ補正まで）から作る。人物の内側は変えず、背景の細かい所はぼかすと消えるので、
   // 顔 AI・くっきりを変えても作り直さない（合成だけし直す）
-  const bsKey = JSON.stringify([llKey, db && dbKey, db && adj.deblur]);
-  const bkKey = bk ? bsKey : null; // 強さは写真ごとに自動（ぼかしの元の顔の大きさから）なので、オン／オフだけ
+  const bsKey = JSON.stringify([llKey, db && dbKey, db && adj.deblur, CALC.bs]);
+  const bkKey = bk ? JSON.stringify([bsKey, CALC.bk]) : null; // 強さは写真ごとに自動（ぼかしの元の顔の大きさから）なので、オン／オフだけ
   return { ll, db, fa, bk, cr, wh, llKey, dbKey, whKey, cmKey, pfKey, faKey, bsKey, bkKey };
 }
 const fresh0 = (c, k, key) => c[k]?.key === key;
+/**
+ * 全体 AI の差分が、いる区画の分まで求めてあるか（c: 計算の取っておき。くっきりだけのときは人物の区画だけでよい。
+ * くっきりの重みの地図がまだないときは分からないので false。保存しておいた差分（whs）は、計算した区画（done）で判断）
+ */
+function wholeReady(c, K, cr, W, H) {
+  const have = fresh0(c, 'wh', K.whKey) ? c.wh.res : c.whs?.key === K.whKey ? c.whs : null;
+  if (!have) return false;
+  if (!cr) return wholeCovers(have, null);
+  return fresh0(c, 'cm', K.cmKey) && wholeCovers(have, tilesNeeded(c.cm.map, W, H));
+}
 /** 途中で作った Canvas を、取っておくもの以外は片付ける（iPhone は Canvas のメモリが少なく、使い切ると写真一覧に戻されることがある） */
 function dropCanvas(c, ...keep) { if (c instanceof HTMLCanvasElement && !keep.includes(c)) { c.width = 0; c.height = 0; } }
 /**
@@ -705,7 +720,7 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
   // 前に途中で止まったとき保存しておいた段（cache.lls・cache.dbs）があれば、計算し直さずに読み込む
   const llMiss = needA && !pfHit && !a0Use && !!ll && !fresh(cache, 'll', K.llKey) && cache.lls?.key !== K.llKey;
   const dbMiss = needA && !pfHit && !a0Use && db && !fresh(cache, 'db', K.dbKey) && cache.dbs?.key !== K.dbKey;
-  const whMiss = needA && !pfHit && wh && !fresh(cache, 'wh', K.whKey) && cache.whs?.key !== K.whKey;
+  const whMiss = needA && !pfHit && wh && !wholeReady(cache, K, cr, src.W, src.H);
   const last = cache.lastA || {};
   const dbRedo = needA && !pfHit && !a0Use && db && (dbMiss || llMiss || last.db !== adj.deblur); // ブレ補正の強さを変えた（差分を当て直す）
   const crRedo = needA && !pfHit && cr && (whMiss || dbRedo || llMiss || last.cr !== adj.crisp || !fresh(cache, 'cm', K.cmKey));
@@ -771,17 +786,21 @@ async function enhanceSource(src, adj, { signal, onProgress = () => {}, onSteps 
     if (wantBs && cache.bs?.key !== K.bsKey) { cache.bs = null; cache.bs = { key: K.bsKey, src: await bokehSource(canvas, src.W, src.H, { signal, onProgress: (t) => at0('bs', t) }) }; }
     // 全体 AI（髪・服・背景の細かい所。大まかな形と色・粒は変えない）。顔は、このあと顔 AI で置き換わる
     if (wh) {
-      if (whMiss) {
-        cache.wh = null;
-        cache.wh = { key: K.whKey, res: await wholeResidual(canvas, src.W, src.H, { signal, onProgress: (t) => at0('wh', t * 0.9) }) };
-        await onStage('wh', cache.wh);
-      } else if (!fresh(cache, 'wh', K.whKey)) {
+      // くっきりの重みの地図を先に作る（全体 AI をどの区画で動かすかを決める）。全体 AI はいちばん時間がかかるので、くっきりだけのときは
+      // 人物（重みが 0 でない所）の区画だけ動かし、あとで顔 AI で全体に当てるときに残りを足す
+      if (cr && !fresh(cache, 'cm', K.cmKey)) { cache.cm = null; cache.cm = { key: K.cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
+      const map = cr ? cache.cm.map : null; const amount = cr ? crispAmount(adj) : 1;
+      const need = tilesNeeded(map, src.W, src.H);
+      if (!fresh(cache, 'wh', K.whKey) && cache.whs?.key === K.whKey) {
         const r = await cache.whs.load(); // 保存しておいた全体 AI の差分
         if (!r) { cache.whs = null; return enhanceSource(src, adj, { signal, onProgress, onSteps, onStage, onHint, state }); }
         cache.wh = { key: K.whKey, res: r };
       }
-      if (cr && !fresh(cache, 'cm', K.cmKey)) { cache.cm = null; cache.cm = { key: K.cmKey, map: await crispMapFor(canvas, src.W, src.H, { signal }) }; }
-      const map = cr ? cache.cm.map : null; const amount = cr ? crispAmount(adj) : 1;
+      if (!fresh(cache, 'wh', K.whKey) || !wholeCovers(cache.wh.res, need)) {
+        const prev = fresh(cache, 'wh', K.whKey) ? cache.wh.res : null; cache.wh = null;
+        cache.wh = { key: K.whKey, res: await wholeResidual(canvas, src.W, src.H, { signal, need, prev, onProgress: (t) => at0('wh', t * 0.9) }) };
+        await onStage('wh', cache.wh);
+      }
       const c = map ? await crispCanvas(canvas, src.W, src.H, cache.wh.res, map, amount) : await wholeCanvas(canvas, src.W, src.H, cache.wh.res);
       at0('wh', 1);
       // A0（暗所補正・ブレ補正の後）は、開き直したときのために保存する（編集画面で、今回作ったときだけ）
@@ -839,6 +858,7 @@ async function runLowlight() {
   const t0 = performance.now(); const K = stageKeys(E.state.adj, E.state);
   if (lowMemory()) freeForHeavy();
   const mark = markHeavy(E.id, key);
+  const release = holdScreen(); // 計算の間は画面を消さない（消えると計算が止まる）
   try {
     const { canvas, res, faces, whole, bokeh, partial, pre, pre0 } = await enhanceSource({ base: E.base, W: E.W, H: E.H, origW: E.proj.w || E.W, origH: E.proj.h || E.H, cache: E.hqCache }, E.state.adj, {
       state: E.state, signal: ctrl.signal,
@@ -863,15 +883,16 @@ async function runLowlight() {
     if (E !== e0 || E.hq?.ctrl !== ctrl) return;
     E.hq = { key, canvas: null, ctrl: null }; hqBar(null); E.onHq?.(); E.autoPending = false;
     if (err.name !== 'AbortError') { console.warn('暗所補正・ブレ補正・顔 AI', err); if (faceaiActive(E.state) && err.friendly) toast(err.message, 9000); else toast(faceaiActive(E.state) ? `顔 AI をできませんでした（${err.message}）` : deblurActive(E.state.adj) ? 'ブレ補正・ノイズ除去・明るさ補正をできませんでした' : lowlightActive(E.state.adj) ? 'ノイズ除去・明るさ補正をできませんでした。簡易版で表示しています' : crispActive(E.state.adj) ? `髪・服をくっきりできませんでした（${err.message}）` : '背景をぼかせませんでした'); }
-  }
+  } finally { release(); }
 }
 // ── 暗所補正・ブレ補正・顔 AI の結果を、写真ごとに端末に保存する ──
 // 編集の値（スライダー・ブラシ・顔 AI の選んだ顔）は前から保存しているが、重い補正の結果は保存していなかったので、
 // 写真を開き直すたびに一から計算し直し、その間（iPhone では数十秒）は補正前の暗い写真に見えていた。
 // 画素をそのまま（色空間もそのまま）保存して、開いたときに編集の値が同じならすぐ見せる。PNG にしないのは、Display P3 の色が変わらないように
 const HQ_KEEP = 10; // 残す枚数（最近補正した写真から）
-// 保存した版（VERSION）が今と違う結果は使わない。補正の計算を直しても、前に開いた写真は古い計算の結果のまま見えてしまう
-// （1.32.1 で肌の色味を戻したあとも、それより前に開いた写真は白っぽい肌のままだった）。版が変わったら一度だけ計算し直す
+// 補正の計算を直しても、前に開いた写真は古い計算の結果のまま見えてしまう（1.32.1 で肌の色味を戻したあとも、それより前に開いた写真は白っぽい肌のままだった）。
+// 前はアプリの版（VERSION）が違う結果を全部捨てていたが、更新のたびに全部計算し直すことになるので、今は段ごとの計算の版（calc-version.js の CALC）を鍵に入れ、
+// 直した段の結果だけ捨てる。記録の形の版（HQ_FMT）が違うものは使わない
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
 /** 保存し終えた（保存しない）顔 AI の前の写真を片付ける。計算の取っておき・表示に使っているもの（暗所補正だけのときの結果など）は残す */
 const dropPre = (e0, pre) => dropCanvas(pre, e0.base, e0.hqCache?.ll?.canvas, e0.hqCache?.fa?.canvas, e0.hq?.canvas, e0.hqLast?.canvas);
@@ -912,7 +933,7 @@ async function saveHq(e0, key, canvas, { pre = null, pre0 = null, K = null, face
   let rec = null;
   /** 記録を書く（途中の結果は、詰め終わったものと、前に保存した同じもの） */
   const put = async (old) => {
-    const same = old && (old.raw ?? null) === (e0.rawKey ?? null) && old.z === canZip && old.ver === VERSION;
+    const same = old && (old.raw ?? null) === (e0.rawKey ?? null) && old.z === canZip && old.fmt === HQ_FMT;
     const pick = (pack, k, name) => (pack?.key === k ? pack : same && old[name]?.key === k ? old[name] : null);
     rec = { ...rec,
       pf: K && (K.fa || K.bk) ? pick(e0.pfPack, K.pfKey, 'pf') : null,
@@ -925,7 +946,7 @@ async function saveHq(e0, key, canvas, { pre = null, pre0 = null, K = null, face
     try {
       const data = await packPixels(canvas, e0.W, e0.H);
       if (e0.hq?.key === key) {
-        rec = { key, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now(), raw: e0.rawKey ?? null, pfKey: K?.pfKey ?? null,
+        rec = { key, fmt: HQ_FMT, ver: VERSION, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, data, at: Date.now(), raw: e0.rawKey ?? null, pfKey: K?.pfKey ?? null,
           fa: K?.fa && faces ? { key: K.faKey, faces } : null, bk: K?.bk && bokeh ? { key: K.bkKey, res: bokeh } : null, bs: K && bs?.key === K.bsKey ? bs : null,
           cm: K?.cr && cm?.key === K.cmKey ? cm : null };
         await put(K && (K.fa || K.bk || K.wh) ? await db.getHq(e0.id).catch(() => null) : null);
@@ -942,7 +963,7 @@ async function saveHq(e0, key, canvas, { pre = null, pre0 = null, K = null, face
     dropPre(e0, pre); pre = null;
     if (pre0 && K?.wh && e0.a0Pack?.key !== K.bsKey) { e0.a0Pack = { key: K.bsKey, data: await packPixels(pre0, e0.W, e0.H) }; added = true; }
     dropPre(e0, pre0); pre0 = null;
-    if (K?.wh && wh?.key === K.whKey && e0.whPack?.key !== K.whKey) { e0.whPack = { key: K.whKey, width: wh.res.width, height: wh.res.height, data: await packBytes(wh.res.data) }; added = true; }
+    if (K?.wh && wh?.key === K.whKey && (e0.whPack?.key !== K.whKey || e0.whPack.done !== (wh.res.done || null))) { e0.whPack = { key: K.whKey, width: wh.res.width, height: wh.res.height, data: await packBytes(wh.res.data), done: wh.res.done || null }; added = true; }
     if (added && rec && e0.hq?.key === key) await put(rec);
   } catch (err) { dropPre(e0, pre); dropPre(e0, pre0); console.warn('補正の途中の結果を保存できませんでした', err); }
 }
@@ -960,17 +981,17 @@ async function saveStage(e0, name, v) {
       const { width, height, data } = v.res; const q = new Int16Array(data.length);
       for (let i = 0; i < data.length; i++) q[i] = Math.max(-32767, Math.min(32767, Math.round(data[i] * RES_SCALE)));
       part = { key: v.key, width, height, data: await packBytes(q) };
-    } else if (name === 'wh') part = { key: v.key, width: v.res.width, height: v.res.height, data: await packBytes(v.res.data) };
+    } else if (name === 'wh') part = { key: v.key, width: v.res.width, height: v.res.height, data: await packBytes(v.res.data), done: v.res.done || null };
     else return;
     const old = await db.getStage(e0.id).catch(() => null);
-    const same = old && old.ver === VERSION && (old.raw ?? null) === (e0.rawKey ?? null) && old.W === e0.W && old.H === e0.H && old.space === COLOR_SPACE && old.z === canZip;
-    await db.putStage(e0.id, { ...(same ? old : {}), ver: VERSION, raw: e0.rawKey ?? null, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, at: Date.now(), [name]: part });
+    const same = old && old.fmt === HQ_FMT && (old.raw ?? null) === (e0.rawKey ?? null) && old.W === e0.W && old.H === e0.H && old.space === COLOR_SPACE && old.z === canZip;
+    await db.putStage(e0.id, { ...(same ? old : {}), fmt: HQ_FMT, ver: VERSION, raw: e0.rawKey ?? null, W: e0.W, H: e0.H, space: COLOR_SPACE, z: canZip, at: Date.now(), [name]: part });
     await db.pruneHq(3, 'stage:'); // 大きいので、最近の 3 枚分だけ
   } catch (err) { console.warn('仕上げの途中の結果を保存できませんでした', err); }
 }
 /** 保存しておいた途中の段を、計算の取っておき（E.hqCache）に入れる（読み込むのは使うとき） */
 function seedStage(rec) {
-  if (!rec || rec.ver !== VERSION || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
+  if (!rec || rec.fmt !== HQ_FMT || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
   const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {}); const z = rec.z;
   if (rec.ll && rec.ll.key === K.llKey && !c.ll) { const { data, grain, gface = null } = rec.ll; c.lls = { key: K.llKey, grain, gface, load: () => unpackPixels(data, z, E.W, E.H) }; }
   if (rec.db && rec.db.key === K.dbKey && !c.db) {
@@ -981,7 +1002,7 @@ function seedStage(rec) {
       return { width, height, data: f };
     } };
   }
-  if (rec.wh && rec.wh.key === K.whKey && !c.wh && c.whs?.key !== K.whKey) { const { data, width, height } = rec.wh; c.whs = { key: K.whKey, load: async () => { const d = await unpackBytes(data, z, width * height * 3); return d && { width, height, data: d }; } }; }
+  if (rec.wh && rec.wh.key === K.whKey && !c.wh && c.whs?.key !== K.whKey) { const { data, width, height, done = null } = rec.wh; c.whs = { key: K.whKey, done, load: async () => { const d = await unpackBytes(data, z, width * height * 3); return d && { width, height, data: d, done }; } }; }
 }
 async function unpack16(data, z, n) {
   if (!(data instanceof Blob) || (z && !canZip)) return null;
@@ -1023,7 +1044,7 @@ function freeForHeavy() {
 }
 /** 保存しておいた補正の結果を、編集の値が同じなら読み込む（違えば null） */
 async function loadHq(rec) {
-  if (!rec || rec.ver !== VERSION || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return null;
+  if (!rec || rec.fmt !== HQ_FMT || rec.key !== hqKey(E.state) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return null;
   return unpackPixels(rec.data, rec.z, rec.W, rec.H);
 }
 /**
@@ -1034,7 +1055,7 @@ async function loadHq(rec) {
  */
 function seedHqCache(rec, canvas) {
   const K = stageKeys(E.state.adj, E.state); const c = (E.hqCache ||= {});
-  if (!rec || rec.ver !== VERSION || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
+  if (!rec || rec.fmt !== HQ_FMT || (rec.raw ?? null) !== (E.rawKey ?? null) || rec.W !== E.W || rec.H !== E.H || rec.space !== COLOR_SPACE) return;
   const z = rec.z;
   if (rec.pf?.key === K.pfKey) E.pfPack = rec.pf;
   // 顔 AI もぼかしも使わないときは、仕上がりが顔 AI の前の写真と同じ
@@ -1044,7 +1065,7 @@ function seedHqCache(rec, canvas) {
   if (rec.bs?.key === K.bsKey) c.bs = { key: K.bsKey, src: rec.bs.src };
   // 暗所補正・ブレ補正の後の写真（全体 AI を使っていなければ、顔 AI の前の写真と同じ）・全体 AI の差分・くっきりの重み
   if (rec.a0?.key === K.bsKey) { E.a0Pack = rec.a0; const { data } = rec.a0; c.a0 = { key: K.bsKey, load: () => unpackPixels(data, z, E.W, E.H) }; } else if (!K.wh && c.pf) c.a0 = { key: K.bsKey, load: c.pf.load };
-  if (rec.whs?.key === K.whKey) { E.whPack = rec.whs; const { data, width, height } = rec.whs; c.whs = { key: K.whKey, load: async () => { const d = await unpackBytes(data, z, width * height * 3); return d && { width, height, data: d }; } }; }
+  if (rec.whs?.key === K.whKey) { E.whPack = rec.whs; const { data, width, height, done = null } = rec.whs; c.whs = { key: K.whKey, done, load: async () => { const d = await unpackBytes(data, z, width * height * 3); return d && { width, height, data: d, done }; } }; }
   if (rec.cm?.key === K.cmKey) c.cm = rec.cm;
   if (rec.pfKey === K.pfKey) c.lastA = { db: K.db ? E.state.adj.deblur : null, cr: K.cr ? E.state.adj.crisp : null };
 }
@@ -1095,15 +1116,17 @@ const HQ_STILL = 20_000; // % がこれだけ変わらなければ「計算し�
 function hqBar(t) {
   if (!E?.hqEl) return;
   E.hqEl.hidden = t == null;
-  if (t == null) { clearInterval(E.hqTick); E.hqTick = 0; E.hqT = null; E.hqHint = ''; return; }
+  if (t == null) { clearInterval(E.hqTick); E.hqTick = 0; E.hqT = null; E.hqHint = ''; E.hqEta = null; return; }
   const p = Math.min(99, Math.floor(t * 100));
+  if (E.hqT == null || t < E.hqT) E.hqEta = makeEta(); // 計算の始まり
+  const eta = fmtEta(E.hqEta.update(t)); // 最近の進む速さからの残り時間（「あと約 2 分」）
   if (E.hqT == null || Math.floor(E.hqT * 100) !== p) E.hqAt = Date.now(); // % が変わった時刻
   E.hqT = t;
   E.hqRing.set(p);
   // いま計算している項目だけ（済んでいて使い回すものは出さない）。長く同じ % のときは、止まっていないと分かるように添える
   const still = Date.now() - E.hqAt >= HQ_STILL;
   const note = E.hqHint || (still ? '計算しています。そのままお待ちください' : '');
-  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%${note ? `（${note}）` : ''}`;
+  E.hqEl.querySelector('span').textContent = `${E.hqSteps?.length ? E.hqSteps.join('・') : '仕上げています'}… 残り${100 - p}%${eta ? `・${eta}` : ''}${note ? `（${note}）` : ''}`;
   if (!E.hqTick) { const e0 = E; E.hqTick = setInterval(() => { if (E !== e0 || e0.hqT == null) clearInterval(e0.hqTick); else hqBar(e0.hqT); }, 1000); }
 }
 /** 編集用の大きさの元写真の画素（美肌の判定と、AI の肌の地図の指紋に使う） */
@@ -2791,16 +2814,20 @@ function openExport({ batch }) {
   let quiet = true; // 裏で作っている（ポップアップは出さない）
   let waiting = false; // 押したが、まだできていない
   let pct = null;
+  let hold = null; // 作っている間は画面を消さない（スマホ。消えると止まる）
+  const eta = makeEta();
   const finish = h('button', { type: 'button', class: 'primary', hidden: true, onclick: () => { finish.hidden = true; waiting = false; quiet = true; idle(); refresh(); shareNow(); } }, '写真アプリに保存');
   // popover にして、モーダルのダイアログよりも上（最前面）に出す
   const pop = h('div', { class: 'prog-pop', popover: 'manual', hidden: true }, h('div', { class: 'prog-card' }, ring.el, popText, ...(toPhotos ? [finish] : [])));
   /** 進み具合を出す（p: 0〜100、null は準備中。text は円の下の説明。ダイアログの説明にも同じ文を出す） */
   const busy = (p, text) => {
+    hold ||= holdScreen();
     if (quiet && toPhotos) { pct = p; status.textContent = `保存の用意をしています…${p == null ? '' : ` ${p}%`}`; return; }
     if (pop.hidden) { pop.hidden = false; try { pop.showPopover?.(); } catch { /* 開いている */ } }
     ring.set(p); if (text != null) { popText.textContent = text; status.textContent = text; }
   };
-  const idle = () => { if (pop.hidden) return; try { pop.hidePopover?.(); } catch { /* 閉じている */ } pop.hidden = true; };
+  const unhold = () => { hold?.(); hold = null; eta.reset(); };
+  const idle = () => { unhold(); if (pop.hidden) return; try { pop.hidePopover?.(); } catch { /* 閉じている */ } pop.hidden = true; };
   const name = h('input', { id: 'exp-name', maxlength: 80, value: batch ? '' : `${E.proj.name}_edit`, placeholder: batch ? '（元の名前 + _edit）' : '' });
   const q = slider({ label: '画質', min: 50, max: 100, value: opt.quality, def: 92, unit: '%', onChange: (v) => { opt.quality = v; save(); } });
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
@@ -2836,7 +2863,7 @@ function openExport({ batch }) {
       busy(null, E.rawLin ? 'RAW を元の大きさで現像しています…（しばらくかかります）' : '元の大きさの写真を読み込んでいます…');
       try { full = await loadFull(E.proj, await db.getBlob(E.id), st, E.rawLin?.gain); } catch (e) { console.warn('元の大きさの写真を読み込めませんでした', e); full = null; }
     }
-    const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); busy(p, `画像を生成しています… 残り${100 - p}%`); };
+    const progress = (t) => { const p = Math.min(99, Math.max(0, Math.floor(t * 100))); const left = fmtEta(eta.update(t)); busy(p, `画像を生成しています… 残り${100 - p}%${left ? `・${left}` : ''}`); };
     let r;
     const lowlightPre = E.pre && E.pre.key === preKey(st) ? E.pre.promise : null;
     try { r = await renderToBlob({ base: E.base, W: E.W, H: E.H, state: st, full, hqCanvas: hqReady() && !E.hq.saved ? E.hq.canvas : null, hqRes: hqResidual(), hqFaces: hqFaces(), hqWhole: hqWhole(), hqBokeh: hqBokeh(), origW: E.proj.w || E.W, origH: E.proj.h || E.H, lowlightPre }, { format: opt.format, quality: opt.quality / 100, maxSide: opt.maxSide, space: opt.space, onProgress: progress }); } finally { full?.close?.(); }
@@ -2874,7 +2901,7 @@ function openExport({ batch }) {
     if (fresh()) return;
     exportRun = exportRun.then(async () => {
       for (;;) {
-        if (!dlg.isConnected) return;
+        if (!dlg.isConnected) { unhold(); return; }
         const key = sig(); if (exportReady?.sig === key) break;
         pct = null;
         const items = [];
@@ -2882,7 +2909,7 @@ function openExport({ batch }) {
         else { flushSave(); const r = await one(); items.push({ blob: r.blob, i: 1, p: null }); }
         exportReady = { sig: key, items };
       }
-      if (!dlg.isConnected) return;
+      if (!dlg.isConnected) { unhold(); return; }
       status.textContent = batch ? `✓ ${batch.length}枚の用意ができました` : '✓ 用意ができました';
       if (waiting) { quiet = false; busy(100, 'できました。押すと写真アプリに保存します'); finish.hidden = false; finish.focus(); } else idle();
     }).catch((e) => {

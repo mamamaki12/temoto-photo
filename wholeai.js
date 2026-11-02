@@ -41,6 +41,31 @@ export function tiles(w, h) {
   return out;
 }
 
+/**
+ * 動かす区画（1 = 動かす。tiles(ceil(W/4), ceil(H/4)) と同じ順）。map（髪・服をくっきりの重みの地図。4 分の 1 の大きさ）があれば、
+ * 重みが 0 でない所にかかる区画だけ（人物の外の区画は動かさない。重みは applyDetailMap で隣とまぜて使うので、まわり 1 画素も入れる）。
+ * map が null（顔 AI で全体に当てる・人物を見分けられない）なら全部
+ */
+export function tilesNeeded(map, W, H) {
+  const sw = Math.ceil(W / SCALE); const sh = Math.ceil(H / SCALE); const list = tiles(sw, sh); const need = new Uint8Array(list.length);
+  if (!map) { need.fill(1); return need; }
+  const { width: mw, height: mh, data: M } = map;
+  list.forEach(([tx, ty], i) => {
+    // 区画（のりしろなし）の範囲を地図の画素に（地図の大きさは round(W/4) で、縮めた絵と 1 画素違うことがあるので割合で）
+    const x0 = Math.max(0, Math.floor(tx * mw / sw) - 1); const x1 = Math.min(mw, Math.ceil((tx + TILE) * mw / sw) + 1);
+    const y0 = Math.max(0, Math.floor(ty * mh / sh) - 1); const y1 = Math.min(mh, Math.ceil((ty + TILE) * mh / sh) + 1);
+    for (let y = y0; y < y1 && !need[i]; y++) for (let x = x0; x < x1; x++) if (M[y * mw + x]) { need[i] = 1; break; }
+  });
+  return need;
+}
+/** 全体 AI の差分（res。done: 計算した区画。なければ全部済み）が、いる区画（need。null なら全部）の分まで計算してあるか */
+export function wholeCovers(res, need) {
+  if (!res) return false;
+  if (!res.done) return true;
+  for (let i = 0; i < res.done.length; i++) if ((!need || need[i]) && !res.done[i]) return false;
+  return true;
+}
+
 /** 区画（のりしろ込み）を、AI の入力（RGB の面ごと、0〜1）にして out に書く。外は端の色 */
 export function tileInput(small, tx, ty, out = new Float32Array(3 * TILE_IN * TILE_IN), o = 0) {
   const { width: w, height: h, data } = small; const n = TILE_IN * TILE_IN;

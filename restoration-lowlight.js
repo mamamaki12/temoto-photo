@@ -9,7 +9,6 @@
 // 色は 8bit の値（sRGB・Display P3 とも同じ伝達関数）を 0〜1 にして、輝度・色差に分けて扱う。
 
 import { NLM_WASM } from './nlm.wasm.js';
-import { lowMemory } from './cores.js';
 
 const SRGB_LUT = new Float32Array(4096);
 for (let i = 0; i < 4096; i++) { const v = i / 4095; SRGB_LUT[i] = v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }
@@ -205,12 +204,34 @@ const NLM_BASE = 65536 * 2;
 let nlmModule;
 function nlmWasm() {
   if (nlmModule === undefined) {
-    try { nlmModule = !lowMemory() && typeof WebAssembly === 'object' && WebAssembly.validate(NLM_WASM) ? new WebAssembly.Module(NLM_WASM) : null; } catch { nlmModule = null; }
+    try { nlmModule = typeof WebAssembly === 'object' && WebAssembly.validate(NLM_WASM) ? new WebAssembly.Module(NLM_WASM) : null; } catch { nlmModule = null; }
   }
   return nlmModule;
 }
 /** テスト用: WebAssembly を使わない */
 export function useWasm(on) { nlmModule = on ? undefined : null; }
+/**
+ * WebAssembly のメモリと関数は、この Worker（スレッド）で 1 組だけ作って使い回す（足りなければ広げる）。
+ * 前は nlm を呼ぶたびに（帯ごと・段ごとに）メモリを作っていて、iPhone・iPad では使わないようにしていた（Safari は WebAssembly のメモリごとに
+ * 大きな番地の範囲を取るので、作っては捨てるとメモリが足りなくなる）。1 組を使い回せば iPhone でも使えて、JavaScript より速い
+ */
+let nlmInst = null; // { memory, run }
+function nlmRunner(mod, bytes) {
+  const pages = Math.ceil(bytes / 65536);
+  if (nlmInst) {
+    const have = nlmInst.memory.buffer.byteLength / 65536;
+    if (have < pages) { try { nlmInst.memory.grow(pages - have); } catch { nlmInst = null; } } // 広げられなければ作り直す
+  }
+  if (!nlmInst) {
+    const memory = new WebAssembly.Memory({ initial: pages });
+    const { nlm_offset: run, __heap_base: heapBase } = new WebAssembly.Instance(mod, { env: { memory } }).exports;
+    if (!(heapBase.value <= NLM_BASE)) throw new Error('nlm.wasm: __heap_base');
+    nlmInst = { memory, run };
+  }
+  return nlmInst;
+}
+/** テスト用: 使い回しているメモリの大きさ（ページ。なければ 0） */
+export function nlmMemoryPages() { return nlmInst ? nlmInst.memory.buffer.byteLength / 65536 : 0; }
 
 function nlm(ch, sig, w, h, opts) {
   const mod = nlmWasm();
@@ -221,10 +242,9 @@ function nlm(ch, sig, w, h, opts) {
   const al = (v) => (v + 15) & ~15;
   const oY = NLM_BASE; const oSrc = al(oY + 4 * n); const oAcc = al(oSrc + 16 * n); const oTmp = al(oAcc + 16 * n);
   const oD2 = al(oTmp + 4 * n); const oCol = al(oD2 + 4 * w); const oBox = al(oCol + 8 * w); const end = al(oBox + 4 * w);
-  const memory = new WebAssembly.Memory({ initial: Math.ceil(end / 65536) });
-  const { nlm_offset: run, __heap_base: heapBase } = new WebAssembly.Instance(mod, { env: { memory } }).exports;
-  if (!(heapBase.value <= NLM_BASE)) throw new Error('nlm.wasm: __heap_base');
-  const buf = memory.buffer;
+  let inst;
+  try { inst = nlmRunner(mod, end); } catch (e) { console.warn('nlm.wasm のメモリを取れませんでした。JavaScript で計算します', e); return nlmJS(ch, sig, w, h, opts); }
+  const { memory, run } = inst; const buf = memory.buffer; // 広げた後は buffer が新しくなるので、呼ぶたびに取り直す
   new Float32Array(buf, oY, n).set(Y);
   const src = new Float32Array(buf, oSrc, 4 * n); const acc = new Float32Array(buf, oAcc, 4 * n);
   for (let i = 0; i < n; i++) { acc[4 * i] = src[4 * i] = Y[i]; acc[4 * i + 1] = src[4 * i + 1] = U[i]; acc[4 * i + 2] = src[4 * i + 2] = V[i]; acc[4 * i + 3] = 1; src[4 * i + 3] = Math.max(1e-8, sig[i] * sig[i]); }
