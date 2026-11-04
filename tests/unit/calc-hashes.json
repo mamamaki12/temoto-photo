@@ -44,7 +44,7 @@
  },
  "wh": {
   "calc": 1,
-  "hash": "b788ca45c81a1595",
+  "hash": "f0f57ef51b9b72b3",
   "files": [
    "bokeh.js",
    "color.js",
@@ -103,7 +103,7 @@
  },
  "fa": {
   "calc": 1,
-  "hash": "13e375555b816e48",
+  "hash": "e8c7fb1c9cd82afa",
   "files": [
    "bokeh.js",
    "color.js",
@@ -192,7 +192,7 @@
  },
  "mix": {
   "calc": 1,
-  "hash": "3a951d5e40c330d4",
+  "hash": "501fc8893635c207",
   "files": [
    "bokeh-photo.js",
    "bokeh.js",

@@ -18,3 +18,28 @@ test('更新ボタン: 版を確かめて、最新なら知らせる（一覧・
   await page.locator('details.menu > summary').click();
   await expect(page.locator('.menu-list .app-update')).toHaveText(`アプリの更新を確認（${version}）`);
 });
+
+test('Service Worker: 写真を処理する Worker の中からも、外のサイトへは通信できない（同じサイトのファイルは読める）', async ({ page, context }) => {
+  // 止めていなければ届くように、外のサイトの返事を用意しておく（本物の外には出ない）
+  await context.route('https://example.com/**', (route) => route.fulfill({ status: 200, body: 'ok' }));
+  await page.goto('/');
+  await page.waitForFunction(() => navigator.serviceWorker.controller);
+  const probe = (url) => page.evaluate((url) => new Promise((res) => {
+    const w = new Worker('./tests/fixtures/net-probe-worker.js'); w.onmessage = (e) => { w.terminate(); res(e.data); }; w.onerror = () => res('error'); w.postMessage(url);
+  }), url);
+  expect(await probe('https://example.com/upload')).toBe('blocked');
+  expect(await probe(new URL('vendor/deblur/LICENSE.txt', page.url()).href)).toBe('ok 200'); // AI のモデルなど、同じサイトのファイルは読める
+});
+
+test('Service Worker: 版を上げたときに消すのは、このアプリの前の版のキャッシュだけ（同じアドレスのほかのアプリのキャッシュは残す）', async ({ page }) => {
+  // Service Worker が入る前に、同じアドレスのほかのアプリのキャッシュと、このアプリの前の版のキャッシュを作っておく
+  await page.goto('/icon.svg');
+  await page.evaluate(async () => { for (const k of ['other-app-v3', 'temoto-photo-v1', 'temoto-vendor-00000000', 'temoto-faceai-old']) await (await caches.open(k)).put(`/${k}`, new Response('x')); });
+  await page.goto('/');
+  await page.waitForFunction(() => navigator.serviceWorker.controller); // 前の版のキャッシュを片付けてから、画面を受け持つ
+  const keys = await page.evaluate(() => caches.keys());
+  expect(keys).toContain('other-app-v3');
+  expect(keys).toContain('temoto-faceai-old'); // 顔専用 AI は face-worker.js が自分で入れ替える
+  expect(keys).not.toContain('temoto-photo-v1');
+  expect(keys).not.toContain('temoto-vendor-00000000');
+});

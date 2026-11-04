@@ -1,6 +1,6 @@
 // Service Worker: 一度開いたら、オフラインでも開けるようにする（ネットワーク優先・失敗したらキャッシュ）
-const CACHE = 'temoto-photo-v106';
-const VERSION = '1.36.2'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
+const CACHE = 'temoto-photo-v107';
+const VERSION = '1.36.3'; // app.js の VERSION と同じにする（アプリの「更新」が、これと画面の版を比べる）
 // vendor/ の大きなファイル（AI のモデル・WebAssembly。全部で 100MB ほど）は、版を上げても残す別のキャッシュに入れる
 // （前は版を上げるたびに消していたので、更新のたびに数十 MB をダウンロードし直し、電波の悪い所では AI の読み込みで止まって見えた）。
 // 名前の後ろは vendor/ の中身の指紋（tests/unit/version.test.js が確かめる。vendor/ を変えたら、テストが出す値に書き換える）
@@ -10,8 +10,10 @@ const NET_WAIT = 5000; // サーバーの返事をこれだけ待って来なけ
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
+    // 消すのは、このアプリの前の版のキャッシュだけ。GitHub Pages では同じアドレス（〇〇.github.io）にほかのアプリも入っていて、
+    // キャッシュの置き場所を分け合っているので、ほかのアプリのキャッシュ（オフラインで開くためのもの）は消さない。
     // 顔専用 AI（87MB）は face-worker.js が自分で区切って保存している（temoto-faceai-…）。版を上げるたびにダウンロードし直さないよう残す
-    for (const k of await caches.keys()) if (k !== CACHE && k !== VENDOR_CACHE && !k.startsWith('temoto-faceai-')) await caches.delete(k);
+    for (const k of await caches.keys()) if ((k.startsWith('temoto-photo-') && k !== CACHE) || (k.startsWith('temoto-vendor-') && k !== VENDOR_CACHE)) await caches.delete(k);
     await self.clients.claim();
   })());
 });
@@ -23,7 +25,10 @@ self.addEventListener('message', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  // ほかのサイトへの通信は、画面からも、写真を処理する Worker からも通さない（写真を端末の外に出さない）。
+  // 画面の CSP（connect-src 'none'）は Worker の中には効かない（GitHub Pages では Worker に CSP を付けられない）ので、ここで止める
+  if (new URL(req.url).origin !== self.location.origin) { e.respondWith(Response.error()); return; }
+  if (req.method !== 'GET') return;
   // 一部だけの読み込み（顔専用 AI のダウンロード）は、そのままネットワークへ（ここで丸ごと保存すると、87MB をメモリに抱えてしまう）
   if (req.headers.has('range')) return;
   // vendor/ の大きなファイル（AI のモデル・WebAssembly）は、キャッシュにあればそれを使う（毎回ダウンロードしない。vendor/ を変えたら VENDOR_CACHE の名前が変わって入れ替わる）
