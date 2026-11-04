@@ -1,7 +1,7 @@
 {
  "ll": {
   "calc": 1,
-  "hash": "38f25adf19d0faf5",
+  "hash": "58bc1ffba8344541",
   "files": [
    "bokeh.js",
    "color.js",
@@ -19,8 +19,8 @@
   ]
  },
  "db": {
-  "calc": 1,
-  "hash": "0a39f10b871b44cf",
+  "calc": 2,
+  "hash": "9cfad43dbb667f33",
   "files": [
    "bokeh.js",
    "color.js",
@@ -44,7 +44,7 @@
  },
  "wh": {
   "calc": 1,
-  "hash": "cec6617096c65554",
+  "hash": "b788ca45c81a1595",
   "files": [
    "bokeh.js",
    "color.js",
@@ -77,7 +77,7 @@
  },
  "cm": {
   "calc": 2,
-  "hash": "847997cd12d5bf09",
+  "hash": "25d586468bde3fa9",
   "files": [
    "bokeh.js",
    "color.js",
@@ -103,7 +103,7 @@
  },
  "fa": {
   "calc": 1,
-  "hash": "2bda534690a4fb7a",
+  "hash": "13e375555b816e48",
   "files": [
    "bokeh.js",
    "color.js",
@@ -143,7 +143,7 @@
  },
  "bs": {
   "calc": 1,
-  "hash": "c5e01234506b82ca",
+  "hash": "2e33cb652b09808c",
   "files": [
    "bokeh-photo.js",
    "bokeh.js",
@@ -171,7 +171,7 @@
  },
  "bk": {
   "calc": 1,
-  "hash": "28181e274e107b62",
+  "hash": "f8b731d02be401aa",
   "files": [
    "bokeh-photo.js",
    "bokeh.js",
@@ -192,7 +192,7 @@
  },
  "mix": {
   "calc": 1,
-  "hash": "f966b28518f2b5b7",
+  "hash": "3a951d5e40c330d4",
   "files": [
    "bokeh-photo.js",
    "bokeh.js",

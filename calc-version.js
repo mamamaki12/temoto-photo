@@ -10,6 +10,6 @@
  * ll: ノイズ除去と明るさ補正、db: ブレ補正の差分（AI）、wh: 全体 AI の差分、cm: くっきりの重み、fa: 顔 AI（顔ごとの結果）、
  * bs: ぼかしの元（人物・奥行き）、bk: 背景のぼかし、mix: 段の結果の合成（ブレ補正を当てる・くっきり・顔を戻す・ぼかしを重ねる）
  */
-export const CALC = Object.freeze({ ll: 1, db: 1, wh: 1, cm: 2, fa: 1, bs: 1, bk: 1, mix: 1 });
+export const CALC = Object.freeze({ ll: 1, db: 2, wh: 1, cm: 2, fa: 1, bs: 1, bk: 1, mix: 1 });
 /** 保存する記録（hq:<id>・stage:<id>）の形の版。記録の形を変えたときだけ上げる（古い形の記録は使わず、一度だけ計算し直す） */
 export const HQ_FMT = 2;
