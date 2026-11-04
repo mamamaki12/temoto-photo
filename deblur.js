@@ -1,8 +1,9 @@
 // 被写体ブレの補正（シャッター速度による、動いた手・髪などのブレ）の計算。DOM を使わない（Web Worker・Node のどちらでも動く）。
 // AI（NAFNet、GoPro のブレで学習したもの。MIT ライセンス）を端末の中で動かす。写真は外に送らない。
 //  1. 写真を縮める（ブレは 15〜30 画素あるので、半分くらいにすると AI が直せる大きさになる）
-//  2. 256×256 の区画ごとに AI に通す。左右を反転したものも通し、2 つで向きが合う直し方だけを残す
-//     （AI の癖でできる筋・格子は、反転すると向きが変わるので消える）
+//  2. 256×256 の区画ごとに AI に通す。直した量は明るさ（輝度）の分だけを使い、R・G・B に同じだけ足す
+//     （AI の癖でできる色のむら・色の筋は足さない。前は左右を反転したものも通して向きが合う直しだけを残していたが、
+//      明るさだけにすると色のむらは出ず、筋・格子は 3 で抑えられるので、AI を通すのを 1 回にした。ブレ補正の時間が約半分）
 //  3. 平らな所（カーテン・肌）には効かせない。直した量を、まわりの明るさのばらつきに見合う大きさまでに抑える
 //  4. 直した差分だけを元の大きさに引き伸ばして足す（元の写真の細かさはそのまま）
 // AI の途中の値は、ある種の写真で暴走して色の砂嵐になる。モデルの中で、普通の写真で出る範囲に値を止めてある
@@ -120,28 +121,25 @@ export async function deblurResidual(small, infer, { onProgress = () => {}, sign
     for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) wsum[(t.y0 + y) * w + t.x0 + x] += RAMP[y] * RAMP[x];
   }
   const run = tiles.filter((t) => !t.skip); let done = 0; let next = 0;
-  // 1 つの区画を AI に通して、差分を足し込む（2 枚目は左右を反転したもの）
+  // 1 つの区画を AI に通して、差分（明るさの分だけ）を足し込む
   const one = async (t) => {
-    const input = new Float32Array(2 * 3 * P);
+    const input = new Float32Array(3 * P);
     for (let y = 0; y < TILE; y++) {
       const sy = ref(t.y0 + y, h);
       for (let x = 0; x < TILE; x++) {
-        const s = (sy * w + ref(t.x0 + x, w)) * 3; const o = y * TILE + x; const of = y * TILE + (TILE - 1 - x);
-        for (let c = 0; c < 3; c++) { input[c * P + o] = rgb[s + c]; input[(3 + c) * P + of] = rgb[s + c]; }
+        const s = (sy * w + ref(t.x0 + x, w)) * 3; const o = y * TILE + x;
+        for (let c = 0; c < 3; c++) input[c * P + o] = rgb[s + c];
       }
     }
-    const out = await infer(input, 2);
+    const out = await infer(input, 1);
     const th = Math.min(TILE, h - t.y0); const tw = Math.min(TILE, w - t.x0);
     for (let y = 0; y < th; y++) {
       for (let x = 0; x < tw; x++) {
-        const o = y * TILE + x; const of = y * TILE + (TILE - 1 - x); const i = (t.y0 + y) * w + t.x0 + x;
+        const o = y * TILE + x; const i = (t.y0 + y) * w + t.x0 + x;
         const wt = RAMP[y] * RAMP[x];
-        for (let c = 0; c < 3; c++) {
-          const a = out[c * P + o] - input[c * P + o]; const b = out[(3 + c) * P + of] - input[c * P + o];
-          // 2 つの向きが合う分だけ（小さい方）
-          const r = a > 0 && b > 0 ? Math.min(a, b) : a < 0 && b < 0 ? Math.max(a, b) : 0;
-          acc[i * 3 + c] += r * wt;
-        }
+        // 明るさの差分を、R・G・B に同じだけ（色は変えない）
+        const r = 0.299 * (out[o] - input[o]) + 0.587 * (out[P + o] - input[P + o]) + 0.114 * (out[2 * P + o] - input[2 * P + o]);
+        const v = r * wt; acc[i * 3] += v; acc[i * 3 + 1] += v; acc[i * 3 + 2] += v;
         wsum[i] += wt;
       }
     }

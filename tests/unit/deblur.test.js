@@ -36,16 +36,28 @@ test('deblur: AI が何も変えなければ、差分は 0', async () => {
   assert.ok(res.data.every((v) => v === 0));
 });
 
-test('deblur: 反転した方と向きが合わない直し方（AI の癖の筋）は捨てる', async () => {
+test('deblur: AI が色だけを変えた分（AI の癖の色のむら）は足さない。明るさの直しを R・G・B に同じだけ足す', async () => {
   const img = small(260, 260, stripes);
-  // 1 枚目は +0.05、反転した 2 枚目は -0.05（向きが合わない）
-  const res = await deblurResidual(img, async (input, n) => {
+  // 赤を上げ、緑を明るさが変わらない分だけ下げる（色だけの変化）
+  const tint = await deblurResidual(img, async (input, n) => {
+    assert.equal(n, 1, 'AI には 1 区画ずつ（左右反転したものは通さない）');
     const out = Float32Array.from(input);
-    for (let i = 0; i < 3 * P; i++) out[i] += 0.05;
-    for (let i = 3 * P; i < 2 * 3 * P; i++) out[i] -= 0.05;
+    for (let i = 0; i < P; i++) { out[i] += 0.05; out[P + i] -= 0.05 * 0.299 / 0.587; }
     return out;
   });
-  assert.ok(res.data.every((v) => v === 0));
+  assert.ok(tint.data.every((v) => Math.abs(v) < 1e-6));
+  // 輪郭を強める直し（明るさが変わる）は、R・G・B に同じだけ
+  const res = await deblurResidual(img, async (input) => {
+    const out = Float32Array.from(input);
+    for (let i = 0; i < out.length; i++) { const x = i % TILE; if (x > 0 && x < TILE - 1) out[i] += 0.3 * (2 * input[i] - input[i - 1] - input[i + 1]); }
+    return out;
+  });
+  let mx = 0;
+  for (let i = 0; i < 260 * 260; i++) {
+    assert.ok(res.data[i * 3] === res.data[i * 3 + 1] && res.data[i * 3] === res.data[i * 3 + 2], '色は変えない');
+    mx = Math.max(mx, Math.abs(res.data[i * 3]));
+  }
+  assert.ok(mx > 0.01, `縞の所は直す: ${mx}`);
 });
 
 test('deblur: 平らな所には効かせず、輪郭のある所だけ直す', async () => {
