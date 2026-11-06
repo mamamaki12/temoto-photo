@@ -1,6 +1,6 @@
 // 元の大きさでの書き出し（大きな写真を帯に分けて描き、自分で JPEG / PNG にする）と、Display P3 の色
 import { test, expect } from '@playwright/test';
-import { makePhoto } from './photo-helpers.js';
+import { makePhoto, withExif } from './photo-helpers.js';
 
 test.setTimeout(180_000);
 
@@ -47,7 +47,7 @@ const decode = (page, buf, w) => page.evaluate(async ([s, w]) => {
 test('大きな写真（2,400万画素）を、編集を全部のせて元の大きさで書き出す（iPhone と同じく大きな Canvas は作らない）', async ({ page }) => {
   const logs = []; page.on('pageerror', (e) => logs.push(String(e))); page.on('console', (m) => { if (m.type() === 'warning' && m.text().includes('元の大きさ')) logs.push(m.text()); });
   await page.goto('/');
-  const photo = await makePhoto(page, { w: 6000, h: 4000 }); // テスト用の写真を作ってから、上限をかける
+  const photo = withExif(await makePhoto(page, { w: 6000, h: 4000 })); // テスト用の写真（位置情報・カメラ名入り）を作ってから、上限をかける
   await iphoneCanvasLimit(page);
   await open(page, photo);
   expect(await page.evaluate(() => window.__temoto.editor.W * window.__temoto.editor.H)).toBeLessThanOrEqual(16_700_000); // 編集は縮めた写真で
@@ -76,6 +76,8 @@ test('大きな写真（2,400万画素）を、編集を全部のせて元の大
   const [pw, ph] = await decode(page, png, 100);
   expect([pw, ph]).toEqual([6240, 7800]);
   expect(await page.evaluate(() => window.__bigCanvas)).toEqual([]);
+  // 自分で組み立てた JPEG・PNG にも、位置情報・カメラ名（Exif）は入らない
+  for (const b of [full, small, png]) { expect(b.includes(Buffer.from('Exif'))).toBe(false); expect(b.includes(Buffer.from('SecretCam'))).toBe(false); }
 });
 
 test('Display P3 の鮮やかな色を、くすませずに書き出す（元の大きさでも、縮めた写真でも）・sRGB も選べる', async ({ page }) => {

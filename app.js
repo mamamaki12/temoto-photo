@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.2'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.3'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -310,7 +310,9 @@ async function importFiles(files) {
       await db.addProject({ id, name: (f.name || '写真').replace(/\.[^.]+$/, '').slice(0, 80) || '写真', fileName: (f.name || '').slice(0, 200), raw: info, created: Date.now(), updated: Date.now(), w: info?.fullW || bmp.width, h: info?.fullH || bmp.height, size: f.size, type: f.type || (raw ? 'image/x-raw' : ''), exif, state: S.defaultState(), thumb: await thumbBlob(bmp), thumbV: THUMB_V }, f);
       bmp.close?.();
       first ??= id; ok++;
-    } catch {
+    } catch (e) {
+      // 端末の空きが足りない（作り直せる仕上げの保存を消しても入らない）ときは、そう伝えて残りも止める（写真が壊れているのではない）
+      if (db.isFull(e)) { toast('端末の空きが足りないので、写真を入れられませんでした。使わない写真を削除してから、もう一度お試しください', 7000); break; }
       toast(/heic|heif/i.test(f.type + f.name) ? 'HEIC はこのブラウザでは開けません（Safari なら開けます）' : isRawName(f.name) ? `${f.name} は開けませんでした（このRAWの形式には対応していません）` : `${f.name || '画像'} を読み込めませんでした`);
     }
   }
@@ -418,21 +420,26 @@ async function showLibrary() {
       h('span', { class: 'muted' }, `${selecting.size}枚を選択中`),
       h('button', { type: 'button', class: 'primary', disabled: selecting.size < 2 || selecting.size > MAX_GRID, title: selecting.size > MAX_GRID ? `グリッドは${MAX_GRID}枚まで` : '', onclick: () => showGrid(sel()) }, `▦ グリッドを作る${selecting.size > MAX_GRID ? `（${MAX_GRID}枚まで）` : ''}`),
       h('button', { type: 'button', onclick: () => openExport({ batch: sel() }) }, 'まとめて書き出し'),
-      h('button', { type: 'button', disabled: !prefs.get('clip', null), onclick: async () => { const clip = prefs.get('clip', null); for (const p of sel()) await db.putProject({ ...p, state: S.applyPreset(S.validateState(p.state), clip), updated: Date.now() }); toast('編集を貼り付けました'); selecting.clear(); showLibrary(); } }, '編集を貼り付け'),
+      h('button', { type: 'button', disabled: !prefs.get('clip', null), onclick: async () => {
+        const clip = prefs.get('clip', null);
+        try { for (const p of sel()) await db.putProject({ ...p, state: S.applyPreset(S.validateState(p.state), clip), updated: Date.now() }); } catch (e) { toast(db.isFull(e) ? '端末の空きが足りないので、貼り付けられませんでした' : '貼り付けられませんでした'); showLibrary(); return; }
+        toast('編集を貼り付けました'); selecting.clear(); showLibrary();
+      } }, '編集を貼り付け'),
       h('button', { type: 'button', class: 'danger', onclick: () => confirmBox(`${selecting.size}枚の写真と編集内容を、この端末から削除します。元に戻せません。`, '削除する', async () => { for (const p of sel()) await db.deleteProject(p.id); selecting.clear(); showLibrary(); }) }, '削除'),
       h('button', { type: 'button', class: 'ghost', onclick: () => { selecting.clear(); showLibrary(); } }, '選択をやめる'),] : null);
   };
   drawBar();
   const grid = h('ul', { class: 'lib-grid' }, projects.map((p) => {
-    const url = p.thumb ? URL.createObjectURL(p.thumb) : ''; if (url) libUrls.push(url);
-    const img = url ? h('img', { src: url, alt: '', loading: 'lazy' }) : null; if (img) thumbImgs.set(p.id, img);
+    // 見本が Blob でない記録（壊れた・途中で落ちた）があっても、一覧は出す（前は 1 枚のために一覧が真っ白になった）
+    const url = p.thumb instanceof Blob ? URL.createObjectURL(p.thumb) : ''; if (url) libUrls.push(url);
+    const img = h('img', { src: url || null, alt: '', loading: 'lazy', hidden: !url }); thumbImgs.set(p.id, img);
     const edited = S.isEdited(S.validateState(p.state));
     let li;
     const check = h('input', { type: 'checkbox', class: 'lib-check', checked: selecting.has(p.id), 'aria-label': `${p.name}を選択`, onchange: (e) => { if (e.target.checked) selecting.add(p.id); else selecting.delete(p.id); li.classList.toggle('selected', e.target.checked); drawBar(); grid.classList.toggle('selecting', selecting.size > 0); } });
     // 写真を小さく敷き詰める。選ぶ丸は写真の右上（写真の中で選べる）。名前と大きさは、長押しの説明と読み上げに
     li = h('li', { class: `lib-item${selecting.has(p.id) ? ' selected' : ''}`, title: `${p.name}（${p.w}×${p.h}）` },
       h('button', { type: 'button', class: 'lib-open', onclick: () => (selecting.size ? check.click() : openEditor(p.id)), 'aria-label': `${p.name}を編集` },
-        img || h('span', { class: 'lib-noimg' }, '?'),
+        img, url ? null : h('span', { class: 'lib-noimg' }, '?'),
         edited ? h('span', { class: 'lib-badge', title: '編集済み' }, h('span', { 'aria-hidden': 'true' }, '✎'), h('span', { class: 'vh' }, '編集済み')) : null,
         p.raw ? h('span', { class: 'lib-badge raw' }, 'RAW') : null,
         h('span', { class: 'lib-name vh' }, p.name)),
@@ -477,7 +484,8 @@ async function showLibrary() {
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
   for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
   drop.addEventListener('drop', (e) => { e.preventDefault(); importFiles(e.dataTransfer.files); });
-  upgradeThumbs(projects.filter((p) => (p.thumbV || 1) < THUMB_V), thumbImgs, gen);
+  // 前の版の小さい見本と、見本がない写真（読み込んだときにメモリが足りず作れなかったなど。一覧で「?」になる）は作り直す
+  upgradeThumbs(projects.filter((p) => (p.thumbV || 1) < THUMB_V || !(p.thumb instanceof Blob)), thumbImgs, gen);
 }
 /** 前の版で作った小さい見本を、編集を当てたまま高画質に作り直す（一覧を開いている間に、1 枚ずつ裏で） */
 async function upgradeThumbs(list, imgs, gen) {
@@ -496,7 +504,7 @@ async function upgradeThumbs(list, imgs, gen) {
       const cur = await db.getProject(p.id); if (!cur) continue;
       await db.putProject({ ...cur, thumb, thumbV: THUMB_V });
       const img = imgs.get(p.id);
-      if (img && gen === libGen) { const url = URL.createObjectURL(thumb); libUrls.push(url); img.src = url; }
+      if (img && gen === libGen) { const url = URL.createObjectURL(thumb); libUrls.push(url); img.src = url; img.hidden = false; img.parentElement?.querySelector('.lib-noimg')?.remove(); }
     } catch (e) { console.warn('見本を作り直せませんでした', p.name, e); }
   }
 }
@@ -1331,7 +1339,7 @@ function flushSave() {
   if (!E || !saveTimer) return;
   clearTimeout(saveTimer); saveTimer = 0;
   E.proj = { ...E.proj, state: S.clone(E.committed), updated: Date.now() };
-  db.putProject(E.proj).catch(() => toast('保存できませんでした（容量不足の可能性があります）'));
+  db.putProject(E.proj).catch((e) => toast(db.isFull(e) ? '端末の空きが足りないので、編集を保存できませんでした。使わない写真を削除してください' : '保存できませんでした（容量不足の可能性があります）', 5000));
 }
 async function saveThumb() {
   if (!E) return;
@@ -1441,7 +1449,11 @@ function buildEditor() {
     h('div', { class: 'menu-list' },
       h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'),
       h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'),
-      h('button', { type: 'button', onclick: async () => { const blob = await db.getBlob(E.id); const id = uid(); await db.addProject({ ...E.proj, id, name: `${E.proj.name}（コピー）`, created: Date.now(), updated: Date.now(), state: S.clone(E.committed) }, blob); toast('複製しました'); openEditor(id); } }, '複製して別の編集を作る'),
+      h('button', { type: 'button', onclick: async () => {
+        const blob = await db.getBlob(E.id); const id = uid();
+        try { await db.addProject({ ...E.proj, id, name: `${E.proj.name}（コピー）`, created: Date.now(), updated: Date.now(), state: S.clone(E.committed) }, blob); } catch (e) { toast(db.isFull(e) ? '端末の空きが足りないので、複製できませんでした' : '複製できませんでした'); return; }
+        toast('複製しました'); openEditor(id);
+      } }, '複製して別の編集を作る'),
       h('div', { class: 'menu-mode' }, toggle('スペシャリストモード（隠した道具も全部出す）', specialist(), (v) => {
         prefs.set('specialist', v); menu.open = false; buildRail(); const sh = shownTools(!!E.rawLin); setTool(sh.includes(E.tool) ? E.tool : sh[0], { keepSide: true });
         toast(v ? 'スペシャリストモード: すべての道具を表示します' : 'スペシャリストモードを終了しました');
@@ -2225,7 +2237,7 @@ function localPanel() {
 function infoPanel() {
   const p = E.proj; const x = p.exif;
   const name = h('input', { id: 'proj-name', maxlength: 80, value: p.name });
-  name.addEventListener('change', () => { E.proj.name = name.value.trim().slice(0, 80) || '写真'; db.putProject(E.proj); $('.ed-title').textContent = E.proj.name; });
+  name.addEventListener('change', () => { E.proj.name = name.value.trim().slice(0, 80) || '写真'; db.putProject(E.proj).catch(() => toast('名前を保存できませんでした（容量不足の可能性があります）')); $('.ed-title').textContent = E.proj.name; });
   const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['アプリの版', VERSION], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
     ...(p.raw?.kind === 'libraw' ? [['RAWの読み込み', `RAW データから現像（LibRaw・16bit）${p.raw.model ? `・${p.raw.model}` : ''}。編集中は半分の大きさ、書き出しは元の大きさで現像し直します`]] : []),
     ...(p.raw && p.raw.kind !== 'libraw' ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
@@ -2235,16 +2247,21 @@ function infoPanel() {
       const k = Math.min(1, Math.sqrt((MAX_PIXELS * 0.99) / (L0.cw * L0.ch))); // 丸めで上限を超えないよう少し余裕を持たせる
       return `${Math.round(L0.cw * k)}×${Math.round(L0.ch * k)}${k < 1 ? '（端末の上限に合わせて縮小）' : ''}`;
     })()]];
+  // 前の版で保存した Exif には、文字の項目に数が入っているものがある（撮影日時が数だと、ここで止まって「情報」が開けなかった）
+  const txt = (v) => (typeof v === 'string' ? v : ''); const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
   if (x) {
-    if (x.make || x.model) rows.push(['カメラ', `${x.make} ${x.model}`.trim()]);
-    if (x.lens) rows.push(['レンズ', x.lens]);
-    if (x.date) rows.push(['撮影日時', x.date.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1/$2/$3')]);
-    const ex = [x.fNumber && `F${x.fNumber.toFixed(1)}`, x.exposureTime && (x.exposureTime < 1 ? `1/${Math.round(1 / x.exposureTime)}秒` : `${x.exposureTime}秒`), x.iso && `ISO${x.iso}`, x.focalLength && `${Math.round(x.focalLength)}mm`].filter(Boolean).join(' ・ ');
+    const make = txt(x.make); const model = txt(x.model); const lens = txt(x.lens); const date = txt(x.date);
+    const fNumber = num(x.fNumber); const exposureTime = num(x.exposureTime); const iso = num(x.iso); const focalLength = num(x.focalLength);
+    if (make || model) rows.push(['カメラ', `${make} ${model}`.trim()]);
+    if (lens) rows.push(['レンズ', lens]);
+    if (date) rows.push(['撮影日時', date.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1/$2/$3')]);
+    const ex = [fNumber && `F${fNumber.toFixed(1)}`, exposureTime && (exposureTime < 1 ? `1/${Math.round(1 / exposureTime)}秒` : `${exposureTime}秒`), iso && `ISO${iso}`, focalLength && `${Math.round(focalLength)}mm`].filter(Boolean).join(' ・ ');
     if (ex) rows.push(['撮影設定', ex]);
   }
+  const gps = x?.gps && Number.isFinite(x.gps.lat) && Number.isFinite(x.gps.lon) ? x.gps : null;
   return [
     h('div', { class: 'field' }, h('label', { for: 'proj-name' }, '名前'), name),
-    x?.gps ? h('div', { class: 'gps-warn', role: 'note' }, h('b', {}, '📍 この写真には撮影場所（位置情報）が入っています'), h('span', {}, `緯度 ${x.gps.lat.toFixed(4)}・経度 ${x.gps.lon.toFixed(4)}。書き出した画像には入りません。`))
+    gps ? h('div', { class: 'gps-warn', role: 'note' }, h('b', {}, '📍 この写真には撮影場所（位置情報）が入っています'), h('span', {}, `緯度 ${gps.lat.toFixed(4)}・経度 ${gps.lon.toFixed(4)}。書き出した画像には入りません。`))
       : h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     h('dl', { class: 'info' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
     histo(),
@@ -3174,7 +3191,7 @@ function openGridExport() {
           const r = await make(); const id = uid(); const bmp = await createImageBitmap(r.blob);
           await db.addProject({ id, name: name.value.trim().slice(0, 80) || 'グリッド', fileName: fileName(), created: Date.now(), updated: Date.now(), w: r.w, h: r.h, size: r.blob.size, type: opt.format, exif: null, state: S.defaultState(), thumb: await thumbBlob(bmp), thumbV: THUMB_V }, r.blob);
           bmp.close?.(); status.textContent = '写真一覧に保存しました。'; toast('写真一覧に保存しました');
-        } catch { status.textContent = '保存できませんでした'; }
+        } catch (e) { status.textContent = db.isFull(e) ? '端末の空きが足りないので、保存できませんでした' : '保存できませんでした'; }
       } }, '写真一覧に保存'),
       h('button', { type: 'button', class: 'primary', onclick: async () => {
         // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード。スマホは先に作っておいた画像を、待たずにその場で渡す（iPhone は待つと開けない）

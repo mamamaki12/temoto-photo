@@ -163,7 +163,7 @@ test('HSL・カーブ・カラーグレーディング・効果', async ({ page 
   expect(lum(await viewMean(page, [0, 0, 0.08, 0.08]))).toBeLessThan(corner0 - 15);
 });
 
-test('位置情報入りの写真: 警告を出し、書き出した JPEG には Exif が残らない', async ({ page }) => {
+test('位置情報入りの写真: 警告を出し、書き出した JPEG・PNG・WebP には Exif が残らない', async ({ page }) => {
   await page.goto(URL0);
   const file = withExif(await makePhoto(page));
   await page.locator('#open-file').setInputFiles(file);
@@ -177,6 +177,12 @@ test('位置情報入りの写真: 警告を出し、書き出した JPEG には
   expect(out.buf.includes(Buffer.from('SecretCam'))).toBe(false);
   const [w, hh] = await imageSize(page, out.buf, 'image/jpeg');
   expect(Math.max(w, hh)).toBe(1080);
+  for (const format of ['PNG（劣化なし）', 'WebP（小さい）']) {
+    const o = await exportFile(page, { format, size: /^元の大きさ/ });
+    expect(o.buf.length).toBeGreaterThan(1000);
+    expect(o.buf.includes(Buffer.from('Exif')), format).toBe(false);
+    expect(o.buf.includes(Buffer.from('SecretCam')), format).toBe(false);
+  }
 });
 
 test('部分補正（円形）で中心だけ明るくなる・範囲を赤く表示', async ({ page }) => {
@@ -821,4 +827,71 @@ test('進み具合のポップアップは、% や説明の文が変わっても
     e.hidden = true; return out;
   });
   for (const s of sizes) expect(s).toEqual(sizes[0]);
+});
+
+/** 端末内（IndexedDB）に記録を直接書く（壊れた記録・前の版の記録の代わり）。blobs の値が base64 の文字なら画像の Blob にする */
+function putRecords(page, projects, blobs = []) {
+  return page.evaluate(([projects, blobs]) => new Promise((res, rej) => {
+    const r = indexedDB.open('temoto-photo');
+    r.onsuccess = () => {
+      const t = r.result.transaction(['projects', 'blobs'], 'readwrite');
+      for (const p of projects) t.objectStore('projects').put(p);
+      for (const [k, v] of blobs) t.objectStore('blobs').put(typeof v === 'string' ? new Blob([Uint8Array.from(atob(v), (c) => c.charCodeAt(0))], { type: 'image/jpeg' }) : v, k);
+      t.oncomplete = () => { r.result.close(); res(); }; t.onerror = () => rej(t.error);
+    };
+    r.onerror = () => rej(r.error);
+  }), [projects, blobs]);
+}
+
+test('写真一覧: 見本が壊れた・ない写真があっても一覧を出し、見本を作り直す。撮影日時などが数の型の Exif でも「情報」を開ける', async ({ page }) => {
+  const errors = []; page.on('pageerror', (e) => errors.push(e.message));
+  await openWith(page);
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  const photo = await makePhoto(page, { w: 600, h: 400 });
+  await putRecords(page, [{ id: 'odd1', name: '見本が壊れた写真', thumb: 'not a blob', w: 600, h: 400, type: 'image/jpeg', state: 'garbage', created: 1, updated: 1,
+    exif: { make: 7, model: 'Cam', date: 5, lens: 0.5, fNumber: 'x', gps: { lat: 'a', lon: 1 } } }], [['odd1', photo.buffer.toString('base64')]]);
+  await page.reload();
+  await expect(page.locator('.lib-item')).toHaveCount(2);
+  // 見本は、元の写真から作り直す
+  const odd = page.getByRole('button', { name: '見本が壊れた写真を編集' });
+  await expect.poll(() => odd.locator('img').evaluate((img) => (img.hidden ? 0 : img.naturalWidth)), { timeout: 15000 }).toBeGreaterThan(0);
+  await expect(odd.locator('.lib-noimg')).toHaveCount(0);
+  await odd.click();
+  await page.waitForFunction(() => window.__temoto.editor?.L);
+  await tab(page, '情報');
+  await expect(page.locator('.info')).toContainText('Cam');
+  await expect(page.locator('.ok-note')).toBeVisible();
+  // 前に選んでいた道具が「情報」のまま開き直しても開ける
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await odd.click();
+  await page.waitForFunction(() => window.__temoto.editor?.L);
+  await expect(page.locator('#proj-name')).toHaveValue('見本が壊れた写真');
+  expect(errors).toEqual([]);
+});
+
+test('端末の空きが足りないとき: 作り直せる仕上げの保存を消して写真を入れる。それでも入らなければ、空きが足りないと知らせる', async ({ page }) => {
+  await page.addInitScript(() => {
+    // 空きが足りないふり（'until-freed': 仕上げの保存（hq:）を消すまで、'always': ずっと、写真・編集を書けない）
+    window.__full = 'off';
+    const put = IDBObjectStore.prototype.put; const del = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.put = function (...a) { if (window.__full !== 'off' && this.name === 'projects') throw new DOMException('Quota exceeded', 'QuotaExceededError'); return put.apply(this, a); };
+    IDBObjectStore.prototype.delete = function (k) { if (window.__full === 'until-freed' && k instanceof IDBKeyRange && k.lower === 'hq:') window.__full = 'off'; return del.call(this, k); };
+  });
+  await openWith(page);
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await putRecords(page, [], [['hq:old', new Blob(['x'])], ['stage:old', new Blob(['x'])]]);
+  await page.evaluate(() => { window.__full = 'until-freed'; });
+  await page.locator('#open-file').setInputFiles({ ...(await makePhoto(page, { w: 600, h: 400 })), name: 'second.jpg' });
+  await page.waitForFunction(() => window.__temoto.editor?.proj?.name === 'second');
+  const keys = await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('temoto-photo'); r.onsuccess = () => { const q = r.result.transaction('blobs').objectStore('blobs').getAllKeys(); q.onsuccess = () => { res(q.result); r.result.close(); }; }; }));
+  expect(keys).not.toContain('hq:old'); expect(keys).not.toContain('stage:old');
+  // それでも足りないときは、写真が壊れているのではなく、空きが足りないと知らせる
+  await page.getByRole('button', { name: '‹ 写真' }).click();
+  await page.evaluate(() => { window.__full = 'always'; });
+  await page.locator('#open-file').setInputFiles({ ...(await makePhoto(page, { w: 600, h: 400 })), name: 'third.jpg' });
+  await expect(page.locator('.toast')).toContainText('端末の空きが足りない');
+  await expect(page.locator('.toast')).not.toContainText('読み込めませんでした');
+  await page.evaluate(() => { window.__full = 'off'; });
+  await page.reload();
+  await expect(page.locator('.lib-item')).toHaveCount(2);
 });

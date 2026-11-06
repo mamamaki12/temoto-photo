@@ -63,9 +63,11 @@ function parseTiff(v, start, end) {
   const dms = (a, ref, neg) => (Array.isArray(a) && a.length === 3 ? (a[0] + a[1] / 60 + a[2] / 3600) * (ref === neg ? -1 : 1) : null);
   const lat = dms(out.latDms, out.latRef, 'S'); const lon = dms(out.lonDms, out.lonRef, 'W');
   const gps = lat != null && lon != null && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0) ? { lat, lon } : null;
+  // 文字の項目は、文字の型（ASCII）で入っていたときだけ使う（数の型で入った撮影日時などで、「情報」の表示が止まっていた）
+  const text = (x) => (typeof x === 'string' ? x : '');
   return {
-    make: out.make || '', model: out.model || '', software: out.software || '', lens: out.lens || '',
-    date: out.date || out.modified || '', orientation: out.orientation || 1, gps,
+    make: text(out.make), model: text(out.model), software: text(out.software), lens: text(out.lens),
+    date: text(out.date) || text(out.modified), orientation: Number.isInteger(out.orientation) && out.orientation >= 1 && out.orientation <= 8 ? out.orientation : 1, gps,
     exposureTime: typeof out.exposureTime === 'number' ? out.exposureTime : null, fNumber: typeof out.fNumber === 'number' ? out.fNumber : null,
     iso: typeof out.iso === 'number' ? out.iso : null, focalLength: typeof out.focalLength === 'number' ? out.focalLength : null,
   };

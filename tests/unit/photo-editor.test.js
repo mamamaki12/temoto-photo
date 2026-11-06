@@ -211,6 +211,21 @@ test('photo: Exif の位置情報・向き・カメラを読む（壊れたデ�
   const loop = good.slice(); loop[loop.length - 1] = 0xd9; readExif(loop.buffer);
 });
 
+test('photo: Exif の文字の項目（撮影日時・カメラ・レンズ）が数の型で入っていても、文字として返す（「情報」が開けなくならない）', () => {
+  const u16 = (v) => [v >> 8, v & 255]; const u32 = (v) => [v >>> 24, (v >> 16) & 255, (v >> 8) & 255, v & 255];
+  // IFD0: DateTime（0x0132）・Model（0x0110）を SHORT、Orientation を 99、レンズ（0xa434）を RATIONAL で
+  const tiff = [0x4d, 0x4d, ...u16(42), ...u32(8), ...u16(4),
+    ...u16(0x0132), ...u16(3), ...u32(1), ...u16(5), 0, 0,
+    ...u16(0x0110), ...u16(3), ...u32(1), ...u16(7), 0, 0,
+    ...u16(0x0112), ...u16(3), ...u32(1), ...u16(99), 0, 0,
+    ...u16(0xa434), ...u16(5), ...u32(1), ...u32(8 + 2 + 4 * 12 + 4), ...u32(0), ...u32(1), ...u32(2)];
+  const app1 = [...Buffer.from('Exif\0\0'), ...tiff];
+  const e = readExif(new Uint8Array([0xff, 0xd8, 0xff, 0xe1, ...u16(app1.length + 2), ...app1, 0xff, 0xd9]).buffer);
+  for (const k of ['make', 'model', 'software', 'lens', 'date']) assert.equal(typeof e[k], 'string', k);
+  assert.equal(e.date, ''); assert.equal(e.model, ''); assert.equal(e.lens, '');
+  assert.equal(e.orientation, 1);
+});
+
 function img(w, h, fn) { const data = new Uint8ClampedArray(w * h * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const [r, g, b] = fn(x, y); const k = (y * w + x) * 4; data[k] = r; data[k + 1] = g; data[k + 2] = b; data[k + 3] = 255; } return { width: w, height: h, data }; }
 
 test('photo: スポット修復で、まわりと違う点が消える', () => {

@@ -16,16 +16,33 @@ async function tx(stores, mode, fn) {
   return new Promise((res, rej) => {
     const t = d.transaction(stores, mode); let out;
     Promise.resolve(fn(...stores.map((s) => t.objectStore(s)))).then((v) => { out = v; });
-    t.oncomplete = () => res(out); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    // 書き込みの失敗（空きが足りないなど）は、記録の error に理由がある（このときの t.error はまだ null のことがある）
+    t.oncomplete = () => res(out); t.onerror = (e) => rej(t.error || e.target?.error); t.onabort = () => rej(t.error);
   });
 }
 const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 
+/** 端末の空きが足りなくて書けなかったか */
+export const isFull = (e) => e?.name === 'QuotaExceededError' || /quota/i.test(e?.message || '');
+/**
+ * 作り直せる保存（仕上げの結果 hq:・途中の結果 stage:。1 枚で数十 MB）を全部消す。
+ * 端末の空きが足りないときは、こちらより写真・編集・本人の写真を残す方が大事（仕上げは次に開いたとき計算し直せる）
+ */
+export const dropResults = () => tx(['blobs'], 'readwrite', (b) => { b.delete(IDBKeyRange.bound('hq:', 'hq:\uffff')); b.delete(IDBKeyRange.bound('stage:', 'stage:\uffff')); });
+/** 写真・編集を書く。空きが足りなければ、作り直せる保存を消してから、もう一度だけ書く */
+async function roomy(write) {
+  try { return await write(); } catch (e) {
+    if (!isFull(e)) throw e;
+    await dropResults().catch(() => {});
+    return write();
+  }
+}
+
 export const listProjects = () => tx(['projects'], 'readonly', (p) => req(p.getAll())).then((a) => a.sort((x, y) => y.updated - x.updated));
 export const getProject = (id) => tx(['projects'], 'readonly', (p) => req(p.get(id)));
 export const getBlob = (id) => tx(['blobs'], 'readonly', (b) => req(b.get(id)));
-export const putProject = (proj) => tx(['projects'], 'readwrite', (p) => { p.put(proj); });
-export const addProject = (proj, blob) => tx(['projects', 'blobs'], 'readwrite', (p, b) => { p.put(proj); b.put(blob, proj.id); });
+export const putProject = (proj) => roomy(() => tx(['projects'], 'readwrite', (p) => { p.put(proj); }));
+export const addProject = (proj, blob) => roomy(() => tx(['projects', 'blobs'], 'readwrite', (p, b) => { p.put(proj); b.put(blob, proj.id); }));
 export const deleteProject = (id) => tx(['projects', 'blobs'], 'readwrite', (p, b) => { p.delete(id); b.delete(id); b.delete(`hq:${id}`); b.delete(`stage:${id}`); });
 
 /**
@@ -91,7 +108,8 @@ export async function getPeople() {
   if (old) await putPeople(out);
   return out;
 }
-export async function putPeople(list) {
+export async function putPeople(list) { return roomy(() => writePeople(list)); }
+async function writePeople(list) {
   const keep = new Set(); const added = [];
   const meta = list.map((p) => ({ ...p, refs: p.refs.map(({ crop, ...r }) => {
     keep.add(REF + r.id);
@@ -113,4 +131,4 @@ export async function getPending() {
   for (const ph of v.photos || []) ph.cands = (await Promise.all(ph.cands.map(async (c) => ({ ...c, crop: await detach(c.crop) })))).filter((c) => c.crop);
   return v;
 }
-export const putPending = (v) => tx(['blobs'], 'readwrite', (b) => { if (v) b.put(v, 'faceai:pending'); else b.delete('faceai:pending'); });
+export const putPending = (v) => roomy(() => tx(['blobs'], 'readwrite', (b) => { if (v) b.put(v, 'faceai:pending'); else b.delete('faceai:pending'); }));

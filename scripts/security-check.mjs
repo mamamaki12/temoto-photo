@@ -5,6 +5,7 @@
 // - target="_blank" には rel="noopener" を必須
 // - 外部スクリプトの読み込みを禁止
 // - CSP で外部への通信を禁止していること（connect-src 'none'。写真を端末の外に出さない）
+// - アプリの JavaScript に外部の URL を書かない（Worker の中には画面の CSP が効かないため。sw.js でも外への通信は止める）
 // - vendor/（そのまま入れた外部のライブラリ。WebAssembly のつなぎで new Function を使う）は上の規則の対象外にし、
 //   代わりに「外部の URL を含まない」「決めたファイルだけ」を確かめる（Worker の中で、同じサイトのファイルだけを読む）
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -30,6 +31,8 @@ const VENDOR = {
 };
 // vendor/ のスクリプトに書かれていてよい URL（警告の文に出てくる説明のページ。読み込みはしない）
 const DOC_URLS = [/https:\/\/web\.dev\/cross-origin-isolation-guide\/?/g];
+// アプリの JavaScript に書かれていてよい URL（SVG・XML の名前空間。通信には使わない）
+const NS_URLS = /http:\/\/www\.w3\.org\/[\w./-]*/g;
 const files = [];
 (function walk(d) {
   for (const n of readdirSync(d)) {
@@ -73,6 +76,8 @@ for (const f of files) {
       if (/target:\s*'_blank'/.test(line) && !/rel:\s*'[^']*noopener/.test(line)) problems.push(`${rel}:${i + 1}: target=_blank に rel=noopener がない`);
     });
     if (/import\s[^;]*from\s+['"]https?:/.test(src)) problems.push(`${rel}: 外部モジュールの import`);
+    // 写真を処理する Worker の中には、画面の CSP（connect-src 'none'）が効かない。外のサイトの URL を書かない
+    src.replace(NS_URLS, '').split('\n').forEach((line, i) => { if (/https?:\/\//i.test(line)) problems.push(`${rel}:${i + 1}: 外部の URL（Worker の中では CSP で止まらない）`); });
   }
 }
 
