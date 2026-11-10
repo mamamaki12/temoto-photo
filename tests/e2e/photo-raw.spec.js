@@ -1,6 +1,6 @@
 // てもとフォト: RAW ファイル（DNG は現像、NEF/CR3 などは中のプレビュー）を開く
 import { test, expect } from '@playwright/test';
-import { makePhoto, viewMean, savedExposures, openTool } from './photo-helpers.js';
+import { makePhoto, viewMean, savedExposures, openTool, openInfo, closeInfo } from './photo-helpers.js';
 import { makeDng, makePreviewRaw, makeContainerRaw, XYZ_TO_SRGB } from '../unit/raw-fixtures.js';
 
 test.describe.configure({ timeout: 60000 });
@@ -24,10 +24,11 @@ test('DNG（可逆JPEG圧縮・ホワイトバランス・色変換つき）を�
   // 4つの色の面が、元の色で表示される（左上=赤、右上=青、左下=緑、右下=灰色）
   const got = await Promise.all([[0.1, 0.1, 0.4, 0.4], [0.6, 0.1, 0.9, 0.4], [0.1, 0.6, 0.4, 0.9], [0.6, 0.6, 0.9, 0.9]].map((r) => viewMean(page, r)));
   got.forEach((c, i) => expect(close(c, PATCH[i], 6), `${i}: ${c} vs ${PATCH[i]}`).toBe(true));
-  await page.getByRole('tab', { name: '情報' }).click();
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('RAW（DNG）');
   await expect(page.locator('.info')).toContainText('RAW データから現像');
   await expect(page.locator('.info')).toContainText('TestCam RAW-1');
+  await closeInfo(page);
   // 編集して、一覧に戻って開き直す（保存した RAW をもう一度現像する）
   await openTool(page, 'ライト');
   await page.getByLabel('露光量', { exact: true }).evaluate((el) => { el.value = 30; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
@@ -57,9 +58,10 @@ test('NEF（TIFF型）は中のプレビュー JPEG を使い、向きも反映�
   // 横長の写真が、向きの情報で縦長になる
   const ratio = await page.locator('canvas.view').evaluate((c) => c.width / c.height);
   expect(ratio).toBeLessThan(0.8);
-  await page.getByRole('tab', { name: '情報' }).click();
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('Nikon NEF');
   await expect(page.locator('.info')).toContainText('プレビュー画像（900×600）');
+  await closeInfo(page);
   await page.getByRole('button', { name: '‹ 写真' }).click();
   const cr3 = makeContainerRaw([new Uint8Array(photo.buffer)]);
   await page.locator('#open-file').setInputFiles(file('IMG_0003.CR3', cr3));
@@ -85,9 +87,10 @@ test('キヤノンなどの RAW は LibRaw で RAW データから現像し、�
   await opened(page);
   // 編集中は半分の大きさで現像（元の大きさは 600×400 のまま覚えている）
   expect(await page.evaluate(() => [window.__temoto.editor.W, window.__temoto.editor.H, window.__temoto.editor.proj.w])).toEqual([300, 200, 600]);
-  await page.getByRole('tab', { name: '情報' }).click();
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('LibRaw・16bit');
   await expect(page.locator('.info')).toContainText('TestCam RAW-1');
+  await closeInfo(page);
   // 色の面の並び（赤み・青・緑・灰色）が保たれている
   const [red, blue, green, gray] = await Promise.all([[0.1, 0.1, 0.4, 0.4], [0.6, 0.1, 0.9, 0.4], [0.1, 0.6, 0.4, 0.9], [0.6, 0.6, 0.9, 0.9]].map((r) => viewMean(page, r)));
   expect(red[0]).toBeGreaterThan(red[2] + 30); expect(blue[2]).toBeGreaterThan(blue[0] + 30); expect(green[1]).toBeGreaterThan(green[0] + 30);
@@ -131,9 +134,10 @@ test('LibRaw で読めない RAW（画像データのない CR3 など）は、�
   const photo = await makePhoto(page, { w: 900, h: 600 });
   await page.locator('#open-file').setInputFiles(file('IMG_0005.CR3', makeContainerRaw([new Uint8Array(photo.buffer)])));
   await opened(page);
-  await page.getByRole('tab', { name: '情報' }).click();
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('プレビュー画像（900×600）');
   await expect(page.locator('.info')).not.toContainText('LibRaw');
+  await closeInfo(page);
   // RAW データから現像していないので、RAW の現像のタブは出さない
   await expect(page.getByRole('tab', { name: 'RAW' })).toHaveCount(0);
 });

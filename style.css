@@ -138,10 +138,12 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .lib-empty > p { margin: 0 0 16px; }
 .lib-empty h3 { margin: 18px 0 6px; font-size: .9rem; color: var(--muted); font-weight: 600; }
 .privacy p { margin: 4px 0; color: var(--muted); max-width: 70ch; }
-.feature-list { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
-.feature-list li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 14px; background: var(--surface); font-size: .9rem; }
-.feat-icon { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); }
-.feat-icon svg { width: 20px; height: 20px; stroke-width: 1.7; }
+/* できることの紹介（押せるものではないので、ボタンに見えない形: 背景・枠なしの 2 列の小さなアイコンと文字） */
+.feature-list { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
+@media (min-width: 600px) { .feature-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.feature-list li { display: flex; align-items: flex-start; gap: 6px; font-size: .8rem; line-height: 1.35; color: var(--muted); }
+.feat-icon { flex: none; display: grid; place-items: center; color: var(--accent-text); }
+.feat-icon svg { width: 18px; height: 18px; stroke-width: 1.7; }
 .feature-list.plain { grid-template-columns: 1fr; gap: 4px; padding-left: 1.2em; list-style: disc; }
 .feature-list.plain li { display: list-item; padding: 0; background: none; border-radius: 0; color: var(--muted); font-size: .86rem; }
 .loading, .fatal { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 16px; text-align: center; }
@@ -156,7 +158,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
   grid-template-areas: "head" "stage" "side" "rail";
 }
 .ed-head { grid-area: head; }
-.rail { grid-area: rail; }
+.rail, .rail-box { grid-area: rail; }
 .side { grid-area: side; }
 .stage { grid-area: stage; }
 .editor.side-closed .side { display: none; }
@@ -252,7 +254,12 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .rail { display: flex; gap: 4px; overflow-x: auto; padding: 6px calc(12px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) + 4px)) calc(12px + env(safe-area-inset-left, 0px)); background: var(--bg); scrollbar-width: none; }
 .rail::-webkit-scrollbar { display: none; }
 .rail button { flex: none; min-width: 0; min-height: 44px; /* 指で押しやすい大きさ（44px 以上） */ padding: 4px 16px; border: none; border-radius: 999px; background: transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: .86rem; color: var(--muted); font-weight: 600; letter-spacing: .03em; white-space: nowrap; }
-@media (hover: hover) { .rail button:hover:not(:disabled) { background: var(--surface); color: var(--text); } }
+.rail-box { display: flex; align-items: flex-start; min-width: 0; background: var(--bg); }
+.rail-box > .rail { flex: 1 1 auto; min-width: 0; }
+/* 「＋」: 隠している道具を出す（表示する道具を選ぶ）。札とは形を変えて（点線の丸）、選ぶ札ではないと分かるように */
+.rail-box .rail-add { flex: none; width: 44px; height: 44px; min-height: 44px; padding: 0; margin: 6px calc(10px + env(safe-area-inset-right, 0px)) 0 0; border-radius: 50%; border: 1px dashed var(--drop-line); background: transparent; color: var(--muted); }
+.rail-box .rail-add svg { width: 22px; height: 22px; }
+@media (hover: hover) { .rail button:hover:not(:disabled), .rail-box .rail-add:hover:not(:disabled) { background: var(--surface); color: var(--text); } }
 .tab-icon { display: grid; place-items: center; }
 .rail button[aria-selected="true"] { color: var(--page); background: var(--text); }
 .rail button[aria-selected="true"]:hover:not(:disabled) { background: var(--text); color: var(--page); }
@@ -285,6 +292,9 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
   .editor.side-closed { grid-template-columns: 88px 0 minmax(0, 1fr); }
   .side { max-height: none; border-radius: 0; border-right: 1px solid var(--line); }
   .rail { flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 10px 8px; gap: 4px; border-right: 1px solid var(--line); width: 88px; }
+  .rail-box { flex-direction: column; align-items: center; width: 88px; border-right: 1px solid var(--line); }
+  .rail-box > .rail { flex: 0 1 auto; border-right: none; }
+  .rail-box .rail-add { margin: 4px 0 12px; }
   .rail button { min-width: 0; width: 100%; min-height: 66px; display: grid; justify-items: center; align-content: center; gap: 3px; padding: 6px 2px; border-radius: 16px; font-size: .7rem; letter-spacing: .02em; }
   .rail .tab-icon { width: 36px; height: 30px; border-radius: 10px; }
   .rail .tab-icon svg { width: 24px; height: 24px; }
@@ -620,11 +630,15 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .editor:not(.grid-editor) .side { grid-template-rows: minmax(0, 1fr) auto; }
 @media (max-width: 899px) {
   /* 項目を開いている間は、種類と項目の列を隠して、写真を大きく */
-  .editor:not(.grid-editor):not(.side-closed) .rail, .editor:not(.grid-editor):not(.side-closed) .items { display: none; }
+  .editor:not(.grid-editor):not(.side-closed) .rail-box, .editor:not(.grid-editor):not(.side-closed) .items { display: none; }
   /* シートは中身の高さ（項目を開くと写真を大きく）。小さな中身でも、閉じているときの項目・種類の列と同じ高さは保つ（開いても写真が動かない）。長い中身は 42dvh まで伸びて、残りはシートの中でスクロール */
   .editor:not(.grid-editor) .side { height: auto; min-height: calc(150px + env(safe-area-inset-bottom, 0px)); max-height: min(42dvh, 380px); animation: sheet-up .25s var(--ease); }
   .editor:not(.grid-editor) .side-bar { padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
   .editor:not(.grid-editor) .rail { border-radius: 0; padding-top: 4px; }
+  .editor:not(.grid-editor) .rail-add { margin-top: 4px; }
+  /* 札を少し詰めて、全部の種類（5 つ）と「＋」が幅 390px で 1 行に収まるように（札は 44px 以上のまま） */
+  .editor:not(.grid-editor) .rail { padding-right: 8px; }
+  .editor:not(.grid-editor) .rail button { padding-inline: 10px; min-width: 44px; }
   .editor:not(.grid-editor) .rail .tab-icon { display: none; } /* スマホの種類の札は文字だけ（5 つが 1 行に収まるように） */
   .editor:not(.grid-editor) .panel-inner { padding: 12px 18px 14px; gap: 10px; } /* 下は ✕・✓ のバーから離す */
   .fx-count { justify-content: space-between; align-items: center; }

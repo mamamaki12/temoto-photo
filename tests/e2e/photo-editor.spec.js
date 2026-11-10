@@ -2,7 +2,7 @@
 import { test, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
-import { makePhoto, viewMean, withExif, savedExposures, openTool } from './photo-helpers.js';
+import { makePhoto, viewMean, withExif, savedExposures, openTool, openInfo, closeInfo } from './photo-helpers.js';
 
 const URL0 = '/';
 const SKY = [0.05, 0.05, 0.5, 0.3]; // 表示中の写真の、空の部分（左上）
@@ -168,9 +168,10 @@ test('位置情報入りの写真: 警告を出し、書き出した JPEG・PNG�
   const file = withExif(await makePhoto(page));
   await page.locator('#open-file').setInputFiles(file);
   await expect(page.locator('canvas.view')).toBeVisible({ timeout: 20000 });
-  await tab(page, '情報');
+  await openInfo(page);
   await expect(page.locator('.gps-warn')).toContainText('位置情報');
   await expect(page.locator('.info')).toContainText('SecretCam');
+  await closeInfo(page);
   const out = await exportFile(page, { format: 'JPEG', size: '1080px（SNS）' });
   expect(out.buf[0]).toBe(0xff); expect(out.buf[1]).toBe(0xd8);
   expect(out.buf.includes(Buffer.from('Exif'))).toBe(false);
@@ -434,8 +435,9 @@ test('枠と余白をつけても、書き出しは端末の上限（約1,670万
   await tab(page, 'フレーム');
   await setSlider(page, '枠の太さ', 10);
   await page.getByRole('button', { name: 'ストーリー 9:16' }).click();
-  await tab(page, '情報');
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('端末の上限に合わせて縮小');
+  await closeInfo(page);
   const f = await exportFile(page, { format: 'JPEG' });
   const [w, hh] = await imageSize(page, f.buf, 'image/jpeg');
   expect(w * hh).toBeLessThanOrEqual(16_700_000);
@@ -576,14 +578,14 @@ test.describe('はじめて使う端末', () => {
   test('調整・部分補正は最初は隠してあり、「表示する道具を選ぶ」で出せる（編集は残る）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveText(['おまかせ', '顔', '部分', 'フレーム', '情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '部分', 'フレーム']);
     // 「ライト」を出す
     await page.locator('.menu summary').click();
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     const dlg = page.getByRole('dialog', { name: '表示する道具を選ぶ' });
     await dlg.getByLabel('ライト').check();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['おまかせ', '顔', '調整', '部分', 'フレーム', '情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '調整', '部分', 'フレーム']);
     await rail.filter({ hasText: '調整' }).click(); // 中の項目が1つだけなら、すぐ開く
     await expect(page.locator('.side-name')).toHaveText('ライト');
     await setSlider(page, '露光量', 40);
@@ -592,7 +594,7 @@ test.describe('はじめて使う端末', () => {
     await page.getByRole('button', { name: '表示する道具を選ぶ…' }).click();
     await dlg.getByLabel('ライト').uncheck();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveText(['おまかせ', '顔', '部分', 'フレーム', '情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '部分', 'フレーム']);
     expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(40);
     // 全部隠そうとすると止める
     await page.locator('.menu summary').click();
@@ -602,25 +604,25 @@ test.describe('はじめて使う端末', () => {
     await expect(page.locator('.toast').last()).toContainText('1つは表示');
     await dlg.getByRole('button', { name: 'すべて表示' }).click();
     await dlg.getByRole('button', { name: '決定' }).click();
-    await expect(rail).toHaveCount(6);
+    await expect(rail).toHaveCount(5);
   });
 
   test('スペシャリストモードをオンにすると、隠した道具も全部出る（オフで元に戻る・覚えている）', async ({ page }) => {
     await openWith(page);
     const rail = page.locator('.rail [role=tab]');
-    await expect(rail).toHaveCount(5);
+    await expect(rail).toHaveCount(4);
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').check();
-    await expect(rail).toHaveText(['おまかせ', '顔', '調整', '部分', 'フレーム', '情報']);
+    await expect(rail).toHaveText(['おまかせ', '顔', '調整', '部分', 'フレーム']);
     await rail.filter({ hasText: '調整' }).click();
     await expect(page.locator('.items [role=tab]')).toHaveCount(7);
     // 再読み込みしても続く
     await page.reload(); await page.locator('.lib-open').first().click(); await page.waitForFunction(() => window.__temoto.editor?.L);
-    await expect(rail).toHaveCount(6);
+    await expect(rail).toHaveCount(5);
     // オフにすると隠した道具は消え、開いていた道具（調整）からフィルターに戻る
     await page.locator('.menu summary').click();
     await page.getByLabel('スペシャリストモード（隠した道具も全部出す）').uncheck();
-    await expect(rail).toHaveCount(5);
+    await expect(rail).toHaveCount(4);
     await expect(page.getByRole('tab', { name: 'おまかせ', exact: true })).toHaveAttribute('aria-selected', 'true');
   });
 });
@@ -858,13 +860,16 @@ test('写真一覧: 見本が壊れた・ない写真があっても一覧を出
   await expect(odd.locator('.lib-noimg')).toHaveCount(0);
   await odd.click();
   await page.waitForFunction(() => window.__temoto.editor?.L);
-  await tab(page, '情報');
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('Cam');
   await expect(page.locator('.ok-note')).toBeVisible();
-  // 前に選んでいた道具が「情報」のまま開き直しても開ける
+  await closeInfo(page);
+  // 前の版で選んでいた道具が「情報」（今は道具ではない）のままでも開ける
+  await page.evaluate(() => localStorage.setItem('temoto:tool', '"info"'));
   await page.getByRole('button', { name: '‹ 写真' }).click();
   await odd.click();
   await page.waitForFunction(() => window.__temoto.editor?.L);
+  await openInfo(page);
   await expect(page.locator('#proj-name')).toHaveValue('見本が壊れた写真');
   expect(errors).toEqual([]);
 });

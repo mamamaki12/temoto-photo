@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.5'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.6'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -52,9 +52,8 @@ const GROUPS = [
   ['adjust', 'adjust', '調整', ['light', 'color', 'hsl', 'curves', 'grade', 'detail', 'effects']],
   ['part', 'part', '部分', ['local', 'dodge:dodge', 'dodge:burn', 'heal', 'hide']],
   ['frame', 'frame', 'フレーム', ['frame']],
-  ['info', 'info', '情報', ['info']],
 ];
-const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム', info: '情報' };
+const TOOL_LABEL = { raw: 'RAW', looks: 'フィルター', auto: '自動補正', faceai: '顔 AI', light: 'ライト', color: 'カラー', hsl: 'HSL', curves: 'カーブ', grade: 'グレーディング', detail: 'ディテール', effects: '効果', local: '部分補正', skin: '美肌', shape: '形', eyes: '顔', dodge: '明暗', wrinkle: 'しわ取り', heal: '修復', hide: 'モザイク', frame: 'フレーム' }; // 写真の情報は道具ではないので「⋯」メニューから（openInfo）
 const ITEM_LABEL = { 'eyes:eyes': '目元', 'eyes:lip': 'リップ', 'eyes:nose': '鼻筋', 'eyes:teeth': '歯', 'eyes:gaze': '目線', 'dodge:dodge': '明るく', 'dodge:burn': '暗く', shape: '輪郭' };
 const itemLabel = (it) => ITEM_LABEL[it] || TOOL_LABEL[it];
 const itemTool = (it) => it.split(':')[0];
@@ -1475,6 +1474,7 @@ function buildEditor() {
   E.setOrig = setOrig;
   const menu = h('details', { class: 'menu' }, h('summary', { 'aria-label': 'そのほかの操作', title: 'そのほかの操作' }, uiIcon('more')),
     h('div', { class: 'menu-list' },
+      iconize(h('button', { type: 'button', onclick: openInfo }, '写真の情報'), 'info', '情報'),
       iconize(h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'), 'copy', 'コピー'),
       iconize(h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'), 'paste', '貼り付け'),
       iconize(h('button', { type: 'button', onclick: async () => {
@@ -1519,7 +1519,9 @@ function buildEditor() {
       h('span', { class: 'ed-title' }, E.proj.name),
       h('div', { class: 'ed-tools' }, cmp, menu,
         h('button', { type: 'button', class: 'primary export', title: '書き出し', onclick: () => openExport({}) }, uiIcon('export'), h('span', { class: 'export-label' }, '書き出し')))),
-    E.tabs, E.items, E.side, E.stageEl);
+    // 種類の札の右（パソコンでは下）に「＋」: 隠している道具を出す（表示する道具を選ぶ）。札の列（tablist）の外に置く
+    h('div', { class: 'rail-box' }, E.tabs, h('button', { type: 'button', class: 'rail-add', 'aria-label': '表示する道具を選ぶ', title: '表示する道具を選ぶ', onclick: openToolPicker }, uiIcon('plus'))),
+    E.items, E.side, E.stageEl);
   // 編集前を表示したまま、ほかの所（写真・パネル・道具）を触ったら、編集後の表示に戻す
   E.root.addEventListener('pointerdown', (e) => { if (E?.showOriginal && !press && !cmp.contains(e.target)) setOrig(false); }, true);
   E.root.addEventListener('input', () => { if (E?.showOriginal) setOrig(false); }, true);
@@ -1985,7 +1987,6 @@ const PANELS = {
       colorPicker({ label: '余白の色', value: f.padColor, onPick: (v) => { f.padColor = v; commit(); requestRender(); } }).el,
     ];
   },
-  info() { return infoPanel(); },
 };
 
 function buildPanel() {
@@ -2263,6 +2264,17 @@ function localPanel() {
 }
 
 // ── 情報 ──
+/** 写真の情報（名前・大きさ・カメラ・位置情報・ヒストグラム）を、シート（ダイアログ）で出す */
+function openInfo() {
+  if (!E) return;
+  const dlg = h('dialog', { class: 'dlg info-dlg', 'aria-labelledby': 'info-h' },
+    h('h2', { id: 'info-h' }, '写真の情報'),
+    ...infoPanel(),
+    h('div', { class: 'dlg-actions' }, iconize(h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), 'close')));
+  dlg.addEventListener('close', () => dlg.remove());
+  document.body.append(dlg); dlg.showModal();
+  scheduleHistogram();
+}
 function infoPanel() {
   const p = E.proj; const x = p.exif;
   const name = h('input', { id: 'proj-name', maxlength: 80, value: p.name });
