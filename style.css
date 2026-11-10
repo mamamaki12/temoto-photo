@@ -445,6 +445,16 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ed-head .export { width: 44px; padding: 0; margin-left: 2px; }
   .ed-head .export .export-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
+/* スマホ（幅 640px 以下・指で使う端末）: 文字のボタンはアイコン（と 2〜4 文字）に（app.js の iconize）。元の文字は読み上げ用に見えない形で残す。パソコンは今までどおり文字だけ */
+.ib-ic { display: none; }
+@media (max-width: 640px), (pointer: coarse) {
+  .ib.ib { position: relative; min-height: 44px; gap: 6px; } /* 小さいボタンの決まり（.small など）より強く */
+  .ib > .ib-ic { display: block; width: 20px; height: 20px; }
+  .ib > .lbl { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ib[data-short]::after { content: attr(data-short); content: attr(data-short) / ""; white-space: nowrap; }
+  .ib:not([data-short]) { min-width: 44px; padding-inline: 10px; }
+  .dlg-actions > .ib:not([data-short]):not(.primary) { flex: 0 0 auto; min-width: 64px; } /* ✕ だけのボタンは小さく、決める側を広く */
+}
 /* 種類・項目の札は、選んだ瞬間に色が変わる（じわっと変えない） */
 .rail button, .items button { transition: none; }
 /* 長押し（比較ボタンなど）で iPhone の選択メニューが出ないように */

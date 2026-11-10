@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.4'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.5'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -109,6 +109,19 @@ const UI_ICON = {
   grid: '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M12 3.5v17M3.5 12h8.5"/>',
   margin: '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><rect x="7.5" y="7.5" width="9" height="9" rx="1"/>',
   photo: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 15.5l4.5-4 4 3.5 3-2.5 5.5 4.5"/><circle cx="15.5" cy="9.5" r="1.3"/>',
+  // スマホでボタンの文字の代わりに出すアイコン（iconize）
+  trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5"/><path d="M10 11v5M14 11v5"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+  paste: '<rect x="5" y="5" width="14" height="15.5" rx="2"/><path d="M9 5V3.5h6V5M9 11h6M9 15h4"/>',
+  duplicate: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5M14 11.5v5M11.5 14h5"/>',
+  reset: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>',
+  dropper: '<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3l-2 2-3-3z"/><path d="M14.5 7.5L6 16l-1 3.5 3.5-1L17 10"/>',
+  swap: '<path d="M7 7.5h12.5M16 4l3.5 3.5L16 11"/><path d="M17 16.5H4.5M8 13l-3.5 3.5L8 20"/>',
+  eye: '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.8"/>',
+  checkall: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M8 12.5l3 3 5-6"/>',
+  upload: '<path d="M12 15.5v-12M7.5 8 12 3.5 16.5 8M4.5 15.5v2.5A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5v-2.5"/>',
+  personplus: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 19.5c.8-3.5 3.3-5.5 6.5-5.5s5.7 2 6.5 5.5M18.5 8v6M15.5 11h6"/>',
+  ban: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
 };
 const iconCache = new Map();
 function svgIcon(key, body) {
@@ -119,6 +132,21 @@ function svgIcon(key, body) {
 const itemIcon = (it) => svgIcon(`item:${it}`, ITEM_ICON[it]);
 /** 種類・ボタンのアイコンの SVG */
 const uiIcon = (k) => svgIcon(`ui:${k}`, UI_ICON[k]);
+/**
+ * 文字のボタンを、スマホ（幅 640px 以下・指で使う端末）ではアイコン（と 2〜4 文字の short）だけで見せる。
+ * 元の文字は消さずに見えない形で残し（読み上げ・テスト用。textContent も変わらない）、名前は aria-label と title に。
+ * short はCSS の ::after で出す（読み上げには入れない）。パソコンでは今までどおり文字だけ
+ */
+function iconize(el, icon, short = null) {
+  const text = el.textContent.trim();
+  const ic = uiIcon(icon); ic.classList.add('ib-ic');
+  el.replaceChildren(ic, h('span', { class: 'lbl' }, ...el.childNodes));
+  el.classList.add('ib');
+  if (short) el.dataset.short = short;
+  if (el.tagName === 'BUTTON' && !el.hasAttribute('aria-label')) el.setAttribute('aria-label', text);
+  if (!el.title) el.title = text;
+  return el;
+}
 /** 1 人あたりの本人の写真の上限（多いほど目元・歯並びが本人に近づく。1 枚あたり顔 1 つに約 0.3 秒） */
 const MAX_REFS = 40;
 let refsBusy = false; // 本人の写真を読み込み中（同時に 2 回は足さない）
@@ -174,11 +202,11 @@ function themeSvg(t) {
 const themeName = (t) => THEMES.find(([k]) => k === t)[1];
 const nextTheme = (t) => THEMES[(THEMES.findIndex(([k]) => k === t) + 1) % THEMES.length][0];
 function themeButton({ withLabel = false } = {}) {
-  const icon = h('span', { class: 'theme-icon', 'aria-hidden': 'true' }); const label = h('span', { class: 'theme-label' });
-  const b = h('button', { type: 'button', class: withLabel ? 'theme-cycle labeled' : 'theme-cycle', onclick: () => { const t = nextTheme(prefs.get('theme', DEFAULT_THEME)); setTheme(t); sync(); toast(`画面の色: ${themeName(t)}${t === 'auto' ? '（端末の設定に合わせる）' : ''}`); } }, icon, withLabel ? label : null);
+  const icon = h('span', { class: 'theme-icon', 'aria-hidden': 'true' }); const label = h('span', { class: 'theme-label lbl' });
+  const b = h('button', { type: 'button', class: withLabel ? 'theme-cycle labeled ib' : 'theme-cycle', onclick: () => { const t = nextTheme(prefs.get('theme', DEFAULT_THEME)); setTheme(t); sync(); toast(`画面の色: ${themeName(t)}${t === 'auto' ? '（端末の設定に合わせる）' : ''}`); } }, icon, withLabel ? label : null);
   function sync() {
     const t = prefs.get('theme', DEFAULT_THEME); icon.replaceChildren(themeSvg(t)); label.textContent = `画面の色: ${themeName(t)}`;
-    const tip = `画面の色: ${themeName(t)}（押すと${themeName(nextTheme(t))}に）`; b.setAttribute('aria-label', tip); b.title = tip; b.dataset.theme = t;
+    const tip = `画面の色: ${themeName(t)}（押すと${themeName(nextTheme(t))}に）`; b.setAttribute('aria-label', tip); b.title = tip; b.dataset.theme = t; if (withLabel) b.dataset.short = themeName(t);
   }
   sync(); return b;
 }
@@ -418,15 +446,15 @@ async function showLibrary() {
   const drawBar = () => {
     render(bar, selecting.size ? [
       h('span', { class: 'muted' }, `${selecting.size}枚を選択中`),
-      h('button', { type: 'button', class: 'primary', disabled: selecting.size < 2 || selecting.size > MAX_GRID, title: selecting.size > MAX_GRID ? `グリッドは${MAX_GRID}枚まで` : '', onclick: () => showGrid(sel()) }, `▦ グリッドを作る${selecting.size > MAX_GRID ? `（${MAX_GRID}枚まで）` : ''}`),
-      h('button', { type: 'button', onclick: () => openExport({ batch: sel() }) }, 'まとめて書き出し'),
-      h('button', { type: 'button', disabled: !prefs.get('clip', null), onclick: async () => {
+      iconize(h('button', { type: 'button', class: 'primary', disabled: selecting.size < 2 || selecting.size > MAX_GRID, title: selecting.size > MAX_GRID ? `グリッドは${MAX_GRID}枚まで` : '', onclick: () => showGrid(sel()) }, `▦ グリッドを作る${selecting.size > MAX_GRID ? `（${MAX_GRID}枚まで）` : ''}`), 'grid', 'グリッド'),
+      iconize(h('button', { type: 'button', onclick: () => openExport({ batch: sel() }) }, 'まとめて書き出し'), 'export', 'まとめて'),
+      iconize(h('button', { type: 'button', disabled: !prefs.get('clip', null), onclick: async () => {
         const clip = prefs.get('clip', null);
         try { for (const p of sel()) await db.putProject({ ...p, state: S.applyPreset(S.validateState(p.state), clip), updated: Date.now() }); } catch (e) { toast(db.isFull(e) ? '端末の空きが足りないので、貼り付けられませんでした' : '貼り付けられませんでした'); showLibrary(); return; }
         toast('編集を貼り付けました'); selecting.clear(); showLibrary();
-      } }, '編集を貼り付け'),
-      h('button', { type: 'button', class: 'danger', onclick: () => confirmBox(`${selecting.size}枚の写真と編集内容を、この端末から削除します。元に戻せません。`, '削除する', async () => { for (const p of sel()) await db.deleteProject(p.id); selecting.clear(); showLibrary(); }) }, '削除'),
-      h('button', { type: 'button', class: 'ghost', onclick: () => { selecting.clear(); showLibrary(); } }, '選択をやめる'),] : null);
+      } }, '編集を貼り付け'), 'paste', '貼り付け'),
+      iconize(h('button', { type: 'button', class: 'danger', onclick: () => confirmBox(`${selecting.size}枚の写真と編集内容を、この端末から削除します。元に戻せません。`, '削除する', async () => { for (const p of sel()) await db.deleteProject(p.id); selecting.clear(); showLibrary(); }) }, '削除'), 'trash', '削除'),
+      iconize(h('button', { type: 'button', class: 'ghost', onclick: () => { selecting.clear(); showLibrary(); } }, '選択をやめる'), 'close'),] : null);
   };
   drawBar();
   const grid = h('ul', { class: 'lib-grid' }, projects.map((p) => {
@@ -459,7 +487,7 @@ async function showLibrary() {
         h('span', { class: 'muted small drop-sub' }, 'タップ・ドラッグ・貼り付け（複数可）')),
       fileIn,
       h('div', { id: 'install-slot' }, installCard()),
-      projects.length ? h('div', { class: 'lib-bar' }, h('h2', {}, '写真', h('span', { class: 'lib-count' }, String(projects.length))), h('button', { type: 'button', class: 'ghost small', onclick: () => { projects.forEach((p) => selecting.add(p.id)); showLibrary(); } }, 'すべて選択')) : null,
+      projects.length ? h('div', { class: 'lib-bar' }, h('h2', {}, '写真', h('span', { class: 'lib-count' }, String(projects.length))), iconize(h('button', { type: 'button', class: 'ghost small', onclick: () => { projects.forEach((p) => selecting.add(p.id)); showLibrary(); } }, 'すべて選択'), 'checkall', 'すべて')) : null,
       bar,
       projects.length ? grid : h('div', { class: 'lib-empty' },
         h('h2', {}, 'スマホの中だけで、きれいに仕上げる'),
@@ -517,8 +545,8 @@ function installCard() {
   if (!installEvt || prefs.get('installHidden', false)) return null;
   return h('div', { class: 'install-card' },
     h('div', {}, h('b', {}, 'アプリとして入れる'), h('p', { class: 'muted small' }, 'デスクトップやホーム画面から開けます。')),
-    h('button', { type: 'button', class: 'primary', onclick: async () => { const e = installEvt; if (!e) return; installEvt = null; render($('#install-slot'), null); await e.prompt().catch(() => {}); } }, '入れる'),
-    h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'このお知らせを出さない', title: 'このお知らせを出さない（ブラウザのメニューからも入れられます）', onclick: () => { prefs.set('installHidden', true); render($('#install-slot'), null); } }, '✕'));
+    iconize(h('button', { type: 'button', class: 'primary', onclick: async () => { const e = installEvt; if (!e) return; installEvt = null; render($('#install-slot'), null); await e.prompt().catch(() => {}); } }, '入れる'), 'export', '入れる'),
+    h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'このお知らせを出さない', title: 'このお知らせを出さない（ブラウザのメニューからも入れられます）', onclick: () => { prefs.set('installHidden', true); render($('#install-slot'), null); } }, uiIcon('close')));
 }
 
 function confirmBox(msg, okLabel, onOk) {
@@ -551,7 +579,7 @@ async function openEditor(id) {
   const glCanvas = document.createElement('canvas');
   let engine;
   try { engine = new Engine(glCanvas); } catch {
-    render(app, h('div', { class: 'fatal' }, h('h1', {}, 'この端末・ブラウザでは編集できません'), h('p', {}, 'WebGL2 に対応したブラウザ（最新の Chrome・Safari・Edge・Firefox）でお試しください。'), h('button', { type: 'button', onclick: showLibrary }, '写真一覧に戻る')));
+    render(app, h('div', { class: 'fatal' }, h('h1', {}, 'この端末・ブラウザでは編集できません'), h('p', {}, 'WebGL2 に対応したブラウザ（最新の Chrome・Safari・Edge・Firefox）でお試しください。'), iconize(h('button', { type: 'button', onclick: showLibrary }, '写真一覧に戻る'), 'back', '一覧へ')));
     return;
   }
   render(app, h('div', { class: 'loading' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), proj.raw ? 'RAW を現像しています…' : '写真を開いています…'));
@@ -1447,21 +1475,21 @@ function buildEditor() {
   E.setOrig = setOrig;
   const menu = h('details', { class: 'menu' }, h('summary', { 'aria-label': 'そのほかの操作', title: 'そのほかの操作' }, uiIcon('more')),
     h('div', { class: 'menu-list' },
-      h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'),
-      h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'),
-      h('button', { type: 'button', onclick: async () => {
+      iconize(h('button', { type: 'button', onclick: (e) => { prefs.set('clip', S.presetPart(E.state)); toast('編集をコピーしました（写真一覧で別の写真に貼り付けられます）'); } }, '編集をコピー'), 'copy', 'コピー'),
+      iconize(h('button', { type: 'button', onclick: (e) => { const c = prefs.get('clip', null); if (!c) { toast('コピーした編集がありません'); return; } E.state = S.applyPreset(E.state, c); commit(); buildPanel(); requestRender(); } }, '編集を貼り付け'), 'paste', '貼り付け'),
+      iconize(h('button', { type: 'button', onclick: async () => {
         const blob = await db.getBlob(E.id); const id = uid();
         try { await db.addProject({ ...E.proj, id, name: `${E.proj.name}（コピー）`, created: Date.now(), updated: Date.now(), state: S.clone(E.committed) }, blob); } catch (e) { toast(db.isFull(e) ? '端末の空きが足りないので、複製できませんでした' : '複製できませんでした'); return; }
         toast('複製しました'); openEditor(id);
-      } }, '複製して別の編集を作る'),
+      } }, '複製して別の編集を作る'), 'duplicate', '複製'),
       h('div', { class: 'menu-mode' }, toggle('スペシャリストモード（隠した道具も全部出す）', specialist(), (v) => {
         prefs.set('specialist', v); menu.open = false; buildRail(); const sh = shownTools(!!E.rawLin); setTool(sh.includes(E.tool) ? E.tool : sh[0], { keepSide: true });
         toast(v ? 'スペシャリストモード: すべての道具を表示します' : 'スペシャリストモードを終了しました');
       }).el),
-      h('button', { type: 'button', onclick: openToolPicker }, '表示する道具を選ぶ…'),
+      iconize(h('button', { type: 'button', onclick: openToolPicker }, '表示する道具を選ぶ…'), 'adjust', '道具選び'),
       themeButton({ withLabel: true }),
       updateButton(toast, { withLabel: true }),
-      h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット')));
+      iconize(h('button', { type: 'button', class: 'danger', onclick: () => confirmBox('すべての編集を消して、元の写真に戻します。', 'リセット', () => { E.state = S.defaultState(); E.sel = null; rebuildSource(); E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }) }, 'すべての編集をリセット'), 'reset', 'リセット')));
   // 項目を選んだら・外側を押したらメニューを閉じる
   menu.addEventListener('click', (e) => { if (e.target.closest('.menu-list button')) menu.open = false; });
   E.closeMenu = (e) => { if (menu.open && !menu.contains(e.target)) menu.open = false; };
@@ -1591,9 +1619,9 @@ function openToolPicker() {
       h('legend', {}, h('span', { class: 'tp-icon', 'aria-hidden': 'true' }, uiIcon(icon)), label, g === 'raw' ? h('span', { class: 'muted small' }, '（RAW を開いたとき）') : null),
       h('div', { class: 'tp-tools' }, groupTools(tools).map((t) => { const tg = toggle(TOOL_LABEL[t], !hid.has(t), (v) => { if (v) hid.delete(t); else hid.add(t); }); boxes.push(tg); return tg.el; }))))),
     h('div', { class: 'dlg-actions' },
-      h('button', { type: 'button', class: 'ghost', onclick: () => { hid.clear(); for (const b of boxes) b.input.checked = true; } }, 'すべて表示'),
-      h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'やめる'),
-      h('button', { type: 'button', class: 'primary', onclick: () => { if (!save()) return; dlg.close(); if (!E) return; buildRail(); setTool(shownTools(!!E.rawLin).includes(E.tool) ? E.tool : shownTools(!!E.rawLin)[0], { keepSide: true }); } }, '決定')));
+      iconize(h('button', { type: 'button', class: 'ghost', onclick: () => { hid.clear(); for (const b of boxes) b.input.checked = true; } }, 'すべて表示'), 'eye', 'すべて'),
+      iconize(h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'やめる'), 'close'),
+      iconize(h('button', { type: 'button', class: 'primary', onclick: () => { if (!save()) return; dlg.close(); if (!E) return; buildRail(); setTool(shownTools(!!E.rawLin).includes(E.tool) ? E.tool : shownTools(!!E.rawLin)[0], { keepSide: true }); } }, '決定'), 'check')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();
 }
@@ -1654,7 +1682,7 @@ const PANELS = {
       h('h3', {}, '暗い写真を明るく'),
       isDarkRecipe(E.state.adj)
         ? h('p', { class: 'auto-on' }, '✓ おまかせ中。この写真に合わせて、明るさとノイズ軽減の強さを自動で決めています')
-        : row(btn(E.state.adj.lowlight || E.state.adj.noise ? '✦ おまかせに戻す' : '✦ おまかせで明るくする', () => { E.suggestEl?.remove(); applyDarkRecipe(); }, 'primary')),
+        : row(iconize(btn(E.state.adj.lowlight || E.state.adj.noise ? '✦ おまかせに戻す' : '✦ おまかせで明るくする', () => { E.suggestEl?.remove(); applyDarkRecipe(); }, 'primary'), 'quick', E.state.adj.lowlight || E.state.adj.noise ? '戻す' : '明るく')),
       (() => {
         // スライダーはふだん使わない（おまかせの 50 から、好みで明るめ・暗めにするだけ）。開いたかどうかは覚えておく。動かしたことがあれば開いておく
         const d = h('details', { class: 'fine-tune', open: prefs.get('fineTuneOpen', false) === true || (!isDarkRecipe(E.state.adj) && !!(E.state.adj.lowlight || E.state.adj.noise)) },
@@ -1679,7 +1707,7 @@ const PANELS = {
       h('h3', {}, '背景をぼかす'),
       toggle('背景をぼかす', bokehActive(E.state.adj), live((v) => { E.state.adj.bokeh = v ? 50 : 0; commit(); })).el,
       hint('AI が人物と写真の奥行きを見分けて、背景だけをやわらかくぼかします（髪・輪郭、透けたフリル・足元はそのまま）。ぼかしの強さは、写っている人の大きさと背景に合わせて自動で決めます。初回は奥行きの AI（約 50MB）を読み込みます。'),
-      row(btn('✦ 自動補正', runAuto, 'primary big'), btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); buildPanel(); requestRender(); })),
+      row(iconize(btn('✦ 自動補正', runAuto, 'primary big'), 'quick', '自動補正'), iconize(btn('明るさ・色をリセット', () => { const d = S.defaultState(); Object.assign(E.state, { adj: d.adj, hsl: d.hsl, grade: d.grade, curves: d.curves, look: d.look }); commit(); buildPanel(); requestRender(); }), 'reset', 'リセット')),
     ];
   },
   faceai() {
@@ -1817,7 +1845,7 @@ const PANELS = {
       if (!E || E.tool !== 'faceai') return;
       const used = (p) => fa.faces.filter((f) => f.on && f.person === p.id).length;
       render(peopleBox, [...list.map((p) => {
-        const file = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'vh', id: `fa-file-${p.id}` });
+        const file = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'vh', id: `fa-file-${p.id}`, 'aria-label': '写真を追加' });
         file.addEventListener('change', () => { const files = [...file.files]; file.value = ''; if (files.length) addRefs(p, files); });
         const name = h('input', { value: p.name, maxlength: 20, 'aria-label': '人の名前', onchange: () => save(list.map((q) => (q.id === p.id ? { ...q, name: name.value.trim().slice(0, 20) || q.name } : q))) });
         const n = used(p);
@@ -1834,8 +1862,8 @@ const PANELS = {
                 // 自動で選んだ顔を外したら、よく似た別人として覚える（次から何人も写った写真で、その人を選ばない）
                 notMe: r.auto && r.emb ? [...(q.notMe || []), r.emb].slice(-MAX_REFS) : q.notMe } : q))) }, '×'));
           })) : hint('まだ写真がありません。明るい所ではっきり写った写真を 10 枚以上足すと、本人らしい顔になります。'),
-          h('label', { for: `fa-file-${p.id}`, class: 'btn small primary' }, '＋ 写真を追加'), file);
-      }), btn('＋ 新しい人を登録', async () => { const l = await loadPeople(); const p = { id: uid(), name: `人${l.length + 1}`, refs: [] }; await save([...l, p]); }, 'small')]);
+          iconize(h('label', { for: `fa-file-${p.id}`, class: 'btn small primary' }, '＋ 写真を追加'), 'plus', '写真追加'), file);
+      }), iconize(btn('＋ 新しい人を登録', async () => { const l = await loadPeople(); const p = { id: uid(), name: `人${l.length + 1}`, refs: [] }; await save([...l, p]); }, 'small'), 'personplus', '人を追加')]);
     };
     drawFaces(); drawPeople(); resumeRefs();
     return [
@@ -1899,6 +1927,7 @@ const PANELS = {
   },
   color() {
     const pickBtn = btn(E.wbPick ? '写真の白・グレーの場所をタップ…' : '⊙ スポイトで白を合わせる', () => { E.wbPick = !E.wbPick; buildPanel(); }, E.wbPick ? 'active' : '');
+    if (!E.wbPick) iconize(pickBtn, 'dropper', 'スポイト');
     return [row(pickBtn), ...adjSliders('color'), hint('スポイト: 白・グレーの所をタップ')];
   },
   hsl() {
@@ -1908,7 +1937,7 @@ const PANELS = {
       chips(S.HSL_BANDS.map(([k, label, deg]) => [k, h('span', { class: 'dot', style: { background: `hsl(${deg} 85% 55%)` }, 'aria-hidden': 'true' }), { title: label }]).map(([k, dot, x], i) => [k, [dot, h('span', { class: 'vh' }, S.HSL_BANDS[i][1])], x]), band, (k) => { E.hslBand = k; buildPanel(); }, { label: '色を選ぶ', cls: 'bands' }).el,
       h('p', { class: 'sub-head' }, h('b', {}, S.HSL_BANDS.find((b) => b[0] === band)[1])),
       sl('h', '色相'), sl('s', '彩度'), sl('l', '輝度'),
-      row(btn('HSL をすべてリセット', () => { E.state.hsl = S.defaultState().hsl; commit(); buildPanel(); requestRender(); }, 'ghost small')),
+      row(iconize(btn('HSL をすべてリセット', () => { E.state.hsl = S.defaultState().hsl; commit(); buildPanel(); requestRender(); }, 'ghost small'), 'reset', 'リセット')),
     ];
   },
   curves() { return curveEditor(); },
@@ -1935,7 +1964,7 @@ const PANELS = {
     return [hint('消したい所をタップ、またはなぞる'),
       slider({ label: 'ブラシの大きさ', min: 1, max: 12, value: size, def: 3, onChange: (v) => prefs.set('healSize', v) }).el,
       h('p', { class: 'muted small' }, `修復・モザイク: ${E.state.retouch.length}か所`),
-      row(btn('修復とモザイクをすべて消す', () => { E.state.retouch = []; rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'))];
+      row(iconize(btn('修復とモザイクをすべて消す', () => { E.state.retouch = []; rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'), 'trash', '全部消す'))];
   },
   hide() {
     const mode = prefs.get('hideMode', 'mosaic');
@@ -1986,8 +2015,8 @@ function pickFaces(cands, name, { guess = -1, unsure = false } = {}) {
           h('img', { src: c.url, alt: '', width: 96, height: 96 }));
         return b;
       })),
-      h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'この写真は使わない'),
-        h('button', { type: 'button', class: 'primary', onclick: () => { dlg.returnValue = 'ok'; dlg.close(); } }, '決定')));
+      h('div', { class: 'dlg-actions' }, iconize(h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, 'この写真は使わない'), 'ban', '使わない'),
+        iconize(h('button', { type: 'button', class: 'primary', onclick: () => { dlg.returnValue = 'ok'; dlg.close(); } }, '決定'), 'check')));
     dlg.addEventListener('close', () => { dlg.remove(); resolve(dlg.returnValue === 'ok' ? cands.filter((_, i) => chosen.has(i)) : []); });
     document.body.append(dlg); dlg.showModal();
   });
@@ -2013,8 +2042,8 @@ function presetSaveRow(after) {
       list.push({ id: uid(), name: name.value.trim().slice(0, 30) || `プリセット${list.length + 1}`, p: S.presetPart(E.state) });
       prefs.set('presets', list.slice(-50)); after(); toast('保存しました');
     }, 'small'),
-    btn('ファイルに書き出す', () => download(new Blob([JSON.stringify({ app: 'temoto-photo', v: 1, name: name.value.trim() || 'preset', preset: S.presetPart(E.state) }, null, 1)], { type: 'application/json' }), `${(name.value.trim() || 'preset').replace(/[\\/:*?"<>|]/g, '_')}.json`), 'small ghost'),
-    h('label', { for: 'preset-file', class: 'btn small ghost' }, '読み込む'), file);
+    iconize(btn('ファイルに書き出す', () => download(new Blob([JSON.stringify({ app: 'temoto-photo', v: 1, name: name.value.trim() || 'preset', preset: S.presetPart(E.state) }, null, 1)], { type: 'application/json' }), `${(name.value.trim() || 'preset').replace(/[\\/:*?"<>|]/g, '_')}.json`), 'small ghost'), 'export', 'ファイル'),
+    iconize(h('label', { for: 'preset-file', class: 'btn small ghost' }, '読み込む'), 'upload', '読み込む'), file);
 }
 
 function drawLookThumbs(grid) {
@@ -2129,20 +2158,20 @@ function skinPanel() {
       h('span', { class: n ? 'ok-note small' : 'muted small' }, n ? `✓ 肌として選んだ場所: ${n}か所`
         : autoOn ? (E.segFailed ? '肌の場所: 色で自動判定（顔をタップすると正確に）' : '✓ 肌の場所: AI が自動で判定')
           : E.skinPending ? '👆 顔の肌をタップ' : '肌の場所: 未選択'),
-      n ? btn('選び直す', () => applySkin({ seeds: [] }, buildPanel), 'ghost small') : null),
+      n ? iconize(btn('選び直す', () => applySkin({ seeds: [] }, buildPanel), 'ghost small'), 'reset', '選び直す') : null),
     n || autoOn ? toggle('肌と判定した範囲を赤で表示', !!E.showSkin, (v) => setShowSkin(v)).el : null,
     chips(SKIN_LEVELS.map(([k, label]) => [k, label]), level ?? (E.skinPending ? SKIN_LEVELS.find(([, , v]) => v === E.skinPending)?.[0] : null), pick, { label: '美肌の強さ' }).el,
     ...(n || autoOn ? PORTRAIT.map(([k, label]) => slider({ label, min: 0, max: 100, value: p[k], def: 0, onChange: (v) => applySkin({ [k]: v }, buildPanel) }).el) : []),
     n ? slider({ label: '肌とみなす色の幅', min: 0, max: 100, value: p.tol, def: 50, onChange: (v) => applySkin({ tol: v }, buildPanel) }).el : null,
     n ? hint('背景が赤いときは「色の幅」を下げる') : null,
-    row(btn('✦ 写真館風におまかせ仕上げ', () => {
+    row(iconize(btn('✦ 写真館風におまかせ仕上げ', () => {
       // 明るさ・色の自動補正 → フィルター「透明感」を少し → 美肌（ナチュラル。顔のタップがまだなら、タップを待つ）
       const v = autoValues(); if (!v) { toast('明るさ補正ができてから、もう一度押してください'); return; }
       Object.assign(E.state.adj, v);
       E.state.look = { id: 'studio-clear', amount: 60 };
       if (n || !E.segFailed) applySkin(SKIN_LEVELS[2][2], () => { buildPanel(); toast('仕上げました（各スライダー・フィルターで調整できます）'); });
       else { commit(); requestRender(); askSkinTap(SKIN_LEVELS[2][2]); }
-    }, 'primary')),
+    }, 'primary'), 'quick', 'おまかせ')),
   ].filter(Boolean);
 }
 /** 美肌タブ: タップで肌の場所を追加（拡大中のドラッグは移動） */
@@ -2213,7 +2242,7 @@ function localPanel() {
   else if (cur.type === 'radial') {
     ctrl.push(hint('中心・縁の丸をドラッグ'), slider({ label: 'ぼかし幅', min: 0, max: 100, value: cur.feather, def: 50, onInput: live((v) => { cur.feather = v; }), onChange: commit }).el);
   } else if (cur.type === 'color') {
-    ctrl.push(row(btn(E.colorPick ? '写真の中の色をタップ…' : '⊙ 写真から色を選ぶ', () => { E.colorPick = !E.colorPick; buildPanel(); }, E.colorPick ? 'active' : '')),
+    ctrl.push(row(E.colorPick ? btn('写真の中の色をタップ…', () => { E.colorPick = !E.colorPick; buildPanel(); }, 'active') : iconize(btn('⊙ 写真から色を選ぶ', () => { E.colorPick = !E.colorPick; buildPanel(); }), 'dropper', '色を選ぶ')),
       slider({ label: '色相', min: 0, max: 360, value: cur.hue, def: cur.hue, unit: '°', track: 'hue', onInput: live((v) => { cur.hue = v; }), onChange: commit }).el,
       slider({ label: '範囲', min: 5, max: 90, value: cur.range, def: 30, onInput: live((v) => { cur.range = v; }), onChange: commit }).el,
       slider({ label: '最低の彩度', min: 0, max: 100, value: cur.minSat, def: 15, onInput: live((v) => { cur.minSat = v; }), onChange: commit }).el);
@@ -2226,7 +2255,7 @@ function localPanel() {
     h('div', { class: 'local-opts' },
       toggle('範囲を赤く表示', E.showMask, (v) => { E.showMask = v; requestRender(); }).el,
       toggle('範囲を反転', cur.invert, (v) => { cur.invert = v; commit(); requestRender(); }).el,
-      btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger')),
+      iconize(btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger'), 'trash', '削除')),
     ...ctrl,
     h('div', { class: 'sub-head' }, h('b', {}, 'この範囲の調整')),
     ...S.LOCAL_ADJ.map(([k, label]) => slider({ label, min: k === 'blur' ? 0 : -100, value: cur.adj[k], def: 0, onInput: live((v) => { cur.adj[k] = v; }), onChange: commit }).el),
@@ -2466,7 +2495,7 @@ function fxPanel(tool) {
     f.mode === 'lip' ? null : slider({ label: f.mode === 'gaze' ? 'カメラへ寄せる量' : '強さ', min: 5, max: 100, value: f.amt, def: f.def.amt, unit: '%', onChange: (v) => { setFxPrefs(tool, { amt: v }); refocusOps(types[0], { amt: v / 100 }); } }).el,
     f.mode === 'gaze' ? gazeTuner() : null,
     // 回数の行はいつも出す（当てたときにパネルの高さが変わって写真が動かないように）
-    h('div', { class: 'btn-row fx-count' }, h('span', { class: 'muted small' }, `当てた回数: ${n}`), Object.assign(btn(`${itemLabel(curItem())}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'), { disabled: !n })),
+    h('div', { class: 'btn-row fx-count' }, h('span', { class: 'muted small' }, `当てた回数: ${n}`), Object.assign(iconize(btn(`${itemLabel(curItem())}をすべて消す`, () => { E.state.retouch = E.state.retouch.filter((o) => !types.includes(o.type)); rebuildSource(); commit(); buildPanel(); requestRender(); }, 'ghost small'), 'trash', '全部消す'), { disabled: !n })),
   ];
 }
 /** 強さ・色を変えたら、この項目を開いてから当てた分（唇・鼻など）にも、その場で当て直す */
@@ -2880,7 +2909,7 @@ function openExport({ batch }) {
   const qWrap = h('div', { hidden: opt.format === 'image/png' }, q.el);
   // ボタンは 1 つだけ。スマホは写真アプリへ（共有メニューの「画像を保存」）、パソコンはダウンロードまでする
   const SAVE_LABEL = toPhotos ? '写真アプリに保存' : 'ダウンロード';
-  const go = h('button', { type: 'button', class: 'primary' }, SAVE_LABEL);
+  const go = iconize(h('button', { type: 'button', class: 'primary' }, SAVE_LABEL), toPhotos ? 'photo' : 'export', '保存');
   /** 先に作った画像を見分ける印（写真・編集・設定。ファイル名は含めない） */
   const sig = () => JSON.stringify([batch ? batch.map((p) => [p.id, p.updated]) : [E.id, E.state], opt.format, opt.quality, opt.maxSide, opt.space]);
   const fresh = () => exportReady?.sig === sig();
@@ -2899,7 +2928,7 @@ function openExport({ batch }) {
     ...(toPhotos ? [h('p', { class: 'muted small' }, '「写真アプリに保存」→「画像を保存」')] : []),
     h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status, pop,
-    h('div', { class: 'dlg-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), go));
+    h('div', { class: 'dlg-actions' }, iconize(h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), 'close'), go));
   dlg.addEventListener('close', () => dlg.remove());
   const one = async () => {
     flushSave();
@@ -3051,7 +3080,7 @@ function gridPanel() {
       chips(Object.keys(GRID_ASPECTS).map((k) => [k, k]), G.aspect, (v) => { G.aspect = v; saveGridStyle(); drawGridView(); }, { label: '比率' }).el,
       h('div', { class: 'sub-head' }, h('b', {}, 'レイアウト')), thumbs,
       hint('線をドラッグで大きさを変更'),
-      Object.keys(G.lines || {}).length ? btn('線の位置を元に戻す', () => { G.lines = {}; gridPanel(); drawGridView(); }, 'ghost small') : null];
+      Object.keys(G.lines || {}).length ? iconize(btn('線の位置を元に戻す', () => { G.lines = {}; gridPanel(); drawGridView(); }, 'ghost small'), 'reset', '線を戻す') : null];
   } else if (GR.tab === 'style') {
     const upd = (k, f = (v) => v) => (v) => { G[k] = f(v); saveGridStyle(); drawGridView(); };
     body = [
@@ -3065,8 +3094,8 @@ function gridPanel() {
     body = cell ? [
       hint(GR.swap ? '入れ替える相手の写真をタップしてください。' : 'ドラッグで位置を調整'),
       slider({ label: '拡大', min: 100, max: 400, value: Math.round(cell.zoom * 100), def: 100, unit: '%', onInput: (v) => { cell.zoom = v / 100; drawGridView(); } }).el,
-      row(btn(GR.swap ? '入れ替えをやめる' : '⇄ ほかの写真と入れ替え', () => { GR.swap = !GR.swap; gridPanel(); }, GR.swap ? 'active' : ''),
-        btn('位置と拡大をリセット', () => { Object.assign(cell, { zoom: 1, ox: 0, oy: 0 }); gridPanel(); drawGridView(); }, 'ghost small')),
+      row(iconize(btn(GR.swap ? '入れ替えをやめる' : '⇄ ほかの写真と入れ替え', () => { GR.swap = !GR.swap; gridPanel(); }, GR.swap ? 'active' : ''), GR.swap ? 'close' : 'swap', GR.swap ? 'やめる' : '入れ替え'),
+        iconize(btn('位置と拡大をリセット', () => { Object.assign(cell, { zoom: 1, ox: 0, oy: 0 }); gridPanel(); drawGridView(); }, 'ghost small'), 'reset', 'リセット')),
     ] : [hint('写真をタップして選択')];
   }
   GR.panel.setAttribute('aria-labelledby', `gtab-${GR.tab}`);
@@ -3185,15 +3214,15 @@ function openGridExport() {
     h('p', { class: 'ok-note' }, '✓ 位置情報などは書き出しに含まれません'),
     status,
     h('div', { class: 'dlg-actions' },
-      h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'),
-      h('button', { type: 'button', onclick: async () => {
+      iconize(h('button', { type: 'button', class: 'ghost', onclick: () => dlg.close() }, '閉じる'), 'close'),
+      iconize(h('button', { type: 'button', onclick: async () => {
         try {
           const r = await make(); const id = uid(); const bmp = await createImageBitmap(r.blob);
           await db.addProject({ id, name: name.value.trim().slice(0, 80) || 'グリッド', fileName: fileName(), created: Date.now(), updated: Date.now(), w: r.w, h: r.h, size: r.blob.size, type: opt.format, exif: null, state: S.defaultState(), thumb: await thumbBlob(bmp), thumbV: THUMB_V }, r.blob);
           bmp.close?.(); status.textContent = '写真一覧に保存しました。'; toast('写真一覧に保存しました');
         } catch (e) { status.textContent = db.isFull(e) ? '端末の空きが足りないので、保存できませんでした' : '保存できませんでした'; }
-      } }, '写真一覧に保存'),
-      h('button', { type: 'button', class: 'primary', onclick: async () => {
+      } }, '写真一覧に保存'), 'grid', '一覧へ'),
+      iconize(h('button', { type: 'button', class: 'primary', onclick: async () => {
         // スマホは写真アプリへ（共有メニュー）、パソコンはダウンロード。スマホは先に作っておいた画像を、待たずにその場で渡す（iPhone は待つと開けない）
         const share = (r) => {
           const f = new File([r.blob], fileName(), { type: opt.format });
@@ -3203,7 +3232,7 @@ function openGridExport() {
         };
         if (toPhotos && last?.key === gridKey() && share(last.r)) return;
         try { const r = await make(); if (!(toPhotos && share(r))) { download(r.blob, fileName()); toast('ダウンロードしました'); } } catch { status.textContent = '書き出せませんでした。大きさを小さくしてお試しください。'; }
-      } }, toPhotos ? '写真アプリに保存' : 'ダウンロード')));
+      } }, toPhotos ? '写真アプリに保存' : 'ダウンロード'), toPhotos ? 'photo' : 'export', '保存')));
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg); dlg.showModal();
   ahead();
