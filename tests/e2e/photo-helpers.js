@@ -104,3 +104,15 @@ export async function blurredPhoto(page) {
   });
   return { name: 'blur.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') };
 }
+
+/** 写真の情報（「⋯」メニューから開くシート）を開く・閉じる */
+export async function openInfo(page) {
+  await page.locator('.menu summary').click();
+  await page.getByRole('button', { name: '写真の情報' }).click();
+  await page.getByRole('dialog', { name: '写真の情報' }).waitFor();
+}
+export async function closeInfo(page) {
+  const dlg = page.getByRole('dialog', { name: '写真の情報' });
+  await dlg.getByRole('button', { name: '閉じる' }).click();
+  await dlg.waitFor({ state: 'detached' });
+}

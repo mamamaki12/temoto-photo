@@ -1,6 +1,6 @@
 // 元の大きさでの書き出し（大きな写真を帯に分けて描き、自分で JPEG / PNG にする）と、Display P3 の色
 import { test, expect } from '@playwright/test';
-import { makePhoto, withExif } from './photo-helpers.js';
+import { makePhoto, withExif, openInfo, closeInfo } from './photo-helpers.js';
 
 test.setTimeout(180_000);
 
@@ -59,8 +59,9 @@ test('大きな写真（2,400万画素）を、編集を全部のせて元の大
     s.retouch.push({ type: 'heal', x: 0.62, y: 0.25, r: 0.01, sx: 0.66, sy: 0.25 }, { type: 'mosaic', x: 0.05, y: 0.7, w: 0.1, h: 0.1, size: 20 });
     s.frame = { width: 3, color: '#ffffff', radius: 10, pad: '4:5', padFill: 'blur', padColor: '#ffffff' };
   });
-  await page.getByRole('tab', { name: '情報' }).click();
+  await openInfo(page);
   await expect(page.locator('.info')).toContainText('6240×7800（JPEG・PNG は元の写真から描き直します）');
+  await closeInfo(page);
   const full = await exportFile(page, { size: /元の大きさ/ });
   const small = await exportFile(page, { size: '2048px' });
   const [fw, fh, fpx] = await decode(page, full, 400); const [sw, sh, spx] = await decode(page, small, 400);
