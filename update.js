@@ -101,12 +101,14 @@ function updateSvg() {
  * @param {{ withLabel?: boolean }} [opt] withLabel: メニューの中に置く（文字つき）
  */
 export function updateButton(toast, { withLabel = false } = {}) {
-  const label = h('span', { class: 'update-label' });
-  const b = h('button', { type: 'button', class: withLabel ? 'app-update labeled' : 'app-update' }, h('span', { class: 'update-icon' }, updateSvg()), h('span', { class: 'update-dot', 'aria-hidden': 'true' }), withLabel ? label : null);
+  const label = h('span', { class: 'update-label lbl' });
+  // メニューの中では、スマホは短い文字（data-short。styles の .ib）。元の文字は読み上げ用に残す
+  const b = h('button', { type: 'button', class: withLabel ? 'app-update labeled ib' : 'app-update' }, h('span', { class: 'update-icon' }, updateSvg()), h('span', { class: 'update-dot', 'aria-hidden': 'true' }), withLabel ? label : null);
   const sync = () => {
     const tip = ready ? '新しい版があります（押すと更新）' : `アプリの更新を確認（今の版 ${pageVersion}）`;
     label.textContent = ready ? '新しい版に更新' : `アプリの更新を確認（${pageVersion}）`;
     b.setAttribute('aria-label', tip); b.title = tip; b.classList.toggle('has-update', ready);
+    if (withLabel) b.dataset.short = ready ? '更新する' : '更新';
   };
   sync();
   // 画面から消えたボタンは、知らせる先から外す
