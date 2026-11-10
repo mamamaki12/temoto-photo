@@ -2,9 +2,18 @@
 import { h } from './lib.js';
 
 let seq = 0;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** 元に戻す（↺）の線の絵 */
+function resetIcon() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
+  for (const d of ['M4.5 12a7.5 7.5 0 1 0 2.2-5.3', 'M4.5 4.5v4h4']) { const p = document.createElementNS(SVG_NS, 'path'); p.setAttribute('d', d); svg.append(p); }
+  return svg;
+}
 /**
  * スライダー。ドラッグ中は onInput（プレビューだけ更新）、離したら onChange（履歴に残す）。
- * ラベルをダブルクリック（ダブルタップ）すると初期値に戻る
+ * 初期値から動かしたときだけ、右に「元に戻す」ボタン（↺）が出る。ラベルのダブルクリック（ダブルタップ）でも戻る。
+ * ボタンの列はいつも空けておく（出たり消えたりしても、スライダーの幅が変わってつまみが指の下からずれないように）
  */
 export function slider({ label, min = -100, max = 100, step = 1, value = 0, def = 0, unit = '', format, onInput, onChange, track }) {
   const id = `sl-${++seq}`;
@@ -15,13 +24,17 @@ export function slider({ label, min = -100, max = 100, step = 1, value = 0, def 
   const show = () => {
     const v = Number(input.value); out.textContent = format ? format(v) : `${v > 0 && min < 0 ? '+' : ''}${Number.isInteger(step) ? v : v.toFixed(1)}${unit}`; out.classList.toggle('changed', v !== def);
     const p = (v - min) / (max - min) * 100; input.style.setProperty('--a', `${Math.min(p, zero)}%`); input.style.setProperty('--b', `${Math.max(p, zero)}%`);
+    resetBtn.hidden = v === Number(def);
   };
   input.addEventListener('input', () => { show(); onInput?.(Number(input.value)); });
   input.addEventListener('change', () => onChange?.(Number(input.value)));
   const reset = () => { input.value = def; show(); onInput?.(def); onChange?.(def); };
+  // 「暗い写真を明るく」のように、ひらがなで終わる名前は「」でくくる（「明るくを元に戻す」と読まないように）
+  const resetName = `${/[\u3041-\u309f]$/.test(label) ? `「${label}」` : label}を元に戻す`;
+  const resetBtn = h('button', { type: 'button', class: 'sl-reset', 'aria-label': resetName, title: resetName, onclick: reset }, resetIcon());
   const lab = h('label', { for: id, title: 'ダブルクリックで元に戻す', ondblclick: reset }, label);
   show();
-  const el = h('div', { class: 'sl' }, h('div', { class: 'sl-head' }, lab, out), input);
+  const el = h('div', { class: 'sl' }, h('div', { class: 'sl-head' }, lab, out), input, resetBtn);
   return { el, input, set(v) { input.value = v; show(); }, reset };
 }
 

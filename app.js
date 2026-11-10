@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.6'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.7'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -105,6 +105,7 @@ const UI_ICON = {
   export: '<path d="M12 3.5v12M7.5 11 12 15.5l4.5-4.5M4.5 15.5v2.5A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5v-2.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   minus: '<path d="M5 12h14"/>',
+  fit: '<path d="M4.5 9V4.5H9M15 4.5h4.5V9M19.5 15v4.5H15M9 19.5H4.5V15"/>',
   grid: '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M12 3.5v17M3.5 12h8.5"/>',
   margin: '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><rect x="7.5" y="7.5" width="9" height="9" rx="1"/>',
   photo: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 15.5l4.5-4 4 3.5 3-2.5 5.5 4.5"/><circle cx="15.5" cy="9.5" r="1.3"/>',
@@ -1379,7 +1380,13 @@ async function saveThumb() {
 
 // ── 描画 ──
 /** 拡大・移動の見た目だけを変える（写真の描き直しはしない） */
-function applyZoom() { E.wrap.style.transform = `translate(${E.pan[0]}px, ${E.pan[1]}px) scale(${E.zoom})`; if (E.zoomLabel) E.zoomLabel.textContent = `${Math.round(E.zoom * 100)}%`; }
+function applyZoom() {
+  E.wrap.style.transform = `translate(${E.pan[0]}px, ${E.pan[1]}px) scale(${E.zoom})`;
+  const pct = `${Math.round(E.zoom * 100)}%`;
+  if (E.zoomLabel) E.zoomLabel.textContent = pct;
+  if (E.zoomPct) { E.zoomPct.textContent = pct; E.zoomFit.setAttribute('aria-label', `全体表示に戻す（今 ${pct}）`); }
+  E.stageEl.classList.toggle('zoomed', E.zoom > 1); // スマホでは、拡大している間だけ倍率と「戻す」を出す
+}
 function requestRender() { if (!E || E.raf) return; E.raf = requestAnimationFrame(() => { E.raf = 0; renderNow(); }); }
 /** 指で操作している間は、プレビューを小さく描いて軽くする（離したら元の細かさで描き直す） */
 let interactTimer = 0;
@@ -1507,9 +1514,12 @@ function buildEditor() {
   buildRail();
   // 表示の拡大・縮小（Canva の右下のように）
   E.zoomLabel = h('button', { type: 'button', class: 'zoom-val', title: '画面に合わせる（0 キー）', 'aria-label': '表示の大きさ（押すと画面に合わせる）', onclick: () => setZoom(1) }, '100%');
+  // スマホ（幅 599px 以下）は − ＋ を出さず、拡大している間だけ「250% ⤢ 戻す」の 1 つのボタン
+  E.zoomPct = h('span', { class: 'zoom-pct' }, '100%');
+  E.zoomFit = h('button', { type: 'button', class: 'zoom-fit', title: '全体表示に戻す', 'aria-label': '全体表示に戻す', onclick: () => setZoom(1) }, E.zoomPct, uiIcon('fit'), '戻す');
   const zoomBar = h('div', { class: 'zoom', role: 'group', 'aria-label': '表示の大きさ' },
     h('button', { type: 'button', 'aria-label': '縮小', title: '縮小', onclick: () => setZoom(E.zoom / 1.25) }, uiIcon('minus')), E.zoomLabel,
-    h('button', { type: 'button', 'aria-label': '拡大', title: '拡大', onclick: () => setZoom(E.zoom * 1.25) }, uiIcon('plus')));
+    h('button', { type: 'button', 'aria-label': '拡大', title: '拡大', onclick: () => setZoom(E.zoom * 1.25) }, uiIcon('plus')), E.zoomFit);
   for (const ev of ['pointerdown', 'dblclick', 'wheel']) zoomBar.addEventListener(ev, (e) => e.stopPropagation()); // 写真の上の操作（切り抜き・修復など）にしない
   E.stageEl.append(zoomBar);
   E.root = h('div', { class: 'editor' },
