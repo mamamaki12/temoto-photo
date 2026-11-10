@@ -249,7 +249,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 /* 種類の列（スマホでは下に横並びの丸い札、パソコンでは左に縦並び） */
 .rail { display: flex; gap: 4px; overflow-x: auto; padding: 6px calc(12px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) + 4px)) calc(12px + env(safe-area-inset-left, 0px)); background: var(--bg); scrollbar-width: none; }
 .rail::-webkit-scrollbar { display: none; }
-.rail button { flex: none; min-width: 0; min-height: 38px; padding: 4px 16px; border: none; border-radius: 999px; background: transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: .86rem; color: var(--muted); font-weight: 600; letter-spacing: .03em; white-space: nowrap; }
+.rail button { flex: none; min-width: 0; min-height: 44px; /* 指で押しやすい大きさ（44px 以上） */ padding: 4px 16px; border: none; border-radius: 999px; background: transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: .86rem; color: var(--muted); font-weight: 600; letter-spacing: .03em; white-space: nowrap; }
 @media (hover: hover) { .rail button:hover:not(:disabled) { background: var(--surface); color: var(--text); } }
 .tab-icon { display: grid; place-items: center; }
 .rail button[aria-selected="true"] { color: var(--page); background: var(--text); }
@@ -413,9 +413,10 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 @media (max-width: 599px) {
   .ed-title { display: none; }
   .ed-head { gap: 2px; padding-inline: calc(4px + env(safe-area-inset-left, 0px)) calc(8px + env(safe-area-inset-right, 0px)); }
-  .ed-head .back { width: clamp(38px, 2.4rem, 44px); min-height: 38px; }
+  /* 見出しのアイコンのボタンは、指で押しやすい 44px 角（文字を大きくしても、幅 360px で 1 行に収まる） */
+  .ed-head .back { width: 44px; min-height: 44px; }
   .ed-tools { gap: 2px; }
-  .ed-head button.icon, .ed-head .menu summary { width: clamp(38px, 2.4rem, 44px); min-height: clamp(38px, 2.4rem, 44px); height: clamp(38px, 2.4rem, 44px); }
+  .ed-head button.icon, .ed-head .menu summary { width: 44px; min-height: 44px; height: 44px; }
   .ed-head button.icon svg, .ed-head .menu summary svg { width: 22px; height: 22px; }
   .ed-hist { padding-left: 0; margin-left: 0; }
   .ed-head .export { padding: 0 14px 0 10px; min-height: 38px; height: clamp(38px, 2.4rem, 44px); margin-left: 4px; font-size: clamp(13px, .85rem, 15px); gap: 5px; }
