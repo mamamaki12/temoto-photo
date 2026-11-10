@@ -193,7 +193,7 @@ test('目線: 顔をタップすると AI で両目を見つけて黒目をカ�
   await page.getByRole('button', { name: '戻す', exact: true }).click();
   expect((await page.evaluate(() => window.__temoto.state.retouch[0].tune))).toBeUndefined();
   expect((await row()).every((v, i) => Math.abs(v - r0[i]) < 0.5)).toBe(true); // 戻すと元どおり
-  await page.getByRole('button', { name: /元に戻す/ }).click(); // 微調整の 1 手ずつ戻せる
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click(); // 微調整の 1 手ずつ戻せる
   expect((await page.evaluate(() => window.__temoto.state.retouch[0].tune))).toBeTruthy();
 });
 

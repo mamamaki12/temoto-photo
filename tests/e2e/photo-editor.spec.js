@@ -217,7 +217,7 @@ test('ブラシの部分補正: 塗った場所だけ暗くなり、元に戻す
   expect(lum(await viewMean(page, [0.08, 0.12, 0.22, 0.18]))).toBeLessThan(left0 - 20);
   expect(Math.abs(lum(await viewMean(page, [0.75, 0.75, 0.95, 0.85])) - right0)).toBeLessThan(3);
   expect(await page.evaluate(() => window.__temoto.state.locals[0].strokes.length)).toBe(1);
-  await page.getByRole('button', { name: /元に戻す/ }).click();
+  await page.getByRole('button', { name: '元に戻す（Ctrl+Z）' }).click();
   await page.waitForTimeout(200);
   expect(await page.evaluate(() => window.__temoto.state.locals[0].strokes.length)).toBe(0);
 });
@@ -296,6 +296,43 @@ test('プレビューの画質: 大きな写真を縮めてもギザギザ（モ
   await page.waitForTimeout(400);
   expect(await page.evaluate(() => document.querySelector('canvas.view').width)).toBeGreaterThan(w1 * 2);
   expect(await page.evaluate(() => document.querySelector('canvas.view').style.width)).toBe(css1);
+});
+
+test('スライダーは、動かしたときだけ右に「元に戻す」（↺）が出て、押すと初期値に戻る（溝の長さは変わらない）', async ({ page }) => {
+  await openWith(page);
+  await tab(page, 'ライト');
+  const reset = page.getByRole('button', { name: '露光量を元に戻す', exact: true });
+  await expect(reset).toBeHidden();
+  const input = page.getByLabel('露光量', { exact: true });
+  const w0 = (await input.boundingBox()).width;
+  await setSlider(page, '露光量', 1);
+  await expect(reset).toBeVisible();
+  await expect(reset).toHaveAttribute('title', '露光量を元に戻す');
+  const box = await reset.boundingBox();
+  expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+  expect((await input.boundingBox()).width).toBe(w0);
+  expect(await page.evaluate(() => window.__temoto.state.adj.exposure)).not.toBe(0);
+  await reset.click();
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.adj.exposure)).toBe(0);
+  await expect(reset).toBeHidden();
+  // ひらがなで終わる名前は「」でくくる（「明るくを元に戻す」と読まないように）
+  await expect(page.getByRole('button', { name: '「暗い写真を明るく」を元に戻す', exact: true, includeHidden: true })).toHaveCount(1);
+});
+
+test('スマホでは、拡大している間だけ隅に倍率と「戻す」が出て、押すと全体表示に戻る', async ({ page }) => {
+  await openWith(page);
+  const fit = page.locator('.zoom-fit');
+  await expect(fit).toBeHidden();
+  await page.locator('.stage').dblclick();
+  await expect(fit).toBeVisible();
+  await expect(fit).toContainText('250%');
+  await expect(fit).toContainText('戻す');
+  await expect(fit).toHaveAttribute('aria-label', '全体表示に戻す（今 250%）');
+  const box = await fit.boundingBox();
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  await fit.click();
+  await expect.poll(() => page.evaluate(() => window.__temoto.editor.zoom)).toBe(1);
+  await expect(fit).toBeHidden();
 });
 
 test('文字・スタンプ・描画のタブはない（成人式の写真の仕上げに使わないので消した）', async ({ page }) => {
