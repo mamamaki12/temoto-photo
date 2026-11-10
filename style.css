@@ -172,7 +172,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .ed-head .export { background: #3ecf8e; color: #062115; border-color: #3ecf8e; padding: 0 16px 0 12px; min-height: 38px; font-weight: 700; gap: 6px; } /* 見出しはいつも黒なので、ライトでも明るい緑に黒い文字 */
 .ed-head .export:hover:not(:disabled) { background: #5fdca3; border-color: #5fdca3; }
 .ed-head .export svg { width: 20px; height: 20px; stroke-width: 2.2; }
-.ed-hist { display: flex; gap: 0; }
+.ed-hist { display: flex; gap: 8px; } /* 元に戻す・やり直すを押し分けやすく（スマホは 44px 角なので下で 0 に） */
 .ed-head .back { width: 40px; min-height: 40px; padding: 0; border-radius: 50%; }
 .ed-head .back svg { width: 24px; height: 24px; stroke-width: 2.2; }
 .ed-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: .86rem; text-align: center; color: rgb(255 255 255 / 60%); letter-spacing: .03em; }
@@ -185,6 +185,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .ed-head .menu-list button { background: transparent; color: var(--text); }
 .ed-head .menu-list button:hover:not(:disabled) { background: var(--surface); }
 .ed-head .menu-list button.danger { color: var(--danger); }
+.menu-list > button.danger { margin-top: 8px; } /* すべての編集をリセット（取り消しにくい）は、すぐ上の項目から離す */
 .menu-mode { padding: 4px 12px; margin: 2px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .ed-head .menu-mode .tg { color: var(--text); font-weight: 600; }
 /* 出てくる動きは位置・大きさだけで、透明度は動かさない（薄い途中の色で文字のコントラストの検査に落ちないように） */
@@ -231,6 +232,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .zoom button svg { width: 18px; height: 18px; }
 .zoom button:hover:not(:disabled) { background: var(--surface); }
 .zoom .zoom-val { min-width: 4.2em; width: auto; font-variant-numeric: tabular-nums; font-size: .8rem; font-weight: 600; }
+@media (pointer: coarse) { .zoom { gap: 4px; } .zoom button { min-height: 44px; min-width: 44px; width: 44px; } } /* 指で使う端末（タブレット・スマホの横向き）では押しやすく */
 
 /* 道具のシート（スマホ）: 角の丸い少し明るい帯。項目を開いているときは、スライダーのパネルと ✕・名前・✓ のバー */
 .side { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; max-height: 42dvh; background: var(--bg); border-radius: 22px 22px 0 0; }
@@ -340,7 +342,8 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .histo { width: 100%; height: 56px; display: block; border-radius: 12px; background: var(--surface); }
 .field { display: grid; gap: 4px; }
 .field label { font-size: .86rem; }
-.local-opts { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.local-opts { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.local-opts .danger { margin-left: auto; } /* この補正を削除（取り消しにくい）は右端へ */
 /* オン・オフのスイッチ（iPhone の設定のような形） */
 .tg { display: flex; gap: 12px; align-items: center; font-size: .9rem; cursor: pointer; min-height: 40px; }
 .tg input { appearance: none; -webkit-appearance: none; flex: none; order: 2; margin: 0 0 0 auto; width: 46px; height: 28px; border-radius: 999px; background: var(--surface-2); position: relative; cursor: pointer; transition: background .2s; }
@@ -418,8 +421,8 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ed-tools { gap: 2px; }
   .ed-head button.icon, .ed-head .menu summary { width: 44px; min-height: 44px; height: 44px; }
   .ed-head button.icon svg, .ed-head .menu summary svg { width: 22px; height: 22px; }
-  .ed-hist { padding-left: 0; margin-left: 0; }
-  .ed-head .export { padding: 0 14px 0 10px; min-height: 38px; height: clamp(38px, 2.4rem, 44px); margin-left: 4px; font-size: clamp(13px, .85rem, 15px); gap: 5px; }
+  .ed-hist { padding-left: 0; margin-left: 0; gap: 0; }
+  .ed-head .export { padding: 0 14px 0 10px; min-height: 44px; height: 44px; margin-left: 4px; font-size: clamp(13px, .85rem, 15px); gap: 5px; }
   .ed-head .export svg { width: 18px; height: 18px; }
   /* 写真を大きく見せるため、下のシートを薄く（文字の大きさに引きずられないよう px で上限） */
   .side { height: min(32dvh, 300px); max-height: none; grid-template-columns: minmax(0, 1fr); } /* 高さは固定（中身が増減しても写真が動かない）。道具のタブが多くても、画面の幅を超えない */
@@ -436,6 +439,11 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .subtabs button { min-height: 32px; padding: 2px 10px; }
   .panel-inner { padding: 10px 16px 12px; gap: 8px; }
   .hint { font-size: clamp(11px, .76rem, 15px); line-height: 1.45; }
+}
+/* 幅 360px 未満のスマホ: 書き出しはアイコンだけ（文字は読み上げ用に残す）。見出しのボタンを 44px 角のまま 1 行に収める */
+@media (max-width: 359px) {
+  .ed-head .export { width: 44px; padding: 0; margin-left: 2px; }
+  .ed-head .export .export-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 /* 種類・項目の札は、選んだ瞬間に色が変わる（じわっと変えない） */
 .rail button, .items button { transition: none; }
@@ -460,8 +468,8 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .tp-group legend { font-weight: 700; padding: 0 4px; font-size: .92rem; display: flex; align-items: center; gap: 6px; }
 .tp-icon { display: inline-grid; place-items: center; color: var(--accent-text); }
 .tp-icon svg { width: 18px; height: 18px; }
-.tp-tools { display: flex; flex-wrap: wrap; gap: 0 18px; }
-.tp-tools .tg { gap: 8px; min-height: 38px; }
+.tp-tools { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.tp-tools .tg { gap: 8px; min-height: 44px; }
 .tp-tools .tg input { margin-left: 0; width: 38px; height: 24px; }
 .tp-tools .tg input::after { width: 18px; height: 18px; }
 .tp-tools .tg input:checked::after { transform: translateX(14px); }
@@ -478,13 +486,14 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .lib-bar { padding-inline: 6px; }
   /* 写真を選んでいる間の操作は、画面の下に固定した 1 本のバーに */
   .lib-actions:not(:empty) {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; justify-content: center; gap: 6px;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; justify-content: center; gap: 8px;
     padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--bg); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0; box-shadow: 0 -8px 28px var(--shadow);
   }
   .lib-actions > * { white-space: nowrap; }
   .lib-actions > span { flex-basis: 100%; text-align: center; font-size: clamp(12px, .85rem, 16px); font-weight: 600; color: var(--text); }
-  .lib-actions button { min-height: 36px; padding: 4px 12px; font-size: clamp(13px, .88rem, 17px); } /* 文字を大きくしても、バーが画面を埋めない */
-  .lib-main:has(.lib-actions:not(:empty)) { padding-bottom: 170px; }
+  .lib-actions button { min-height: 44px; padding: 4px 14px; font-size: clamp(13px, .88rem, 17px); } /* 文字を大きくしても、バーが画面を埋めない */
+  .lib-actions .danger { order: 1; } /* 削除（取り消しにくい）は、よく使う操作から離して最後に */
+  .lib-main:has(.lib-actions:not(:empty)) { padding-bottom: 210px; } /* 下のバー（幅 320px では 3 段）に、最後の写真が隠れない */
   .lib-main:has(.lib-actions:not(:empty)) .drop.compact { display: none; }
   body:has(.drop.compact) .toast-wrap { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); } /* 右下の「写真を開く」に重ねない */
   /* ダイアログは下から出るシート */
@@ -607,7 +616,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .editor:not(.grid-editor) .side-bar { padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
   .editor:not(.grid-editor) .rail { border-radius: 0; padding-top: 4px; }
   .editor:not(.grid-editor) .rail .tab-icon { display: none; } /* スマホの種類の札は文字だけ（5 つが 1 行に収まるように） */
-  .editor:not(.grid-editor) .panel-inner { padding: 12px 18px 8px; gap: 10px; }
+  .editor:not(.grid-editor) .panel-inner { padding: 12px 18px 14px; gap: 10px; } /* 下は ✕・✓ のバーから離す */
   .fx-count { justify-content: space-between; align-items: center; }
   .fx-count button { min-height: 30px; padding-block: 2px; }
 }
