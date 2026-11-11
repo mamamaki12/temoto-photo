@@ -226,8 +226,10 @@ test('部分補正: 補正を足した後は「追加」を「＋ 追加」1つ�
   await page.setViewportSize({ width: 320, height: 568 });
   await openWith(page);
   await tab(page, '部分補正');
-  await page.getByRole('button', { name: '＋ ブラシ' }).click();
   const panel = page.locator('.panel');
+  // パネルを下まで送ってから足しても（文字の大きさ・字形で「＋」のボタンが下に回ると、押す前に送られる）、足した補正の操作が上に隠れない
+  await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
+  await page.getByRole('button', { name: '＋ ブラシ' }).click();
   await expect(panel.getByRole('button', { name: '＋ 円形グラデーション' })).toHaveCount(0);
   const more = panel.getByRole('button', { name: '＋ 追加', exact: true });
   await expect(more).toHaveAttribute('aria-expanded', 'false');
@@ -240,10 +242,18 @@ test('部分補正: 補正を足した後は「追加」を「＋ 追加」1つ�
   // 「＋ 追加」で5つの選択が出て、選ぶと足されて、またたたまれる
   await more.click();
   await expect(panel.getByRole('button', { name: '＋ 追加', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  // パネルを下へ送った状態で足しても、足した補正の番号の札と「削除」がパネルの中に見える（送った位置のままにしない）
+  await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
+  expect(await panel.evaluate((e) => e.scrollTop)).toBeGreaterThan(0);
   await panel.getByRole('button', { name: '＋ 円形グラデーション' }).click();
   expect(await page.evaluate(() => window.__temoto.state.locals.map((l) => l.type))).toEqual(['brush', 'radial']);
   await expect(panel.getByRole('button', { name: '＋ 追加', exact: true })).toHaveAttribute('aria-expanded', 'false');
   await expect(panel.getByRole('button', { name: '2. 円形グラデーション' })).toHaveAttribute('aria-pressed', 'true');
+  const pb2 = await panel.boundingBox();
+  for (const loc of [panel.locator('.local-head'), panel.getByRole('button', { name: '2. 円形グラデーション' }), panel.getByRole('button', { name: 'この補正を削除' })]) {
+    const b = await loc.boundingBox();
+    expect(b.y).toBeGreaterThanOrEqual(pb2.y - 1); expect(b.y + b.height).toBeLessThanOrEqual(pb2.y + pb2.height + 1);
+  }
 });
 
 test('スポット修復で黒い点が消え、モザイクで細部が消える', async ({ page }) => {

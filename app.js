@@ -2241,6 +2241,9 @@ function localPanel() {
     if (type === 'linear') { const p = geoParams(E.state.geo, E.W, E.H); [l.x1, l.y1] = outToSrc(0.5, 0.15, p); [l.x2, l.y2] = outToSrc(0.5, 0.55, p); }
     l.adj.exposure = type === 'linear' ? -30 : type === 'radial' ? 20 : 0;
     locals.push(l); E.sel = l.id; E.showMask = type === 'brush' || type === 'color' || type === 'luma'; commit(); buildPanel(); requestRender();
+    // 足した補正の操作（番号の札・削除・なぞる など）はパネルの上にあるので、いちばん上を見せる
+    // （パネルを下へ送ってから「＋ 明るさの範囲」などを押すと、送った位置のままで操作が上に隠れていた）
+    E.panel.scrollTop = 0;
   };
   const chipsOf = () => locals.map((l, i) => h('button', { type: 'button', 'aria-pressed': String(l.id === E.sel), onclick: () => { E.sel = l.id; buildPanel(); requestRender(); } }, `${i + 1}. ${S.LOCAL_TYPES[l.type]}`));
   const addBtns = () => Object.entries(S.LOCAL_TYPES).map(([k, n]) => btn(`＋ ${n}`, () => { E.localAddOpen = false; add(k); }, 'small'));
