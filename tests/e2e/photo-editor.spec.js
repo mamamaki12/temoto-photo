@@ -186,19 +186,20 @@ test('位置情報入りの写真: 警告を出し、書き出した JPEG・PNG�
   }
 });
 
-test('部分補正（円形）で中心だけ明るくなる・範囲を赤く表示', async ({ page }) => {
+test('部分補正（丸く囲む）で中心だけ明るくなる・範囲を赤く表示', async ({ page }) => {
   await openWith(page);
   const center0 = lum(await viewMean(page, [0.45, 0.45, 0.55, 0.55]));
   const corner0 = lum(await viewMean(page, [0, 0.9, 0.05, 1]));
   await tab(page, '部分補正');
-  await page.getByRole('button', { name: '＋ 円形グラデーション' }).click();
-  await setSlider(page, '露光量', 80);
+  await page.getByRole('button', { name: '＋ 丸く囲む' }).click();
+  await setSlider(page, '露光量', 80); // 丸く囲むは、足すと「明るさ・色」が出ている（範囲は写真の上の丸で決める）
   expect(lum(await viewMean(page, [0.45, 0.45, 0.55, 0.55]))).toBeGreaterThan(center0 + 15);
   expect(Math.abs(lum(await viewMean(page, [0, 0.9, 0.05, 1])) - corner0)).toBeLessThan(3);
   // 中心の丸をドラッグして動かせる
   const cx0 = await page.evaluate(() => window.__temoto.state.locals[0].cx);
   await dragOn(page, [0.5, 0.5], [0.3, 0.5]);
   expect(await page.evaluate(() => window.__temoto.state.locals[0].cx)).toBeLessThan(cx0 - 0.1);
+  await page.getByRole('button', { name: '範囲を選ぶ', exact: true }).click();
   await page.getByText('範囲を赤く表示').click();
   await page.waitForTimeout(150);
   const [r, , b] = await viewMean(page, [0.25, 0.45, 0.35, 0.55]);
@@ -206,11 +207,13 @@ test('部分補正（円形）で中心だけ明るくなる・範囲を赤く�
 });
 
 test('ブラシの部分補正: 塗った場所だけ暗くなり、元に戻すで消える', async ({ page }) => {
+  test.setTimeout(120000); // ソフトウェアの GPU では、なぞる間の描き直し（15 回）だけで 20 秒ほどかかり、並べて動かすと 60 秒を超えることがある
   await openWith(page);
   const left0 = lum(await viewMean(page, [0.05, 0.1, 0.25, 0.2]));
   const right0 = lum(await viewMean(page, [0.75, 0.75, 0.95, 0.85]));
   await tab(page, '部分補正');
   await page.getByRole('button', { name: '＋ ブラシ' }).click();
+  await page.getByRole('button', { name: '明るさ・色', exact: true }).click(); // ブラシは、足すと「範囲を選ぶ」が出ている
   await setSlider(page, '露光量', -100);
   await dragOn(page, [0.05, 0.15], [0.3, 0.15], 15);
   await page.waitForTimeout(200);
@@ -230,7 +233,7 @@ test('部分補正: 補正を足した後は「追加」を「＋ 追加」1つ�
   // パネルを下まで送ってから足しても（文字の大きさ・字形で「＋」のボタンが下に回ると、押す前に送られる）、足した補正の操作が上に隠れない
   await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
   await page.getByRole('button', { name: '＋ ブラシ' }).click();
-  await expect(panel.getByRole('button', { name: '＋ 円形グラデーション' })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: '＋ 丸く囲む' })).toHaveCount(0);
   const more = panel.getByRole('button', { name: '＋ 追加', exact: true });
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   // なぞる・消す・削除が、スクロールしなくてもパネルの中に見えている
@@ -245,14 +248,77 @@ test('部分補正: 補正を足した後は「追加」を「＋ 追加」1つ�
   // パネルを下へ送った状態で足しても、足した補正の番号の札と「削除」がパネルの中に見える（送った位置のままにしない）
   await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
   expect(await panel.evaluate((e) => e.scrollTop)).toBeGreaterThan(0);
-  await panel.getByRole('button', { name: '＋ 円形グラデーション' }).click();
+  await panel.getByRole('button', { name: '＋ 丸く囲む' }).click();
   expect(await page.evaluate(() => window.__temoto.state.locals.map((l) => l.type))).toEqual(['brush', 'radial']);
   await expect(panel.getByRole('button', { name: '＋ 追加', exact: true })).toHaveAttribute('aria-expanded', 'false');
-  await expect(panel.getByRole('button', { name: '2. 円形グラデーション' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByRole('button', { name: '2. 丸く囲む' })).toHaveAttribute('aria-pressed', 'true');
   const pb2 = await panel.boundingBox();
-  for (const loc of [panel.locator('.local-head'), panel.getByRole('button', { name: '2. 円形グラデーション' }), panel.getByRole('button', { name: 'この補正を削除' })]) {
+  for (const loc of [panel.locator('.local-head'), panel.getByRole('button', { name: '2. 丸く囲む' }), panel.getByRole('button', { name: 'この補正を削除' })]) {
     const b = await loc.boundingBox();
     expect(b.y).toBeGreaterThanOrEqual(pb2.y - 1); expect(b.y + b.height).toBeLessThanOrEqual(pb2.y + pb2.height + 1);
+  }
+});
+
+test('部分補正: 「範囲を選ぶ｜明るさ・色」の切り替えがパネルの上に見え、明るさ・色を押すとその補正のスライダーが出る（幅 320px でも）', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await openWith(page);
+  await tab(page, '部分補正');
+  const panel = page.locator('.panel');
+  // 種類の名前は、写真に詳しくない人にも分かる言葉
+  for (const n of ['＋ ブラシ', '＋ 端からだんだん', '＋ 丸く囲む', '＋ 色で選ぶ', '＋ 明るさで選ぶ']) await expect(panel.getByRole('button', { name: n, exact: true })).toHaveCount(1);
+  await panel.getByRole('button', { name: '＋ ブラシ', exact: true }).click();
+  const rangeBtn = panel.getByRole('button', { name: '範囲を選ぶ', exact: true });
+  const adjBtn = panel.getByRole('button', { name: '明るさ・色', exact: true });
+  await expect(rangeBtn).toHaveAttribute('aria-pressed', 'true');
+  // 切り替えは、スクロールしなくてもパネルの中に見えている（字形で高さが変わっても、切り替えは補正の札と説明のすぐ下）
+  await expect.poll(() => panel.evaluate((e) => e.scrollTop)).toBe(0);
+  const pb = await panel.boundingBox();
+  const ab = await adjBtn.boundingBox();
+  expect(ab.y).toBeGreaterThanOrEqual(pb.y - 1); expect(ab.y + ab.height).toBeLessThanOrEqual(pb.y + pb.height + 1);
+  // 範囲を選ぶの間は、ブラシの設定だけ（明るさ・色のスライダーは出さない）
+  await expect(panel.getByRole('button', { name: '消す', exact: true })).toBeVisible();
+  await expect(panel.getByRole('slider', { name: '露光量', exact: true })).toHaveCount(0);
+  // 明るさ・色: パネルを下へ送ってから押しても、いちばん上から見せる。補正のスライダーが切り替えのすぐ下に出る
+  await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
+  await adjBtn.click();
+  await expect(adjBtn).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByRole('button', { name: '消す', exact: true })).toHaveCount(0);
+  const exp = panel.getByRole('slider', { name: '露光量', exact: true });
+  await expect(exp).toHaveCount(1);
+  await expect.poll(() => panel.evaluate((e) => e.scrollTop)).toBe(0);
+  const eb = await exp.boundingBox(); const sb = await adjBtn.boundingBox();
+  expect(eb.y).toBeGreaterThan(sb.y + sb.height - 1); expect(eb.y).toBeLessThan(sb.y + sb.height + 80);
+  // 選んだ切り替えは、別の補正を選んでも残る。足したときは種類に合わせて切り替わる（丸く囲むは明るさ・色）
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ 色で選ぶ', exact: true }).click();
+  await expect(rangeBtn).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByRole('slider', { name: 'くすんだ色を外す', exact: true })).toHaveCount(1);
+  await adjBtn.click();
+  await panel.getByRole('button', { name: '1. ブラシ', exact: true }).click();
+  await expect(adjBtn).toHaveAttribute('aria-pressed', 'true');
+  await panel.getByRole('button', { name: '範囲を選ぶ', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ 丸く囲む', exact: true }).click();
+  await expect(adjBtn).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByRole('button', { name: '3. 丸く囲む', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ 明るさで選ぶ', exact: true }).click();
+  await expect(rangeBtn).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => window.__temoto.state.locals.map((l) => l.type))).toEqual(['brush', 'color', 'radial', 'luma']);
+});
+
+test('指で使う端末: 選ぶ札・小さいボタンは高さ 36px 以上で、押せる範囲は上下に広い（44px）', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await openWith(page);
+  await tab(page, 'カーブ');
+  // 札（チャンネル）と、小さいボタン（カーブの見本）
+  for (const loc of [page.locator('.panel').getByRole('button', { name: 'RGB', exact: true }), page.locator('.panel .btn-row button').first()]) {
+    await loc.scrollIntoViewIfNeeded();
+    const b = await loc.boundingBox();
+    expect(b.height).toBeGreaterThanOrEqual(36);
+    // 上下の端から 3px 外を押しても、そのボタンに当たる
+    const hit = await loc.evaluate((el, [x, y1, y2]) => [document.elementFromPoint(x, y1), document.elementFromPoint(x, y2)].map((e) => e === el), [b.x + b.width / 2, b.y - 3, b.y + b.height + 3]);
+    expect(hit).toEqual([true, true]);
   }
 });
 

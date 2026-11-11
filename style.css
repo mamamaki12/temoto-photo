@@ -88,7 +88,7 @@ button.primary, .btn.primary { background: var(--accent); border-color: var(--ac
 button.primary:hover:not(:disabled), .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 button.ghost, .btn.ghost { background: transparent; border-color: var(--line); }
 button.ghost:hover:not(:disabled), .btn.ghost:hover { background: var(--surface); }
-button.small, .btn.small { min-height: 34px; padding: 4px 12px; font-size: .85rem; }
+button.small, .btn.small { min-height: 36px; padding: 4px 12px; font-size: .85rem; } /* 小さいボタンも高さ 36px より低くしない（指で押しやすく） */
 button.big { min-height: 52px; font-size: 1.05rem; padding-inline: 24px; }
 button.danger { color: var(--danger); }
 button.danger-fill { background: #d1332c; border-color: #d1332c; color: #fff; font-weight: 700; }
@@ -230,7 +230,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .suggest button.ghost:hover:not(:disabled) { background: rgb(255 255 255 / 12%); }
 /* 表示の大きさ（右下） */
 .zoom { position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line); box-shadow: 0 4px 16px var(--shadow); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
-.zoom button { min-height: 32px; min-width: 32px; width: 32px; padding: 0; background: transparent; border-radius: 50%; }
+.zoom button { min-height: 36px; min-width: 36px; width: 36px; padding: 0; background: transparent; border-radius: 50%; }
 .zoom button svg { width: 18px; height: 18px; }
 .zoom button:hover:not(:disabled) { background: var(--surface); }
 .zoom .zoom-val { min-width: 4.2em; width: auto; font-variant-numeric: tabular-nums; font-size: .8rem; font-weight: 600; }
@@ -347,10 +347,10 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .chips.bands button[aria-pressed="true"] { background: var(--bg); border: 2px solid var(--select); color: var(--text); }
 .btn-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .hint { margin: 0; font-size: .84rem; color: var(--muted); }
-.more-hint summary { cursor: pointer; list-style: none; }
+.more-hint summary { cursor: pointer; list-style: none; min-height: 36px; align-content: center; }
 .auto-on { margin: 0; font-size: .88rem; color: var(--accent-text); font-weight: 500; }
 .fine-tune { display: grid; gap: 8px; }
-.fine-tune > summary { cursor: pointer; font-size: .86rem; color: var(--muted); }
+.fine-tune > summary { cursor: pointer; font-size: .86rem; color: var(--muted); padding-block: 8px; margin-block: -4px; } /* 押せる高さを 36px 以上に（見た目の位置は前と同じ） */
 .more-hint summary::-webkit-details-marker { display: none; }
 .hint-more { margin-left: 6px; color: var(--accent-text); font-weight: 600; white-space: nowrap; }
 .hint-more::after { content: ' ▾'; }
@@ -372,6 +372,10 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .local-head .locals { flex: 1 1 auto; min-width: 0; }
 .local-head .danger { flex: none; margin-left: auto; }
 .local-add[aria-expanded="true"] { border-color: var(--text); }
+/* 部分補正の「範囲を選ぶ｜明るさ・色」の切り替え（2 つに分けた札。いつもパネルの上に見える） */
+.chips.local-view { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 999px; background: var(--surface); }
+.chips.local-view button { padding-inline: 8px; white-space: nowrap; }
+.chips.local-view button:not([aria-pressed="true"]) { background: transparent; }
 /* オン・オフのスイッチ（iPhone の設定のような形） */
 .tg { display: flex; gap: 12px; align-items: center; font-size: .9rem; cursor: pointer; min-height: 40px; }
 .tg input { appearance: none; -webkit-appearance: none; flex: none; order: 2; margin: 0 0 0 auto; width: 46px; height: 28px; border-radius: 999px; background: var(--surface-2); position: relative; cursor: pointer; transition: background .2s; }
@@ -382,7 +386,7 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .local-opts .tg input { margin-left: 0; }
 .color-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .cp-label { font-size: .86rem; width: 100%; }
-.swatch { width: 30px; height: 30px; min-height: 0; padding: 0; border-radius: 50%; border: 2px solid var(--line); box-shadow: inset 0 0 0 1px rgb(14 19 24 / 8%); }
+.swatch { width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%; border: 2px solid var(--line); box-shadow: inset 0 0 0 1px rgb(14 19 24 / 8%); }
 .swatch[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--bg) inset; }
 
 .looks { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; scroll-snap-type: x proximity; scrollbar-width: none; }
@@ -415,6 +419,7 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .info dd { margin: 0; overflow-wrap: anywhere; }
 .gps-warn { display: grid; gap: 4px; padding: 10px 14px; border-radius: 14px; background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-text); font-size: .86rem; }
 .ok-note { margin: 0; font-size: .84rem; color: var(--ok); }
+.keys > summary { cursor: pointer; padding-block: 6px; }
 .keys ul { margin: 6px 0 0; padding-left: 1.1em; font-size: .85rem; display: grid; gap: 2px; }
 kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); }
 
@@ -481,6 +486,14 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .ib > .lbl { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .ib[data-short]::after { content: attr(data-short); content: attr(data-short) / ""; white-space: nowrap; }
   .ib:not([data-short]) { min-width: 44px; padding-inline: 10px; }
+  /* 選ぶ札（チップ）・小さいボタン・色の丸は、見た目は 36px のまま、押せる範囲を上下に 4px ずつ広げて 44px に。
+     折り返した札どうしの押せる範囲が重ならないよう、行の間は 8px あける */
+  .chips button:not(.ib), button.small:not(.ib), .btn.small:not(.ib), .swatch { position: relative; }
+  .chips button:not(.ib)::before, button.small:not(.ib)::before, .btn.small:not(.ib)::before { content: ''; position: absolute; inset: -5px -1px; }
+  .swatch::before { content: ''; position: absolute; inset: -6px -2px; }
+  .chips, .btn-row, .color-row, .preset-save, .faceai-person-head, .suggest-actions { row-gap: 8px; }
+  /* 本人の写真の「×」は写真の角に重ねるので見た目は小さく、押せる範囲を 44px に */
+  .faceai-ref .x::before { content: ''; position: absolute; inset: -9px; }
   .dlg-actions > .ib:not([data-short]):not(.primary) { flex: 0 0 auto; min-width: 64px; } /* ✕ だけのボタンは小さく、決める側を広く */
 }
 /* 種類・項目の札は、選んだ瞬間に色が変わる（じわっと変えない） */
@@ -614,7 +627,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 .faceai-refs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .faceai-ref { position: relative; display: inline-block; }
 .faceai-ref img { width: 64px; height: 64px; border-radius: 10px; display: block; }
-.faceai-ref .x { position: absolute; top: -6px; right: -6px; width: 24px; height: 24px; min-height: 24px; padding: 0; border-radius: 999px; font-size: .8rem; background: var(--bg); border-color: var(--line); }
+.faceai-ref .x { position: absolute; top: -8px; right: -8px; width: 28px; height: 28px; min-height: 28px; padding: 0; border-radius: 999px; font-size: .8rem; background: var(--bg); border-color: var(--line); }
 .handles .face-ring { fill: none; stroke: #fff; stroke-opacity: .8; stroke-dasharray: 6 5; }
 .handles .face-ring.on { stroke: var(--accent); stroke-opacity: 1; stroke-dasharray: none; }
 .handles .face-num { fill: #fff; stroke: rgb(0 0 0 / 50%); stroke-width: 1; }

@@ -37,7 +37,8 @@ export const HSL_BANDS = [['red', 'レッド', 0], ['orange', 'オレンジ', 30
 
 /** 部分補正で使える調整 */
 export const LOCAL_ADJ = [['exposure', '露光量'], ['contrast', 'コントラスト'], ['highlights', 'ハイライト'], ['shadows', 'シャドウ'], ['temp', '色温度'], ['tint', '色かぶり'], ['saturation', '彩度'], ['clarity', '明瞭度'], ['dehaze', 'かすみの除去'], ['blur', 'ぼかし']];
-export const LOCAL_TYPES = { brush: 'ブラシ', linear: '線形グラデーション', radial: '円形グラデーション', color: '色域', luma: '明るさの範囲' };
+// 部分補正の種類の名前（写真に詳しくない人にも分かる言葉で。線形グラデーション → 端からだんだん、円形グラデーション → 丸く囲む、色域 → 色で選ぶ、明るさの範囲 → 明るさで選ぶ）
+export const LOCAL_TYPES = { brush: 'ブラシ', linear: '端からだんだん', radial: '丸く囲む', color: '色で選ぶ', luma: '明るさで選ぶ' };
 export const MAX_LOCALS = 8;
 export const MAX_BRUSH_LOCALS = 4;
 export const MAX_STROKES = 400;
