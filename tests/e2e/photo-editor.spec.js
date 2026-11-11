@@ -307,6 +307,43 @@ test('部分補正: 「範囲を選ぶ｜明るさ・色」の切り替えがパ
   expect(await page.evaluate(() => window.__temoto.state.locals.map((l) => l.type))).toEqual(['brush', 'color', 'radial', 'luma']);
 });
 
+test('ブラシ: はじめて塗ったとき明るさ・色が 0 のままなら、「明るさ・色」へ誘う（補正ごとに 1 回だけ）', async ({ page }) => {
+  test.setTimeout(120000); // なぞる間の描き直しが、ソフトウェアの GPU では遅い
+  await openWith(page);
+  await tab(page, '部分補正');
+  const panel = page.locator('.panel');
+  await panel.getByRole('button', { name: '＋ ブラシ', exact: true }).click();
+  const adjBtn = panel.getByRole('button', { name: '明るさ・色', exact: true });
+  await expect(panel.getByText('補正する所をなぞる')).toBeVisible();
+  await expect(adjBtn).not.toHaveClass(/nudge/);
+  await dragOn(page, [0.1, 0.2], [0.3, 0.2], 3);
+  // 塗っただけでは写真は変わらないので、説明が「次は…」になり、切り替えの札が光る（範囲を選ぶのまま。勝手に切り替えない）
+  const nudgeHint = panel.locator('.nudge-hint');
+  await expect(nudgeHint).toHaveText('次は「明るさ・色」で明るさなどを変える');
+  await expect(nudgeHint).toHaveAttribute('role', 'status'); // 読み上げでも知らせる
+  await expect(adjBtn).toHaveClass(/nudge/);
+  await expect(panel.getByRole('button', { name: '範囲を選ぶ', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  // 押すと明るさ・色が出て、誘いは消える。範囲を選ぶに戻って塗り足しても、もう出さない
+  await adjBtn.click();
+  await expect(panel.getByRole('slider', { name: '露光量', exact: true })).toHaveCount(1);
+  await panel.getByRole('button', { name: '範囲を選ぶ', exact: true }).click();
+  await expect(adjBtn).not.toHaveClass(/nudge/);
+  await dragOn(page, [0.1, 0.3], [0.3, 0.3], 3);
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.locals[0].strokes.length)).toBe(2);
+  await expect(adjBtn).not.toHaveClass(/nudge/);
+  await expect(panel.getByText('補正する所をなぞる')).toBeVisible();
+  // 先に明るさ・色を決めてから塗った（写真が変わる）ときは出さない
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ ブラシ', exact: true }).click();
+  await adjBtn.click();
+  await setSlider(page, '露光量', 50);
+  await panel.getByRole('button', { name: '範囲を選ぶ', exact: true }).click();
+  await dragOn(page, [0.6, 0.2], [0.8, 0.2], 3);
+  await expect.poll(() => page.evaluate(() => window.__temoto.state.locals[1].strokes.length)).toBe(1);
+  await expect(adjBtn).not.toHaveClass(/nudge/);
+  await expect(panel.locator('.nudge-hint')).toHaveCount(0);
+});
+
 test('指で使う端末: 選ぶ札・小さいボタンは高さ 36px 以上で、押せる範囲は上下に広い（44px）', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await openWith(page);

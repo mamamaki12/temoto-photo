@@ -39,7 +39,15 @@ jobs:
             const others = checks.check_runs.filter((c) => c.name !== 'merge');
             const bad = others.filter((c) => c.status !== 'completed' || !['success', 'skipped', 'neutral'].includes(c.conclusion));
             if (bad.length) { core.info(`まだ終わっていない・失敗したチェックがあります: ${bad.map((c) => `${c.name}=${c.conclusion ?? c.status}`).join(', ')}`); return; }
-            await github.rest.pulls.merge({ owner, repo, pull_number: pr.number, sha: run.head_sha, merge_method: 'merge' });
-            core.info(`#${pr.number} をマージしました`);
+            const { data: merged } = await github.rest.pulls.merge({ owner, repo, pull_number: pr.number, sha: run.head_sha, merge_method: 'merge' });
+            core.info(`#${pr.number} をマージしました（${merged.sha}）`);
+            // マージの直後は main がまだ前のコミットを指していることがある（#109 で、公開が 1 つ前の版になった）。
+            // main がマージのコミットになったのを確かめてから公開を始める（最大 2 分待つ。pages.yml の側でも main を取り直す）
+            for (let i = 0; i < 24; i++) {
+              const { data: ref } = await github.rest.git.getRef({ owner, repo, ref: 'heads/main' });
+              if (ref.object.sha === merged.sha) break;
+              core.info(`main はまだ ${ref.object.sha.slice(0, 7)}（マージは ${merged.sha.slice(0, 7)}）。5 秒待ちます`);
+              await new Promise((r) => setTimeout(r, 5000));
+            }
             await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'pages.yml', ref: 'main' });
             core.info('公開版の更新を始めました');

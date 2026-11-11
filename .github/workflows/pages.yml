@@ -20,7 +20,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # 手動・自動マージからの起動（workflow_dispatch）では、github.sha が起動した瞬間の main になる。
+      # マージ直後は main がまだ前のコミットのことがあり、1.36.10 が公開されなかった。ここで取り直す main は、起動した後の最新の main
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: 22
