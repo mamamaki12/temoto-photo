@@ -764,6 +764,33 @@ test('スマホ: 長いダイアログでも決定のボタンが見え、写真
   await expect(bar.getByRole('button', { name: '選択をやめる' })).toBeVisible();
 });
 
+test('スマホの横向き: 写真は左、道具は右の列。項目を開くとスライダーが 3 本以上見え、写真も大きいまま', async ({ page }) => {
+  await page.setViewportSize({ width: 844, height: 390 });
+  await openWith(page);
+  const box = (sel) => page.locator(sel).boundingBox();
+  const stage = await box('.stage');
+  const items = await box('.items');
+  const rail = await box('.rail-box');
+  expect(items.x).toBeGreaterThanOrEqual(stage.x + stage.width - 1); // 道具は写真の右
+  expect(rail.x).toBeGreaterThanOrEqual(stage.x + stage.width - 1);
+  expect(stage.height).toBeGreaterThan(300); // 写真の場所は画面の高さいっぱい（下に積むと 150px ほど）
+  await openTool(page, 'ライト');
+  const panel = await box('.panel');
+  expect(panel.x).toBeGreaterThanOrEqual(stage.x + stage.width - 1);
+  expect(panel.height).toBeGreaterThan(240);
+  const shown = await page.locator('.panel input[type=range]').evaluateAll((els) => els.filter((el) => {
+    const b = el.getBoundingClientRect(); const p = el.closest('.panel').getBoundingClientRect(); return b.top >= p.top && b.bottom <= p.bottom;
+  }).length);
+  expect(shown).toBeGreaterThanOrEqual(3);
+  await expect(page.getByRole('button', { name: '完了', exact: true })).toBeInViewport({ ratio: 1 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(844);
+  // 縦に戻すと、今までどおり下のシート
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(100);
+  const p2 = await box('.panel'); const s2 = await box('.stage');
+  expect(p2.y).toBeGreaterThanOrEqual(s2.y + s2.height - 1);
+});
+
 test('写真一覧の見本は高画質（短い辺 720px）。前の版の小さい見本は、一覧を開くと編集を当てたまま作り直す', async ({ page }) => {
   await page.goto(URL0);
   await page.locator('#open-file').setInputFiles(await makePhoto(page, { w: 2400, h: 1800 }));
