@@ -222,6 +222,40 @@ test('ブラシの部分補正: 塗った場所だけ暗くなり、元に戻す
   expect(await page.evaluate(() => window.__temoto.state.locals[0].strokes.length)).toBe(0);
 });
 
+test('部分補正: 補正を足した後は「追加」を「＋ 追加」1つにたたみ、選んだ補正の操作を上に出す（幅 320px でも見える）', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await openWith(page);
+  await tab(page, '部分補正');
+  const panel = page.locator('.panel');
+  // パネルを下まで送ってから足しても（文字の大きさ・字形で「＋」のボタンが下に回ると、押す前に送られる）、足した補正の操作が上に隠れない
+  await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
+  await page.getByRole('button', { name: '＋ ブラシ' }).click();
+  await expect(panel.getByRole('button', { name: '＋ 円形グラデーション' })).toHaveCount(0);
+  const more = panel.getByRole('button', { name: '＋ 追加', exact: true });
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  // なぞる・消す・削除が、スクロールしなくてもパネルの中に見えている
+  const pb = await panel.boundingBox();
+  for (const loc of [panel.getByText('補正する所をなぞる'), panel.getByRole('button', { name: '消す', exact: true }), panel.getByRole('button', { name: 'この補正を削除' })]) {
+    const b = await loc.boundingBox();
+    expect(b.y).toBeGreaterThanOrEqual(pb.y - 1); expect(b.y + b.height).toBeLessThanOrEqual(pb.y + pb.height + 1);
+  }
+  // 「＋ 追加」で5つの選択が出て、選ぶと足されて、またたたまれる
+  await more.click();
+  await expect(panel.getByRole('button', { name: '＋ 追加', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  // パネルを下へ送った状態で足しても、足した補正の番号の札と「削除」がパネルの中に見える（送った位置のままにしない）
+  await panel.evaluate((e) => { e.scrollTop = e.scrollHeight; });
+  expect(await panel.evaluate((e) => e.scrollTop)).toBeGreaterThan(0);
+  await panel.getByRole('button', { name: '＋ 円形グラデーション' }).click();
+  expect(await page.evaluate(() => window.__temoto.state.locals.map((l) => l.type))).toEqual(['brush', 'radial']);
+  await expect(panel.getByRole('button', { name: '＋ 追加', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel.getByRole('button', { name: '2. 円形グラデーション' })).toHaveAttribute('aria-pressed', 'true');
+  const pb2 = await panel.boundingBox();
+  for (const loc of [panel.locator('.local-head'), panel.getByRole('button', { name: '2. 円形グラデーション' }), panel.getByRole('button', { name: 'この補正を削除' })]) {
+    const b = await loc.boundingBox();
+    expect(b.y).toBeGreaterThanOrEqual(pb2.y - 1); expect(b.y + b.height).toBeLessThanOrEqual(pb2.y + pb2.height + 1);
+  }
+});
+
 test('スポット修復で黒い点が消え、モザイクで細部が消える', async ({ page }) => {
   await openWith(page);
   const dust = [0.61, 0.24, 0.63, 0.26];
@@ -847,6 +881,20 @@ test('写真一覧: スマホでは写真を 3 列に小さく敷き詰め、写
   await expect(page.getByText('2枚を選択中')).toBeVisible();
   await page.locator('.lib-open').first().click();
   await expect(page.locator('.lib-item').first()).not.toHaveClass(/selected/);
+});
+
+test('写真一覧: 写真を選んでいる間は、お知らせを下の選択バーの上に出す（重ねない）', async ({ page }) => {
+  await page.goto(URL0);
+  const files = []; for (let i = 0; i < 3; i++) files.push({ ...await makePhoto(page, { w: 600, h: 400 }), name: `p${i}.jpg` });
+  await page.locator('#open-file').setInputFiles(files);
+  await expect(page.locator('.lib-item')).toHaveCount(3, { timeout: 20000 });
+  await page.locator('.lib-check').first().check();
+  await page.evaluate(() => import('./lib.js').then((m) => m.toast('お知らせのテスト', 8000)));
+  const t = page.locator('.toast', { hasText: 'お知らせのテスト' });
+  await expect(t).toBeVisible();
+  await page.waitForTimeout(300); // 出てくる動きが終わるまで
+  const tb = await t.boundingBox(); const bb = await page.locator('.lib-actions').boundingBox();
+  expect(tb.y + tb.height).toBeLessThanOrEqual(bb.y);
 });
 
 test('アプリとして入れられるブラウザでは、写真一覧に「アプリとして入れる」を出し、押すとブラウザの確認を出す', async ({ page }) => {

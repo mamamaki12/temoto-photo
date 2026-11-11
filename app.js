@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.8'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.9'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -433,6 +433,7 @@ function paintStroke(ctx, st, mw, mh, from = 0) {
 // ───────────────────────── 写真一覧 ─────────────────────────
 let libUrls = [];
 let selecting = new Set();
+let selbarRO = null; // 選択バーの高さを見張る（お知らせをバーの上に出すため）
 let libGen = 0; // 一覧を作り直すたびに増やす（裏の見本の作り直しを止める目印）
 async function showLibrary() {
   closeEditor(); prefs.set('editing', null);
@@ -457,6 +458,10 @@ async function showLibrary() {
       iconize(h('button', { type: 'button', class: 'ghost', onclick: () => { selecting.clear(); showLibrary(); } }, '選択をやめる'), 'close'),] : null);
   };
   drawBar();
+  // スマホでは選択バーが画面の下に固定されるので、その高さを覚えておき、お知らせ（トースト）をバーの上に出す（重ねない）
+  selbarRO?.disconnect();
+  selbarRO = globalThis.ResizeObserver ? new ResizeObserver(() => { if (bar.isConnected && bar.offsetHeight) document.documentElement.style.setProperty('--selbar-h', `${bar.offsetHeight}px`); }) : null;
+  selbarRO?.observe(bar);
   const grid = h('ul', { class: 'lib-grid' }, projects.map((p) => {
     // 見本が Blob でない記録（壊れた・途中で落ちた）があっても、一覧は出す（前は 1 枚のために一覧が真っ白になった）
     const url = p.thumb instanceof Blob ? URL.createObjectURL(p.thumb) : ''; if (url) libUrls.push(url);
@@ -2236,10 +2241,20 @@ function localPanel() {
     if (type === 'linear') { const p = geoParams(E.state.geo, E.W, E.H); [l.x1, l.y1] = outToSrc(0.5, 0.15, p); [l.x2, l.y2] = outToSrc(0.5, 0.55, p); }
     l.adj.exposure = type === 'linear' ? -30 : type === 'radial' ? 20 : 0;
     locals.push(l); E.sel = l.id; E.showMask = type === 'brush' || type === 'color' || type === 'luma'; commit(); buildPanel(); requestRender();
+    // 足した補正の操作（番号の札・削除・なぞる など）はパネルの上にあるので、いちばん上を見せる
+    // （パネルを下へ送ってから「＋ 明るさの範囲」などを押すと、送った位置のままで操作が上に隠れていた）
+    E.panel.scrollTop = 0;
   };
-  const list = h('div', { class: 'chips locals' }, locals.map((l, i) => h('button', { type: 'button', 'aria-pressed': String(l.id === E.sel), onclick: () => { E.sel = l.id; buildPanel(); requestRender(); } }, `${i + 1}. ${S.LOCAL_TYPES[l.type]}`)));
-  const adders = h('div', { class: 'chips' }, h('span', { class: 'muted small' }, '追加:'), Object.entries(S.LOCAL_TYPES).map(([k, n]) => btn(`＋ ${n}`, () => add(k), 'small')));
-  if (!cur) return [hint('下から種類を選んで追加'), list, adders];
+  const chipsOf = () => locals.map((l, i) => h('button', { type: 'button', 'aria-pressed': String(l.id === E.sel), onclick: () => { E.sel = l.id; buildPanel(); requestRender(); } }, `${i + 1}. ${S.LOCAL_TYPES[l.type]}`));
+  const addBtns = () => Object.entries(S.LOCAL_TYPES).map(([k, n]) => btn(`＋ ${n}`, () => { E.localAddOpen = false; add(k); }, 'small'));
+  if (!cur) return [hint('下から種類を選んで追加'), h('div', { class: 'chips locals' }, chipsOf()), h('div', { class: 'chips' }, h('span', { class: 'muted small' }, '追加:'), addBtns())];
+  // 補正を選んでいる間は、「追加」の5つを「＋ 追加」1つにたたみ、選んだ補正の操作（なぞる・消す・強さ・削除）を上に出す
+  const open = !!E.localAddOpen;
+  const head = h('div', { class: 'local-head' },
+    h('div', { class: 'chips locals' }, chipsOf(),
+      h('button', { type: 'button', class: 'local-add', 'aria-expanded': String(open), 'aria-controls': 'local-adders', onclick: () => { E.localAddOpen = !open; buildPanel(); } }, '＋ 追加')),
+    iconize(btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger'), 'trash', '削除'));
+  const adders = open ? h('div', { class: 'chips local-adders', id: 'local-adders', role: 'group', 'aria-label': '追加する種類' }, addBtns()) : null;
   const ctrl = [];
   if (cur.type === 'brush') {
     const b = prefs.get('brush', { size: 8, hard: 50, flow: 100, erase: false });
@@ -2262,12 +2277,11 @@ function localPanel() {
       slider({ label: '明るい側', min: 0, max: 100, value: Math.round(cur.hi * 100), def: 35, onInput: live((v) => { cur.hi = v / 100; }), onChange: commit }).el,
       slider({ label: 'なめらかさ', min: 0, max: 50, value: Math.round(cur.soft * 100), def: 15, onInput: live((v) => { cur.soft = v / 100; }), onChange: commit }).el);
   }
-  return [list, adders,
+  return [head, adders,
+    ...ctrl,
     h('div', { class: 'local-opts' },
       toggle('範囲を赤く表示', E.showMask, (v) => { E.showMask = v; requestRender(); }).el,
-      toggle('範囲を反転', cur.invert, (v) => { cur.invert = v; commit(); requestRender(); }).el,
-      iconize(btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger'), 'trash', '削除')),
-    ...ctrl,
+      toggle('範囲を反転', cur.invert, (v) => { cur.invert = v; commit(); requestRender(); }).el),
     h('div', { class: 'sub-head' }, h('b', {}, 'この範囲の調整')),
     ...S.LOCAL_ADJ.map(([k, label]) => slider({ label, min: k === 'blur' ? 0 : -100, value: cur.adj[k], def: 0, onInput: live((v) => { cur.adj[k] = v; }), onChange: commit }).el),
   ];

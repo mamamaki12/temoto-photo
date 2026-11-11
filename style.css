@@ -367,7 +367,11 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .field { display: grid; gap: 4px; }
 .field label { font-size: .86rem; }
 .local-opts { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
-.local-opts .danger { margin-left: auto; } /* この補正を削除（取り消しにくい）は右端へ */
+/* 部分補正: 上の行に「番号の札・＋ 追加」と、右端に「削除」（取り消しにくいので、よく使う札から離す） */
+.local-head { display: flex; gap: 8px; align-items: center; }
+.local-head .locals { flex: 1 1 auto; min-width: 0; }
+.local-head .danger { flex: none; margin-left: auto; }
+.local-add[aria-expanded="true"] { border-color: var(--text); }
 /* オン・オフのスイッチ（iPhone の設定のような形） */
 .tg { display: flex; gap: 12px; align-items: center; font-size: .9rem; cursor: pointer; min-height: 40px; }
 .tg input { appearance: none; -webkit-appearance: none; flex: none; order: 2; margin: 0 0 0 auto; width: 46px; height: 28px; border-radius: 999px; background: var(--surface-2); position: relative; cursor: pointer; transition: background .2s; }
@@ -530,6 +534,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .lib-main:has(.lib-actions:not(:empty)) { padding-bottom: 210px; } /* 下のバー（幅 320px では 3 段）に、最後の写真が隠れない */
   .lib-main:has(.lib-actions:not(:empty)) .drop.compact { display: none; }
   body:has(.drop.compact) .toast-wrap { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); } /* 右下の「写真を開く」に重ねない */
+  body:has(.lib-actions:not(:empty)) .toast-wrap { bottom: calc(var(--selbar-h, 150px) + 8px); } /* 写真を選んでいる間は、下の選択バーの上に出す（ボタンに重ねない） */
   /* ダイアログは下から出るシート */
   .dlg { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%; max-width: none; max-height: 90dvh; border: none; border-radius: 24px 24px 0 0; padding: 10px 18px 16px; box-shadow: 0 -12px 48px rgb(0 0 0 / 45%); }
   .dlg[open] { animation: sheet-up .3s var(--ease); }
