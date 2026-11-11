@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.9'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.10'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -511,7 +511,7 @@ async function showLibrary() {
         h('h3', {}, 'スペシャリストモード（「⋯」メニュー）'),
         h('ul', { class: 'feature-list plain' }, [
           '明るさ・色・トーンカーブ・HSL・カラーグレーディング・ディテール・効果',
-          '部分補正（ブラシ・グラデーション・色域・明るさの範囲）',
+          '部分補正（ブラシ・端からだんだん・丸く囲む・色や明るさで選ぶ）',
         ].map((t) => h('li', {}, t))))));
   const drop = $('#drop');
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
@@ -2240,9 +2240,11 @@ function localPanel() {
     if (type === 'radial') { const [s, t] = outToSrc(0.5, 0.5, geoParams(E.state.geo, E.W, E.H)); l.cx = s; l.cy = t; l.rx = 0.25; l.ry = 0.25 * E.W / E.H; }
     if (type === 'linear') { const p = geoParams(E.state.geo, E.W, E.H); [l.x1, l.y1] = outToSrc(0.5, 0.15, p); [l.x2, l.y2] = outToSrc(0.5, 0.55, p); }
     l.adj.exposure = type === 'linear' ? -30 : type === 'radial' ? 20 : 0;
+    // 足したらまず見せるのは、ブラシ・色・明るさは範囲を決める操作、端から・丸くは写真の上の丸で範囲を決めるので明るさ・色のスライダー
+    E.localView = type === 'brush' || type === 'color' || type === 'luma' ? 'range' : 'adj';
     locals.push(l); E.sel = l.id; E.showMask = type === 'brush' || type === 'color' || type === 'luma'; commit(); buildPanel(); requestRender();
     // 足した補正の操作（番号の札・削除・なぞる など）はパネルの上にあるので、いちばん上を見せる
-    // （パネルを下へ送ってから「＋ 明るさの範囲」などを押すと、送った位置のままで操作が上に隠れていた）
+    // （パネルを下へ送ってから「＋ 明るさで選ぶ」などを押すと、送った位置のままで操作が上に隠れていた）
     E.panel.scrollTop = 0;
   };
   const chipsOf = () => locals.map((l, i) => h('button', { type: 'button', 'aria-pressed': String(l.id === E.sel), onclick: () => { E.sel = l.id; buildPanel(); requestRender(); } }, `${i + 1}. ${S.LOCAL_TYPES[l.type]}`));
@@ -2255,35 +2257,40 @@ function localPanel() {
       h('button', { type: 'button', class: 'local-add', 'aria-expanded': String(open), 'aria-controls': 'local-adders', onclick: () => { E.localAddOpen = !open; buildPanel(); } }, '＋ 追加')),
     iconize(btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger'), 'trash', '削除'));
   const adders = open ? h('div', { class: 'chips local-adders', id: 'local-adders', role: 'group', 'aria-label': '追加する種類' }, addBtns()) : null;
+  // 「範囲を選ぶ」と「明るさ・色」を、上の切り替えで出し分ける（前は明るさ・色のスライダーがブラシの設定の下に隠れていて、見つけにくかった）
+  const view = E.localView || (cur.type === 'linear' || cur.type === 'radial' || Object.values(cur.adj).some((v) => v) ? 'adj' : 'range');
+  const how = { brush: '補正する所をなぞる', linear: '2本の線の丸をドラッグ', radial: '中心・縁の丸をドラッグ' }[cur.type];
+  const viewSw = chips([['range', '範囲を選ぶ'], ['adj', '明るさ・色']], view, (v) => { E.localView = v; buildPanel(); E.panel.scrollTop = 0; }, { label: '設定の切り替え', cls: 'local-view' }).el;
+  if (view === 'adj') {
+    return [head, adders, how ? hint(how) : null, viewSw,
+      ...S.LOCAL_ADJ.map(([k, label]) => slider({ label, min: k === 'blur' ? 0 : -100, value: cur.adj[k], def: 0, onInput: live((v) => { cur.adj[k] = v; }), onChange: commit }).el)];
+  }
   const ctrl = [];
   if (cur.type === 'brush') {
     const b = prefs.get('brush', { size: 8, hard: 50, flow: 100, erase: false });
     const sv = () => prefs.set('brush', b);
-    ctrl.push(hint('補正する所をなぞる'),
-      chips([[false, '塗る'], [true, '消す']], b.erase, (v) => { b.erase = v; sv(); }, { label: 'ブラシ' }).el,
+    ctrl.push(chips([[false, '塗る'], [true, '消す']], b.erase, (v) => { b.erase = v; sv(); }, { label: 'ブラシ' }).el,
       slider({ label: '大きさ', min: 1, max: 40, value: b.size, def: 8, onChange: (v) => { b.size = v; sv(); } }).el,
       slider({ label: '硬さ', min: 0, max: 100, value: b.hard, def: 50, onChange: (v) => { b.hard = v; sv(); } }).el,
       slider({ label: '流量', min: 5, max: 100, value: b.flow, def: 100, onChange: (v) => { b.flow = v; sv(); } }).el);
-  } else if (cur.type === 'linear') ctrl.push(hint('2本の線の丸をドラッグ'));
+  } else if (cur.type === 'linear') { /* 範囲は写真の上の線で決める */ }
   else if (cur.type === 'radial') {
-    ctrl.push(hint('中心・縁の丸をドラッグ'), slider({ label: 'ぼかし幅', min: 0, max: 100, value: cur.feather, def: 50, onInput: live((v) => { cur.feather = v; }), onChange: commit }).el);
+    ctrl.push(slider({ label: 'ぼかし幅', min: 0, max: 100, value: cur.feather, def: 50, onInput: live((v) => { cur.feather = v; }), onChange: commit }).el);
   } else if (cur.type === 'color') {
     ctrl.push(row(E.colorPick ? btn('写真の中の色をタップ…', () => { E.colorPick = !E.colorPick; buildPanel(); }, 'active') : iconize(btn('⊙ 写真から色を選ぶ', () => { E.colorPick = !E.colorPick; buildPanel(); }), 'dropper', '色を選ぶ')),
-      slider({ label: '色相', min: 0, max: 360, value: cur.hue, def: cur.hue, unit: '°', track: 'hue', onInput: live((v) => { cur.hue = v; }), onChange: commit }).el,
-      slider({ label: '範囲', min: 5, max: 90, value: cur.range, def: 30, onInput: live((v) => { cur.range = v; }), onChange: commit }).el,
-      slider({ label: '最低の彩度', min: 0, max: 100, value: cur.minSat, def: 15, onInput: live((v) => { cur.minSat = v; }), onChange: commit }).el);
+      slider({ label: '選ぶ色', min: 0, max: 360, value: cur.hue, def: cur.hue, unit: '°', track: 'hue', onInput: live((v) => { cur.hue = v; }), onChange: commit }).el,
+      slider({ label: '色の幅', min: 5, max: 90, value: cur.range, def: 30, onInput: live((v) => { cur.range = v; }), onChange: commit }).el,
+      slider({ label: 'くすんだ色を外す', min: 0, max: 100, value: cur.minSat, def: 15, onInput: live((v) => { cur.minSat = v; }), onChange: commit }).el);
   } else {
     ctrl.push(slider({ label: '暗い側', min: 0, max: 100, value: Math.round(cur.lo * 100), def: 0, onInput: live((v) => { cur.lo = v / 100; }), onChange: commit }).el,
       slider({ label: '明るい側', min: 0, max: 100, value: Math.round(cur.hi * 100), def: 35, onInput: live((v) => { cur.hi = v / 100; }), onChange: commit }).el,
       slider({ label: 'なめらかさ', min: 0, max: 50, value: Math.round(cur.soft * 100), def: 15, onInput: live((v) => { cur.soft = v / 100; }), onChange: commit }).el);
   }
-  return [head, adders,
+  return [head, adders, how ? hint(how) : null, viewSw,
     ...ctrl,
     h('div', { class: 'local-opts' },
       toggle('範囲を赤く表示', E.showMask, (v) => { E.showMask = v; requestRender(); }).el,
       toggle('範囲を反転', cur.invert, (v) => { cur.invert = v; commit(); requestRender(); }).el),
-    h('div', { class: 'sub-head' }, h('b', {}, 'この範囲の調整')),
-    ...S.LOCAL_ADJ.map(([k, label]) => slider({ label, min: k === 'blur' ? 0 : -100, value: cur.adj[k], def: 0, onInput: live((v) => { cur.adj[k] = v; }), onChange: commit }).el),
   ];
 }
 
