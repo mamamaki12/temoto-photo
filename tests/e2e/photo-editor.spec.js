@@ -259,6 +259,38 @@ test('部分補正: 補正を足した後は「追加」を「＋ 追加」1つ�
   }
 });
 
+test('部分補正: 補正を 5 つ足しても番号の札は 1 行で、切り替え・操作の位置が動かない。選んだ札は横に送って見せる（幅 320px）', async ({ page }) => {
+  const errors = []; page.on('pageerror', (e) => errors.push(e.message));
+  await page.setViewportSize({ width: 320, height: 568 });
+  await openWith(page);
+  await tab(page, '部分補正');
+  const panel = page.locator('.panel');
+  const row = panel.locator('.local-head .locals');
+  const sw = panel.getByRole('button', { name: '範囲を選ぶ', exact: true });
+  const tops = [];
+  const kinds = ['ブラシ', '色で選ぶ', '明るさで選ぶ', 'ブラシ', '色で選ぶ']; // 説明の行が無い種類どうし・ある種類どうしで比べる
+  for (const [i, k] of kinds.entries()) {
+    if (i) await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+    await panel.getByRole('button', { name: `＋ ${k}`, exact: true }).click();
+    await expect(panel.getByRole('button', { name: `${i + 1}. ${k}` })).toHaveAttribute('aria-pressed', 'true');
+    tops.push({ k, y: (await sw.boundingBox()).y });
+    // 札は全部同じ行、「＋ 追加」と「削除」も同じ行に見えている
+    const ys = await row.locator('button').evaluateAll((bs) => bs.map((b) => Math.round(b.getBoundingClientRect().top)));
+    expect(new Set(ys).size).toBe(1);
+    for (const b of [panel.getByRole('button', { name: '＋ 追加', exact: true }), panel.getByRole('button', { name: 'この補正を削除' })]) expect(Math.abs((await b.boundingBox()).y - ys[0])).toBeLessThan(12);
+    // 選んだ札は、横の列の見えている所に入っている
+    const on = await panel.getByRole('button', { name: `${i + 1}. ${k}` }).boundingBox(); const rb = await row.boundingBox();
+    expect(on.x).toBeGreaterThanOrEqual(rb.x - 1); expect(on.x + on.width).toBeLessThanOrEqual(rb.x + rb.width + 1);
+  }
+  for (const k of ['ブラシ', '色で選ぶ']) { const ys = tops.filter((t) => t.k === k).map((t) => t.y); expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(1); }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  // 前の札（左に送られて隠れている）を選び直せる
+  await row.evaluate((e) => { e.scrollLeft = 0; });
+  await panel.getByRole('button', { name: '1. ブラシ' }).click();
+  await expect(panel.getByRole('button', { name: '1. ブラシ' })).toHaveAttribute('aria-pressed', 'true');
+  expect(errors).toEqual([]);
+});
+
 test('部分補正: 「範囲を選ぶ｜明るさ・色」の切り替えがパネルの上に見え、明るさ・色を押すとその補正のスライダーが出る（幅 320px でも）', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await openWith(page);

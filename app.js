@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.12'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.13'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -2230,6 +2230,11 @@ function skinAction(e, o, p) {
 }
 
 // ── 部分補正 ──
+/** 横スクロールの列の、まだ隠れている側の端をうすくする（続きがあると分かるように） */
+function fadeRow(el) {
+  el.classList.toggle('fade-l', el.scrollLeft > 1);
+  el.classList.toggle('fade-r', el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+}
 function localPanel() {
   const locals = E.state.locals;
   const cur = locals.find((l) => l.id === E.sel);
@@ -2258,10 +2263,19 @@ function localPanel() {
   if (!cur) return [hint('下から種類を選んで追加'), h('div', { class: 'chips locals' }, chipsOf()), h('div', { class: 'chips' }, h('span', { class: 'muted small' }, '追加:'), addBtns())];
   // 補正を選んでいる間は、「追加」の5つを「＋ 追加」1つにたたみ、選んだ補正の操作（なぞる・消す・強さ・削除）を上に出す
   const open = !!E.localAddOpen;
-  const head = h('div', { class: 'local-head' },
-    h('div', { class: 'chips locals' }, chipsOf(),
-      h('button', { type: 'button', class: 'local-add', 'aria-expanded': String(open), 'aria-controls': 'local-adders', onclick: () => { E.localAddOpen = !open; buildPanel(); } }, '＋ 追加')),
+  // 番号の札は 1 行の横スクロール（補正を増やしても札が縦に積まれず、下の切り替え・操作の位置が動かない）。「＋ 追加」は札の外に置いて、いつも見えるように
+  const chipRow = h('div', { class: 'chips locals', role: 'group', 'aria-label': '補正の一覧', onscroll: () => { E.localChipsX = chipRow.scrollLeft; fadeRow(chipRow); } }, chipsOf());
+  const head = h('div', { class: 'local-head' }, chipRow,
+    h('div', { class: 'chips' }, h('button', { type: 'button', class: 'local-add', 'aria-expanded': String(open), 'aria-controls': 'local-adders', 'aria-label': '＋ 追加', onclick: () => { E.localAddOpen = !open; buildPanel(); } }, '＋', h('span', { class: 'local-add-label' }, ' 追加'))),
     iconize(btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger'), 'trash', '削除'));
+  // 作り直した後も、横に送った位置を保ち、選んでいる札が切れていれば見える所まで送る
+  queueMicrotask(() => {
+    if (!chipRow.isConnected) return;
+    chipRow.scrollLeft = E.localChipsX || 0;
+    const on = chipRow.querySelector('[aria-pressed="true"]');
+    if (on) { const l = on.getBoundingClientRect().left - chipRow.getBoundingClientRect().left + chipRow.scrollLeft; const r = l + on.offsetWidth; if (l < chipRow.scrollLeft) chipRow.scrollLeft = l - 8; else if (r > chipRow.scrollLeft + chipRow.clientWidth) chipRow.scrollLeft = r - chipRow.clientWidth + 8; }
+    E.localChipsX = chipRow.scrollLeft; fadeRow(chipRow);
+  });
   const adders = open ? h('div', { class: 'chips local-adders', id: 'local-adders', role: 'group', 'aria-label': '追加する種類' }, addBtns()) : null;
   if (E.dragHint && E.dragHint === cur.id) E.stageHint = '丸をドラッグして範囲を動かせます';
   // 「範囲を選ぶ」と「明るさ・色」を、上の切り替えで出し分ける（前は明るさ・色のスライダーがブラシの設定の下に隠れていて、見つけにくかった）
@@ -3138,11 +3152,12 @@ function gridPanel() {
       for (const r of cellRects(l, 64, 64, { gap: 6, margin: 6 })) ctx.fillRect(r.x, r.y, r.w, r.h);
       return h('button', { type: 'button', class: 'grid-layout', 'aria-pressed': String(G.layout === l.id), onclick: () => { G.layout = l.id; G.lines = {}; gridPanel(); drawGridView(); } }, c, h('span', {}, l.name));
     }));
-    body = [h('div', { class: 'sub-head' }, h('b', {}, '比率')),
-      chips(Object.keys(GRID_ASPECTS).map((k) => [k, k]), G.aspect, (v) => { G.aspect = v; saveGridStyle(); drawGridView(); }, { label: '比率' }).el,
-      h('div', { class: 'sub-head' }, h('b', {}, 'レイアウト')), thumbs,
+    // タブの名前どおり、レイアウトの見本をいちばん上に（狭い画面で、前は比率の札の下で見本が半分隠れていた）
+    body = [h('div', { class: 'sub-head' }, h('b', {}, 'レイアウト')), thumbs,
       hint('線をドラッグで大きさを変更'),
-      Object.keys(G.lines || {}).length ? iconize(btn('線の位置を元に戻す', () => { G.lines = {}; gridPanel(); drawGridView(); }, 'ghost small'), 'reset', '線を戻す') : null];
+      Object.keys(G.lines || {}).length ? iconize(btn('線の位置を元に戻す', () => { G.lines = {}; gridPanel(); drawGridView(); }, 'ghost small'), 'reset', '線を戻す') : null,
+      h('div', { class: 'sub-head' }, h('b', {}, '比率')),
+      chips(Object.keys(GRID_ASPECTS).map((k) => [k, k]), G.aspect, (v) => { G.aspect = v; saveGridStyle(); drawGridView(); }, { label: '比率' }).el];
   } else if (GR.tab === 'style') {
     const upd = (k, f = (v) => v) => (v) => { G[k] = f(v); saveGridStyle(); drawGridView(); };
     body = [
