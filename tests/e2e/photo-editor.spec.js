@@ -344,6 +344,36 @@ test('ブラシ: はじめて塗ったとき明るさ・色が 0 のままなら
   await expect(panel.locator('.nudge-hint')).toHaveCount(0);
 });
 
+test('丸く囲む・端からだんだん: はじめて足したときだけ、写真の上で「丸をドラッグ」を知らせ、丸を動かすと消える', async ({ page }) => {
+  await openWith(page);
+  await tab(page, '部分補正');
+  const panel = page.locator('.panel');
+  const stageHint = page.locator('.stage-hint');
+  await panel.getByRole('button', { name: '＋ 丸く囲む', exact: true }).click();
+  await expect(stageHint).toHaveText('丸をドラッグして範囲を動かせます');
+  await expect(stageHint).toBeVisible();
+  // パネルの操作（明るさ・色のスライダー）では消えない
+  await setSlider(page, '露光量', 20);
+  await expect(stageHint).toBeVisible();
+  // 丸を動かすと消える
+  await dragOn(page, [0.5, 0.5], [0.4, 0.5]);
+  await expect(stageHint).toBeHidden();
+  // 同じ種類は 2 回目から出さない。別の種類（端からだんだん）は、はじめての 1 回だけ出す
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ 丸く囲む', exact: true }).click();
+  await expect(stageHint).toBeHidden();
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ 端からだんだん', exact: true }).click();
+  await expect(stageHint).toHaveText('丸をドラッグして範囲を動かせます');
+  // 動かさなくても、しばらくすると消える
+  await expect(stageHint).toBeHidden({ timeout: 15000 });
+  // ブラシで塗る｜消すの札は 8px 離れている
+  await panel.getByRole('button', { name: '＋ 追加', exact: true }).click();
+  await panel.getByRole('button', { name: '＋ ブラシ', exact: true }).click();
+  const a = await panel.getByRole('button', { name: '塗る', exact: true }).boundingBox(); const b = await panel.getByRole('button', { name: '消す', exact: true }).boundingBox();
+  expect(b.x - (a.x + a.width)).toBeGreaterThanOrEqual(7.5);
+});
+
 test('指で使う端末: 選ぶ札・小さいボタンは高さ 36px 以上で、押せる範囲は上下に広い（44px）', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await openWith(page);
@@ -674,18 +704,19 @@ test('美肌: 顔をタップすると、肌に似た色の背景は変えない
   await page.waitForFunction(() => window.__temoto.state.portrait.seeds.length === 1 && window.__temoto.state.portrait.smooth === 50);
   await skinDone(page);
   await expect(page.getByText('肌として選んだ場所: 1か所')).toBeVisible();
-  expect(lum(await viewMean(page, FACE))).toBeGreaterThan(f0 + 2);
+  // 描き直しが終わるのを待ってから測る（決まった時間だけ待つと、機械が混んでいるときに描き直しの前を測って落ちていた）
+  await expect.poll(async () => lum(await viewMean(page, FACE)), { timeout: 10000 }).toBeGreaterThan(f0 + 2);
   const w1 = await viewMean(page, WALL);
   for (let c = 0; c < 3; c++) expect(Math.abs(w1[c] - w0[c])).toBeLessThan(1);
   // 範囲の表示: 顔だけが赤くなる
   await page.getByLabel('肌と判定した範囲を赤で表示').check();
   await skinDone(page);
-  const fr = await viewMean(page, FACE); const wr = await viewMean(page, WALL);
-  expect(fr[0] - fr[1]).toBeGreaterThan(90);
+  await expect.poll(async () => { const fr = await viewMean(page, FACE); return fr[0] - fr[1]; }, { timeout: 10000 }).toBeGreaterThan(90);
+  const wr = await viewMean(page, WALL);
   for (let c = 0; c < 3; c++) expect(Math.abs(wr[c] - w0[c])).toBeLessThan(1);
   // 別の道具に移ると、赤い表示は消える（保存される編集には入らない）
-  await tab(page, 'ライト'); await page.waitForTimeout(400);
-  expect((await viewMean(page, FACE))[0] - (await viewMean(page, FACE))[1]).toBeLessThan(60);
+  await tab(page, 'ライト');
+  await expect.poll(async () => { const f = await viewMean(page, FACE); return f[0] - f[1]; }, { timeout: 10000 }).toBeLessThan(60);
   // 選び直す
   await tab(page, '美肌');
   await page.getByRole('button', { name: '選び直す' }).click();
@@ -998,6 +1029,34 @@ test('写真一覧: 写真を選んでいる間は、お知らせを下の選択
   await page.waitForTimeout(300); // 出てくる動きが終わるまで
   const tb = await t.boundingBox(); const bb = await page.locator('.lib-actions').boundingBox();
   expect(tb.y + tb.height).toBeLessThanOrEqual(bb.y);
+});
+
+test('幅 320px: 「アプリとして入れる」の見出しは 1 行のまま、「入れる」と × は下の行に（幅 390px では横に並ぶ）', async ({ page }) => {
+  for (const [w, below] of [[320, true], [390, false]]) {
+    await page.setViewportSize({ width: w, height: 700 });
+    await page.goto(URL0);
+    await page.evaluate(() => { const e = new Event('beforeinstallprompt', { cancelable: true }); e.prompt = async () => {}; e.userChoice = Promise.resolve({ outcome: 'dismissed' }); dispatchEvent(e); });
+    const card = page.locator('.install-card');
+    const title = card.locator('b').first();
+    await expect(title).toHaveText('アプリとして入れる');
+    // 見出しは 1 行（字形で高さが変わっても、2 行なら行の高さの 2 倍近くになる）
+    const lh = await title.evaluate((e) => parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.5);
+    expect((await title.boundingBox()).height).toBeLessThan(lh * 1.5);
+    const tb = await card.locator('> div').first().boundingBox(); const bb = await card.getByRole('button', { name: '入れる' }).boundingBox();
+    if (below) expect(bb.y).toBeGreaterThanOrEqual(tb.y + tb.height - 1); else expect(bb.y).toBeLessThan(tb.y + tb.height);
+  }
+});
+
+test('写真の情報: 「書き出す大きさ」の項目名は短く、「元の大きさのとき」は値の側に書く', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await openWith(page);
+  await openInfo(page);
+  const dt = page.locator('dialog[open] .info dt', { hasText: '書き出す大きさ' });
+  await expect(dt).toHaveText('書き出す大きさ');
+  // 1 行（dt の箱は隣の値の高さに伸びるので、文字そのものの行の数を数える）
+  expect(await dt.evaluate((e) => { const r = document.createRange(); r.selectNodeContents(e); return new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size; })).toBe(1);
+  await expect(dt.locator('+ dd')).toContainText('元の大きさのとき');
+  await closeInfo(page);
 });
 
 test('アプリとして入れられるブラウザでは、写真一覧に「アプリとして入れる」を出し、押すとブラウザの確認を出す', async ({ page }) => {
