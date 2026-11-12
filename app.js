@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.11'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.12'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -2242,6 +2242,12 @@ function localPanel() {
     l.adj.exposure = type === 'linear' ? -30 : type === 'radial' ? 20 : 0;
     // 足したらまず見せるのは、ブラシ・色・明るさは範囲を決める操作、端から・丸くは写真の上の丸で範囲を決めるので明るさ・色のスライダー
     E.localView = type === 'brush' || type === 'color' || type === 'luma' ? 'range' : 'adj';
+    // 端からだんだん・丸く囲むは、写真の上の丸で範囲を動かす。はじめて足したときだけ、写真の上で一度知らせる（丸を動かすか、6 秒で消える）
+    const seen = prefs.get('dragHintSeen', {});
+    if ((type === 'linear' || type === 'radial') && !seen[type]) {
+      prefs.set('dragHintSeen', { ...seen, [type]: true }); E.dragHint = l.id;
+      clearTimeout(E.dragHintTimer); E.dragHintTimer = setTimeout(() => { if (E?.dragHint === l.id) { E.dragHint = null; E.stageHint = ''; syncStageHint(); } }, 6000);
+    }
     locals.push(l); E.sel = l.id; E.showMask = type === 'brush' || type === 'color' || type === 'luma'; commit(); buildPanel(); requestRender();
     // 足した補正の操作（番号の札・削除・なぞる など）はパネルの上にあるので、いちばん上を見せる
     // （パネルを下へ送ってから「＋ 明るさで選ぶ」などを押すと、送った位置のままで操作が上に隠れていた）
@@ -2257,6 +2263,7 @@ function localPanel() {
       h('button', { type: 'button', class: 'local-add', 'aria-expanded': String(open), 'aria-controls': 'local-adders', onclick: () => { E.localAddOpen = !open; buildPanel(); } }, '＋ 追加')),
     iconize(btn('この補正を削除', () => { E.state.locals = locals.filter((l) => l.id !== cur.id); E.sel = null; E.maskCache.clear(); rebuildMask(); commit(); buildPanel(); requestRender(); }, 'small danger'), 'trash', '削除'));
   const adders = open ? h('div', { class: 'chips local-adders', id: 'local-adders', role: 'group', 'aria-label': '追加する種類' }, addBtns()) : null;
+  if (E.dragHint && E.dragHint === cur.id) E.stageHint = '丸をドラッグして範囲を動かせます';
   // 「範囲を選ぶ」と「明るさ・色」を、上の切り替えで出し分ける（前は明るさ・色のスライダーがブラシの設定の下に隠れていて、見つけにくかった）
   const view = E.localView || (cur.type === 'linear' || cur.type === 'radial' || Object.values(cur.adj).some((v) => v) ? 'adj' : 'range');
   // 塗ったのに明るさ・色が 0 のまま（写真が変わらない）なら、説明を「次は…」にして、切り替えの札を少し光らせる
@@ -2274,7 +2281,7 @@ function localPanel() {
   if (cur.type === 'brush') {
     const b = prefs.get('brush', { size: 8, hard: 50, flow: 100, erase: false });
     const sv = () => prefs.set('brush', b);
-    ctrl.push(chips([[false, '塗る'], [true, '消す']], b.erase, (v) => { b.erase = v; sv(); }, { label: 'ブラシ' }).el,
+    ctrl.push(chips([[false, '塗る'], [true, '消す']], b.erase, (v) => { b.erase = v; sv(); }, { label: 'ブラシ', cls: 'paint-mode' }).el,
       slider({ label: '大きさ', min: 1, max: 40, value: b.size, def: 8, onChange: (v) => { b.size = v; sv(); } }).el,
       slider({ label: '硬さ', min: 0, max: 100, value: b.hard, def: 50, onChange: (v) => { b.hard = v; sv(); } }).el,
       slider({ label: '流量', min: 5, max: 100, value: b.flow, def: 100, onChange: (v) => { b.flow = v; sv(); } }).el);
@@ -2318,11 +2325,12 @@ function infoPanel() {
   const rows = [['元の大きさ', `${p.w}×${p.h}${E.scaled ? `（編集は ${E.W}×${E.H}）` : ''}`], ['ファイルの大きさ', fmtBytes(p.size || 0)], ['アプリの版', VERSION], ['形式', p.raw ? `RAW（${p.raw.format}）` : p.type || '不明'],
     ...(p.raw?.kind === 'libraw' ? [['RAWの読み込み', `RAW データから現像（LibRaw・16bit）${p.raw.model ? `・${p.raw.model}` : ''}。編集中は半分の大きさ、書き出しは元の大きさで現像し直します`]] : []),
     ...(p.raw && p.raw.kind !== 'libraw' ? [['RAWの読み込み', p.raw.kind === 'raw' ? `RAW データから現像${p.raw.scaled ? '（大きいので2×2をまとめて半分の大きさに）' : ''}` : `カメラが作ったプレビュー画像（${p.raw.previewW}×${p.raw.previewH}）を使用。この形式の RAW データの現像には対応していません`]] : []),
-    ['書き出す大きさ（元の大きさのとき）', (() => {
-      if (E.scaled && p.w) { const o = outputSize(E.state.geo, p.w, p.h); const L0 = layout(o.w, o.h, E.state.frame); return `${L0.cw}×${L0.ch}（JPEG・PNG は元の写真から描き直します）`; }
+    // 項目名は短く（幅 320px で 3 行に折れていた）。「元の大きさのとき」は値の側に書く
+    ['書き出す大きさ', (() => {
+      if (E.scaled && p.w) { const o = outputSize(E.state.geo, p.w, p.h); const L0 = layout(o.w, o.h, E.state.frame); return `${L0.cw}×${L0.ch}（元の大きさのとき。JPEG・PNG は元の写真から描き直します）`; }
       const o = outputSize(E.state.geo, E.W, E.H); const L0 = layout(o.w, o.h, E.state.frame);
       const k = Math.min(1, Math.sqrt((MAX_PIXELS * 0.99) / (L0.cw * L0.ch))); // 丸めで上限を超えないよう少し余裕を持たせる
-      return `${Math.round(L0.cw * k)}×${Math.round(L0.ch * k)}${k < 1 ? '（端末の上限に合わせて縮小）' : ''}`;
+      return `${Math.round(L0.cw * k)}×${Math.round(L0.ch * k)}（元の大きさのとき${k < 1 ? '。端末の上限に合わせて縮小' : ''}）`;
     })()]];
   // 前の版で保存した Exif には、文字の項目に数が入っているものがある（撮影日時が数だと、ここで止まって「情報」が開けなかった）
   const txt = (v) => (typeof v === 'string' ? v : ''); const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
@@ -2481,6 +2489,7 @@ function localAction(e, c, o, p) {
   for (const hd of handles) { const d = Math.hypot(hd.at[0] - c[0], hd.at[1] - c[1]); if (d < bd) { bd = d; best = hd; } }
   if (!best) return null;
   const start = toSrc(c); const snap = S.clone(cur);
+  if (E.dragHint) { E.dragHint = null; E.stageHint = ''; syncStageHint(); } // 丸を動かせたので、案内は消す
   return { move: (ev) => { best.drag(toSrc(canvasPoint(ev)), start, snap); requestRender(); }, end: commit };
 }
 function localHandles(l) {

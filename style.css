@@ -113,6 +113,13 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .install-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 16px; background: var(--bg); border: 1px solid var(--line); }
 .install-card p { margin: 2px 0 0; }
 .install-card button { flex: none; }
+/* 幅が狭いとき（幅 360px 以下のスマホ）は、見出しが 1〜2 文字ずつ折れないよう、「入れる」と × を下の行に */
+#install-slot { container-type: inline-size; }
+@container (max-width: 350px) {
+  .install-card { flex-wrap: wrap; row-gap: 10px; }
+  .install-card > div { flex: 1 1 100%; }
+  .install-card > button:last-child { margin-left: auto; }
+}
 /* 写真を開く: 写真がまだ無いときは大きなカード。写真があるときは小さく（スマホでは右下に浮かぶボタン） */
 .drop {
   display: grid; justify-items: center; gap: 6px; padding: 30px 16px 26px; border: 1px dashed var(--drop-line); border-radius: 20px;
@@ -134,7 +141,7 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .lib-open img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .lib-noimg { font-size: 2rem; color: var(--muted); }
 .lib-empty, .privacy { padding: 22px 20px 20px; border-radius: 20px; background: var(--bg); border: 1px solid var(--line); }
-.lib-empty h2, .privacy h2 { margin: 0 0 4px; font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; }
+.lib-empty h2, .privacy h2 { margin: 0 0 4px; font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; text-wrap: balance; } /* 最後の 1 文字だけが次の行に落ちないよう、行の長さをそろえる */
 .lib-empty > p { margin: 0 0 16px; }
 .lib-empty h3 { margin: 18px 0 6px; font-size: .9rem; color: var(--muted); font-weight: 600; }
 .privacy p { margin: 4px 0; color: var(--muted); max-width: 70ch; }
@@ -373,6 +380,7 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .local-head .danger { flex: none; margin-left: auto; }
 .local-add[aria-expanded="true"] { border-color: var(--text); }
 /* 部分補正の「範囲を選ぶ｜明るさ・色」の切り替え（2 つに分けた札。いつもパネルの上に見える） */
+.chips.paint-mode { column-gap: 8px; } /* 塗る｜消す（消すは取り消しにくい操作に近いので、8px 離す） */
 .chips.local-view { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 999px; background: var(--surface); }
 .chips.local-view button { padding-inline: 8px; white-space: nowrap; }
 .chips.local-view button:not([aria-pressed="true"]) { background: transparent; }
