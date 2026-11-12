@@ -376,7 +376,15 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .local-opts { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 /* 部分補正: 上の行に「番号の札・＋ 追加」と、右端に「削除」（取り消しにくいので、よく使う札から離す） */
 .local-head { display: flex; gap: 8px; align-items: center; }
-.local-head .locals { flex: 1 1 auto; min-width: 0; }
+.local-head .locals { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 2px; margin: -2px; }
+.local-head .locals::-webkit-scrollbar { display: none; }
+.local-head .locals button { flex: none; white-space: nowrap; }
+.local-head .locals.fade-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.local-head .locals.fade-l { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.local-head .locals.fade-l.fade-r { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+.local-head > .chips:not(.locals) { flex: none; }
+.local-add { white-space: pre; }
+@media (max-width: 359px) { .local-head .local-add { min-width: 44px; padding-inline: 0; } .local-add-label { display: none; } } /* 幅 320px では「＋」だけにして、番号の札を広く見せる */
 .local-head .danger { flex: none; margin-left: auto; }
 .local-add[aria-expanded="true"] { border-color: var(--text); }
 /* 部分補正の「範囲を選ぶ｜明るさ・色」の切り替え（2 つに分けた札。いつもパネルの上に見える） */
@@ -516,7 +524,7 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
 /* グリッド（レイアウト・余白・写真のタブは、アイコンと名前を縦に） */
 .grid-editor .rail { justify-content: space-around; padding-top: 8px; }
 .grid-editor .rail button { display: grid; justify-items: center; gap: 2px; min-height: 52px; padding: 4px 14px; border-radius: 14px; font-size: clamp(10px, .68rem, 13px); font-weight: 500; }
-.grid-editor .rail button[aria-selected="true"] { background: transparent; color: var(--text); }
+.grid-editor .rail button[aria-selected="true"], .grid-editor .rail button[aria-selected="true"]:hover:not(:disabled) { background: transparent; color: var(--text); } /* 押した後も白い札にしない（スマホは押した所に hover が残る） */
 .grid-editor .rail button[aria-selected="true"] .tab-icon { color: var(--accent-text); }
 .grid-editor .side { border-radius: 0; }
 .grid-layouts { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
@@ -703,6 +711,16 @@ kbd { font-family: ui-monospace, monospace; font-size: .8rem; padding: 1px 6px; 
   .editor:not(.grid-editor) .side { height: auto; min-height: 0; max-height: none; border-radius: 22px 0 0 0; animation: none; }
   .editor:not(.grid-editor) .panel-inner { padding: 10px 14px 12px; gap: 8px; }
   .editor:not(.grid-editor) .side-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
+  /* グリッドも同じ考えで、写真を左、レイアウトの見本・余白・写真の設定とタブを右の列に（下に積むと写真が上に小さく、見本がタブに半分隠れていた） */
+  .grid-editor {
+    grid-template-columns: minmax(0, 1fr) min(390px, 48vw);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas: "head head" "stage side" "stage rail";
+  }
+  .grid-editor .side { max-height: none; border-radius: 22px 0 0 0; }
+  .grid-editor .rail { padding-top: 4px; }
+  .grid-editor .rail button { min-height: 48px; }
+  .grid-layouts { flex-wrap: wrap; overflow-x: visible; }
 }
 @media (min-width: 900px) {
   .editor:not(.grid-editor) { grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "head head head" "rail items stage" "rail side stage"; }

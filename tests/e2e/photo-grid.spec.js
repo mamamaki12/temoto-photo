@@ -148,3 +148,39 @@ test('グリッド: 写真の間の線をドラッグして大きさの割合を
   await expect(page.getByRole('button', { name: '線の位置を元に戻す' })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('グリッド: スマホの横向きでは写真を左、レイアウトの見本を右に（見本がタブに隠れない）', async ({ page }) => {
+  await page.setViewportSize({ width: 844, height: 390 });
+  await setup(page);
+  await page.getByRole('button', { name: 'すべて選択' }).click();
+  await page.getByRole('button', { name: /グリッドを作る/ }).click();
+  await expect(page.locator('canvas.grid-view')).toBeVisible({ timeout: 20000 });
+  await page.waitForTimeout(300);
+  const view = await page.locator('canvas.grid-view').boundingBox();
+  const side = await page.locator('.grid-editor .side').boundingBox();
+  const rail = await page.locator('.grid-editor .rail').boundingBox();
+  expect(view.x + view.width).toBeLessThanOrEqual(side.x + 1); // 写真は左
+  expect(view.height).toBeGreaterThan(250); // 前は上に 80px ほどしか出なかった
+  expect(Math.abs(rail.x - side.x)).toBeLessThan(2); expect(rail.y).toBeGreaterThanOrEqual(side.y + side.height - 1); // タブは右の列の下
+  // レイアウトの見本は、全部がタブより上にあり、横にもはみ出さない（パネルを送れば全部見える）
+  const panel = page.locator('.grid-editor .panel');
+  for (const b of await page.locator('.grid-layout').all()) {
+    await b.scrollIntoViewIfNeeded();
+    const bb = await b.boundingBox(); const pb = await panel.boundingBox();
+    expect(bb.y + bb.height).toBeLessThanOrEqual(rail.y + 1);
+    expect(bb.x).toBeGreaterThanOrEqual(pb.x - 1); expect(bb.x + bb.width).toBeLessThanOrEqual(pb.x + pb.width + 1);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(844);
+});
+
+test('グリッド: 幅 320px でも、開いてすぐレイアウトの見本がタブに隠れずに見える', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await setup(page);
+  await page.getByRole('button', { name: 'すべて選択' }).click();
+  await page.getByRole('button', { name: /グリッドを作る/ }).click();
+  await expect(page.locator('canvas.grid-view')).toBeVisible({ timeout: 20000 });
+  await page.waitForTimeout(300);
+  const rail = await page.locator('.grid-editor .rail').boundingBox();
+  const first = await page.locator('.grid-layout').first().boundingBox();
+  expect(first.y + first.height).toBeLessThanOrEqual(rail.y + 1);
+});
