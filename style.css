@@ -229,12 +229,12 @@ select { min-height: 40px; padding: 6px 12px; border-radius: 12px; border: 1px s
 .suggest button.ghost { color: #fff; border-color: rgb(255 255 255 / 35%); }
 .suggest button.ghost:hover:not(:disabled) { background: rgb(255 255 255 / 12%); }
 /* 表示の大きさ（右下） */
-.zoom { position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line); box-shadow: 0 4px 16px var(--shadow); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.zoom { position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 8px; padding: 3px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line); box-shadow: 0 4px 16px var(--shadow); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 .zoom button { min-height: 36px; min-width: 36px; width: 36px; padding: 0; background: transparent; border-radius: 50%; }
 .zoom button svg { width: 18px; height: 18px; }
 .zoom button:hover:not(:disabled) { background: var(--surface); }
 .zoom .zoom-val { min-width: 4.2em; width: auto; font-variant-numeric: tabular-nums; font-size: .8rem; font-weight: 600; }
-@media (pointer: coarse) { .zoom { gap: 4px; } .zoom button { min-height: 44px; min-width: 44px; width: 44px; } } /* 指で使う端末（タブレット・スマホの横向き）では押しやすく */
+@media (pointer: coarse) { .zoom { gap: 8px; } .zoom button { min-height: 44px; min-width: 44px; width: 44px; } } /* 指で使う端末（タブレット・スマホの横向き）では押しやすく */
 
 /* 道具のシート（スマホ）: 角の丸い少し明るい帯。項目を開いているときは、スライダーのパネルと ✕・名前・✓ のバー */
 .side { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; max-height: 42dvh; background: var(--bg); border-radius: 22px 22px 0 0; }
@@ -376,6 +376,11 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .chips.local-view { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 999px; background: var(--surface); }
 .chips.local-view button { padding-inline: 8px; white-space: nowrap; }
 .chips.local-view button:not([aria-pressed="true"]) { background: transparent; }
+/* 塗ったのに明るさ・色が 0 のとき: 「明るさ・色」を緑の線で囲み、3 回だけゆっくり光らせる（文字の色は変えない） */
+.chips.local-view button.nudge { box-shadow: inset 0 0 0 2px var(--accent); animation: nudge 1.4s ease-in-out 3; }
+.hint.nudge-hint { color: var(--accent-text); font-weight: 600; }
+@keyframes nudge { 50% { box-shadow: inset 0 0 0 2px var(--accent), 0 0 0 4px rgb(62 207 142 / 35%); } }
+@media (prefers-reduced-motion: reduce) { .chips.local-view button.nudge { animation: none; } }
 /* オン・オフのスイッチ（iPhone の設定のような形） */
 .tg { display: flex; gap: 12px; align-items: center; font-size: .9rem; cursor: pointer; min-height: 40px; }
 .tg input { appearance: none; -webkit-appearance: none; flex: none; order: 2; margin: 0 0 0 auto; width: 46px; height: 28px; border-radius: 999px; background: var(--surface-2); position: relative; cursor: pointer; transition: background .2s; }
@@ -401,7 +406,7 @@ input[type=range].track-hue::-webkit-slider-thumb { margin-top: -6px; }
 .presets { display: grid; gap: 8px; }
 .preset { display: inline-flex; }
 .preset > button:first-child { border-radius: 999px 0 0 999px; }
-.preset .x { border-radius: 0 999px 999px 0; border-left: none; width: max(32px, 2rem); padding: 0; }
+.preset .x { border-radius: 0 999px 999px 0; border-left: none; width: max(44px, 2.75rem); padding: 0; } /* 消す「×」も指で押せる 44px の幅 */
 .preset-save { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .preset-save input { flex: 1 1 160px; width: auto; }
 

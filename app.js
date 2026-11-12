@@ -39,7 +39,7 @@ import { prepareLin } from './rawdev.js';
 const app = $('#app');
 const MAX_PIXELS = 16_700_000; // iPhone の Safari が扱える Canvas の上限（約1,670万画素）に合わせる
 const MAX_SIDE = 8192;
-const VERSION = '1.36.10'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
+const VERSION = '1.36.11'; // 画面の「情報」に出す（古い版が表示されていないかの確認用）
 const PREVIEW_MAX = 2048;
 const ZOOM_MAX = 4096; // 拡大表示のときに描く長辺の上限
 // 道具は、写真加工アプリのように、下（パソコンでは左）の列で種類（カテゴリ）を選び、その中の項目（リップ・鼻筋など）を選ぶ。
@@ -2259,10 +2259,15 @@ function localPanel() {
   const adders = open ? h('div', { class: 'chips local-adders', id: 'local-adders', role: 'group', 'aria-label': '追加する種類' }, addBtns()) : null;
   // 「範囲を選ぶ」と「明るさ・色」を、上の切り替えで出し分ける（前は明るさ・色のスライダーがブラシの設定の下に隠れていて、見つけにくかった）
   const view = E.localView || (cur.type === 'linear' || cur.type === 'radial' || Object.values(cur.adj).some((v) => v) ? 'adj' : 'range');
-  const how = { brush: '補正する所をなぞる', linear: '2本の線の丸をドラッグ', radial: '中心・縁の丸をドラッグ' }[cur.type];
-  const viewSw = chips([['range', '範囲を選ぶ'], ['adj', '明るさ・色']], view, (v) => { E.localView = v; buildPanel(); E.panel.scrollTop = 0; }, { label: '設定の切り替え', cls: 'local-view' }).el;
+  // 塗ったのに明るさ・色が 0 のまま（写真が変わらない）なら、説明を「次は…」にして、切り替えの札を少し光らせる
+  const nudge = view === 'range' && E.localNudge === cur.id && !Object.values(cur.adj).some((v) => v);
+  const how = nudge ? '次は「明るさ・色」で明るさなどを変える' : { brush: '補正する所をなぞる', linear: '2本の線の丸をドラッグ', radial: '中心・縁の丸をドラッグ' }[cur.type];
+  const viewSw = chips([['range', '範囲を選ぶ'], ['adj', '明るさ・色']], view, (v) => { E.localView = v; E.localNudge = null; buildPanel(); E.panel.scrollTop = 0; }, { label: '設定の切り替え', cls: 'local-view' }).el;
+  if (nudge) viewSw.lastElementChild.classList.add('nudge');
+  const howEl = how ? hint(how) : null;
+  if (nudge) { howEl.classList.add('nudge-hint'); howEl.setAttribute('role', 'status'); }
   if (view === 'adj') {
-    return [head, adders, how ? hint(how) : null, viewSw,
+    return [head, adders, howEl, viewSw,
       ...S.LOCAL_ADJ.map(([k, label]) => slider({ label, min: k === 'blur' ? 0 : -100, value: cur.adj[k], def: 0, onInput: live((v) => { cur.adj[k] = v; }), onChange: commit }).el)];
   }
   const ctrl = [];
@@ -2286,7 +2291,7 @@ function localPanel() {
       slider({ label: '明るい側', min: 0, max: 100, value: Math.round(cur.hi * 100), def: 35, onInput: live((v) => { cur.hi = v / 100; }), onChange: commit }).el,
       slider({ label: 'なめらかさ', min: 0, max: 50, value: Math.round(cur.soft * 100), def: 15, onInput: live((v) => { cur.soft = v / 100; }), onChange: commit }).el);
   }
-  return [head, adders, how ? hint(how) : null, viewSw,
+  return [head, adders, howEl, viewSw,
     ...ctrl,
     h('div', { class: 'local-opts' },
       toggle('範囲を赤く表示', E.showMask, (v) => { E.showMask = v; requestRender(); }).el,
@@ -2460,7 +2465,12 @@ function localAction(e, c, o, p) {
         if (ent) paintStroke(ctx2d(ent.c), st, ent.c.width, ent.c.height, st.pts.length - 1);
         refresh();
       },
-      end: () => { E.maskKey = maskKey(); commit(); },
+      end: () => {
+        E.maskKey = maskKey(); commit();
+        // はじめて塗ったとき、明るさ・色がまだ全部 0 なら写真は変わらないので、「明るさ・色」の切り替えへそっと誘う（補正ごとに 1 回だけ）
+        E.nudged ??= new Set();
+        if (!st.erase && !E.nudged.has(cur.id) && E.localView !== 'adj' && !Object.values(cur.adj).some((v) => v)) { E.nudged.add(cur.id); E.localNudge = cur.id; buildPanel(); }
+      },
       cancel: () => { cur.strokes.pop(); E.maskCache.clear(); rebuildMask(); requestRender(); },
     };
   }
