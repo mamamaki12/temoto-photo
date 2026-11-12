@@ -60,7 +60,7 @@ test('大きな写真（2,400万画素）を、編集を全部のせて元の大
     s.frame = { width: 3, color: '#ffffff', radius: 10, pad: '4:5', padFill: 'blur', padColor: '#ffffff' };
   });
   await openInfo(page);
-  await expect(page.locator('.info')).toContainText('6240×7800（JPEG・PNG は元の写真から描き直します）');
+  await expect(page.locator('.info')).toContainText('6240×7800（元の大きさのとき。JPEG・PNG は元の写真から描き直します）');
   await closeInfo(page);
   const full = await exportFile(page, { size: /元の大きさ/ });
   const small = await exportFile(page, { size: '2048px' });
