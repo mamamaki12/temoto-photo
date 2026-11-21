@@ -71,6 +71,7 @@ PR の CI（`.github/workflows/ci.yml`）が通ると、`.github/workflows/auto-
 - 下書き（Draft）の PR・フォークからの PR・main 以外へ向けた PR はマージしません
 - テストしたコミットが PR の最新のときだけマージします
 - 自動でマージしたくない PR には `no-auto-merge` ラベルを付けてください
+- Dependabot が作った PR（依存パッケージの更新）は自動ではマージしません。中身を見てから手でマージしてください
 
 ## 構成
 
