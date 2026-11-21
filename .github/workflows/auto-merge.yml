@@ -3,6 +3,7 @@ name: Auto-merge
 # - 下書き（Draft）の PR と、ほかのリポジトリ（フォーク）からの PR はマージしない
 # - テストしたコミットが PR の最新のときだけマージする（テスト後に新しいコミットが来たら、そのテストを待つ）
 # - 自動でマージしたくない PR には「no-auto-merge」ラベルを付ける
+# - Dependabot が作った PR（依存パッケージの更新）はマージしない（中身を見てから手でマージする）
 # GITHUB_TOKEN でのマージでは main への push のワークフローが動かないので、公開は workflow_dispatch で起動する。
 on:
   workflow_run:
@@ -33,6 +34,7 @@ jobs:
             if (pr.draft) { core.info(`#${pr.number} は下書きなのでマージしません`); return; }
             if (pr.head.repo?.full_name !== `${owner}/${repo}`) { core.info(`#${pr.number} はフォークからなのでマージしません`); return; }
             if (pr.labels.some((l) => l.name === 'no-auto-merge')) { core.info(`#${pr.number} は no-auto-merge なのでマージしません`); return; }
+            if (pr.user?.login === 'dependabot[bot]') { core.info(`#${pr.number} は Dependabot の PR なのでマージしません（中身を見てから手でマージする）`); return; }
             if (pr.base.ref !== 'main') { core.info(`#${pr.number} は main 向けではないのでマージしません`); return; }
             // ほかのテスト（同じコミットの全部のチェック）も通っているか
             const { data: checks } = await github.rest.checks.listForRef({ owner, repo, ref: run.head_sha, per_page: 100 });
